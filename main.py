@@ -2,8 +2,7 @@ import numpy as np
 import pygame
 import time
 from sim_window import SimWindow
-from agent import Agent
-from util import Pose
+from network import Network
 
 ####################################################
 sim_step = 0.00001  # seconds
@@ -19,7 +18,7 @@ curr_time = time.time()
 prev_time = curr_time
 window = SimWindow((WINDOW_W, WINDOW_H))
 
-# graph
+# graph/network
 n = 4
 m = 5
 d = 2
@@ -37,7 +36,7 @@ edges[3][0] = 3
 edges[3][1] = 0
 edges[4][0] = 0
 edges[4][1] = 2
-nodes = [Agent(pose=Pose(position=[pos[0], pos[1], 0.0])) for pos in p]
+network = Network(p, edges)
 
 # sim
 sim_time = 0.0
@@ -66,13 +65,11 @@ while running:
     # controller
     if control_timer >= control_period:
         control_timer -= control_period
-        for node in nodes:
-            node.set_velocity((np.random.rand(3) * 2 - 1) * 100)
+        network.set_velocities((np.random.rand(n, p.shape[1]) * 2 - np.ones((n, p.shape[1]))) * 100)
 
     # sim update
     while accumulator >= sim_step:
-        for node in nodes:
-            node.step(sim_step)
+        network.step(sim_step)
         sim_time += sim_step
         accumulator -= sim_step
 
@@ -81,7 +78,7 @@ while running:
     ratio = sim_time / wall_time if wall_time > 0 else 0.0
     info = f"sim: {sim_time:.2f}s | real: {wall_time:.2f}s | x{ratio:.2f}"
     window.set_info_text(info, (0, 0, 0))
-    window.draw(nodes)
+    window.draw(network)
     # clock.tick(60)
 
 window.quit()

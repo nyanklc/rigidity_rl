@@ -1,6 +1,6 @@
 import pygame
 import math
-from agent import Agent
+from network import Agent, Network
 from util import invert_color
 import numpy as np
 
@@ -12,7 +12,7 @@ class SimWindow:
         pygame.init()
         self.background_color = (234, 212, 252)
 
-        self.font = pygame.font.SysFont("Consolas", 12) # monospace
+        self.font = pygame.font.SysFont("Consolas", 12)  # monospace
         self.info_text_surface = None
 
         self.screen = pygame.display.set_mode([self.size[0], self.size[1]])
@@ -22,14 +22,17 @@ class SimWindow:
 
         self.origin = (0, 0)
 
-    def draw(self, obj_list: list[Agent], info_text: bool = False):
+    def draw(self, network: Network, info_text: bool = False):
+        agents = network.agents
+        edges = network.edges
+
         self.screen.fill(self.background_color)
 
-        shamt = self.shift_amount(obj_list) # follow the COM
+        shamt = self.shift_amount(agents)  # follow the COM
 
         self.draw_grid(shamt)
 
-        for obj in obj_list:
+        for obj in agents:
             # draw footprint of the object
             footprint = obj.get_footprint()
             pygame.draw.polygon(
@@ -37,8 +40,18 @@ class SimWindow:
                 invert_color(self.background_color),
                 [(x[0] - shamt[0], x[1] - shamt[1]) for x in footprint],
             )
+
+        for k, (i, j) in enumerate(edges):
+            pygame.draw.line(
+                self.screen,
+                invert_color(self.background_color),
+                agents[i].pose.position - shamt,
+                agents[j].pose.position - shamt,
+            )
+
         if info_text or self.info_text_surface:
             self.screen.blit(self.info_text_surface, (5, 5))
+
         pygame.display.flip()
 
     def draw_grid(self, shamt, spacing=25):
@@ -62,7 +75,7 @@ class SimWindow:
             y += spacing
 
     def shift_amount(self, obj_list: list[Agent]):
-        com = np.zeros(3)
+        com = np.zeros(2)
         for obj in obj_list:
             com += obj.pose.position
         com /= len(obj_list)
