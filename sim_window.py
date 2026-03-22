@@ -21,37 +21,48 @@ class SimWindow:
         pygame.display.flip()
 
         self.origin = (0, 0)
+        self.shamt = (0, 0)
 
-    def draw(self, network: Network, info_text: bool = False):
+    def clear(self):
+        self.screen.fill(self.background_color)
+
+    def draw(self, network: Network, info_text: bool = False, color_dummy=None):
         agents = network.agents
         edges = network.edges
 
-        self.screen.fill(self.background_color)
+        if color_dummy is None:
+            self.shamt = self.shift_amount(agents)
+            self.draw_grid(self.shamt)
 
-        shamt = self.shift_amount(agents)  # follow the COM
-
-        self.draw_grid(shamt)
-
-        for obj in agents:
-            # draw footprint of the object
-            footprint = obj.get_footprint()
+        for agent in agents:
+            footprint = agent.get_footprint()
+            screen_coords = [
+                (x[0] - self.shamt[0], self.size[1] - (x[1] - self.shamt[1]))
+                for x in footprint
+            ]
             pygame.draw.polygon(
                 self.screen,
-                invert_color(self.background_color),
-                [(x[0] - shamt[0], x[1] - shamt[1]) for x in footprint],
+                color_dummy if color_dummy is not None else invert_color(self.background_color),
+                screen_coords,
             )
 
-        for k, (i, j) in enumerate(edges):
+        for i, j in edges:
+            pos_i = agents[i].pose.position[:2] - self.shamt
+            pos_j = agents[j].pose.position[:2] - self.shamt
+            screen_i = (pos_i[0], self.size[1] - pos_i[1])
+            screen_j = (pos_j[0], self.size[1] - pos_j[1])
             pygame.draw.line(
                 self.screen,
-                invert_color(self.background_color),
-                agents[i].pose.position - shamt,
-                agents[j].pose.position - shamt,
+                color_dummy if color_dummy is not None else invert_color(self.background_color),
+                screen_i,
+                screen_j,
             )
 
         if info_text or self.info_text_surface:
             self.screen.blit(self.info_text_surface, (5, 5))
 
+
+    def flip(self):
         pygame.display.flip()
 
     def draw_grid(self, shamt, spacing=25):
@@ -77,7 +88,7 @@ class SimWindow:
     def shift_amount(self, obj_list: list[Agent]):
         com = np.zeros(2)
         for obj in obj_list:
-            com += obj.pose.position
+            com += obj.pose.position[:2]
         com /= len(obj_list)
 
         shift_amount = (com[0] - self.size[0] / 2, com[1] - self.size[1] / 2)
@@ -95,10 +106,18 @@ class SimWindow:
 
     def handle_events(self, events):
         terminate = False
+        ret = None
         for e in events:
             if e.type == pygame.QUIT:
                 terminate = True
             if e.type == pygame.KEYDOWN:
+
+                # quit
                 if e.key == pygame.K_ESCAPE or e.key == pygame.K_q:
                     terminate = True
-        return terminate
+
+                # snapshot plot
+                if e.key == pygame.K_SPACE:
+                    ret = "plot"
+                    terminate = True
+        return terminate, ret

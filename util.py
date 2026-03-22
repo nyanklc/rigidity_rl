@@ -5,12 +5,13 @@ import math
 
 
 class Pose:
-    def __init__(self, position=None, orientation=None):
-        self.position = np.array(position if position is not None else [0.0, 0.0, 0.0])
+    def __init__(self, position=None, orientation_euler=None):
+        self.position = np.array(position if position is not None else [0.0, 0.0, 0.0],
+                                 dtype=float)
 
         self.orientation = (
-            orientation
-            if orientation is not None
+            quaternion.from_euler_angles(orientation_euler)
+            if orientation_euler is not None
             else quaternion.quaternion(1, 0, 0, 0)
         )
 
@@ -32,18 +33,19 @@ class Pose:
 
     def print(self):
         print(
-            f"x: {self.position[0]}\ny: {self.position[1]}\nz: {self.position[2]}\nq: {self.orientation}"
+            f"x: {self.position[0]}\ny: {self.position[1]}\nz: {self.position[2]}\nangles: {quaternion.as_euler_angles(self.orientation)}"
         )
 
 
 # ang vel in world frame
-def angular_velocity_to_quaternion(omega, dt):
-    theta = np.linalg.norm(omega) * dt
+def angular_velocity_to_quaternion(w, dt):
+    theta = np.linalg.norm(w) * dt
 
+    # SVD convergence?
     if theta < 1e-8:
         return quaternion.quaternion(1, 0, 0, 0)
 
-    axis = omega / np.linalg.norm(omega)
+    axis = w / np.linalg.norm(w)
 
     half_theta = theta / 2.0
     w = np.cos(half_theta)
@@ -70,16 +72,17 @@ def plot_graph(positions, edges):
     plt.show()
 
 
-def skew_symmetric(vec):
-    skew = None
-    if vec.shape[0] == 2:
-        skew = np.asarray([[vec[0], -vec[1]], [vec[1], vec[0]]], dtype=vec.dtype)
-    elif vec.shape[0] == 3:
-        skew = np.asarray(
-            [[0, -vec[2], vec[1]], [vec[2], 0, -vec[0]], [-vec[1], vec[0], 0]],
-            dtype=vec.dtype,
-        )
-    return skew
+def skew_symmetric(v):
+    return np.array([
+        [0, -v[2], v[1]],
+        [v[2], 0, -v[0]],
+        [-v[1], v[0], 0]
+    ])
+
+
+def orthogonal_projection_matrix(v):
+    norm_sq = np.dot(v, v)
+    return np.eye(3) - np.outer(v, v) / norm_sq
 
 
 def move_polygon(polygon, x, y, yaw, rotation_axis: tuple = None):
