@@ -18,7 +18,7 @@ class Controller:
         # print(f"brm is rigid: {network.is_IBR()}")
         gains = [self.lin_gain, self.lin_gain, self.lin_gain, self.ang_gain, self.ang_gain, self.ang_gain]
         gain_mask = np.tile(gains, len(network.agents))
-        return np.diag(gain_mask) @ (-brm.T @ self.goal)
+        return np.diag(gain_mask) @ (brm.T @ self.goal)
 
     def error(self, current):
         return np.linalg.norm(self.goal - current)

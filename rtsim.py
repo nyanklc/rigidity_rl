@@ -6,9 +6,10 @@ from network import Network
 from control import Controller
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+import viser
 
 ####################################################
-sim_step = 0.01  # seconds
+sim_step = 0.001  # seconds
 
 WINDOW_W = 640
 WINDOW_H = 480
@@ -74,7 +75,7 @@ print("#####################################")
 
 # controller
 controller = Controller(
-    np.asarray(goal_bearings), lin_velocity_gain=50, ang_velocity_gain=2*np.pi
+    np.asarray(goal_bearings), lin_velocity_gain=1000, ang_velocity_gain=200
 )
 
 # sim
@@ -138,23 +139,11 @@ while running:
     window.draw(goal_network, color_dummy=(255, 0, 0))
     window.flip()
 
-if event_ret == "plot":
-    fig = plt.figure(figsize=(12, 10))
-    ax = fig.add_subplot(111, projection="3d")
-
-    network.plot_network_3d(
-        ax=ax, label_prefix="Agent", node_color="green", edge_color="orange"
-    )
-    goal_network.plot_network_3d(
-        ax=ax,
-        label_prefix="Goal",
-        node_color="blue",
-        edge_color="gray",
-        node_alpha=0.5,
-        edge_alpha=0.5,
-    )
-
-    ax.set_title("Current vs Goal Formation")
-    plt.show()
+if event_ret == "visualize":
+    # visualize
+    server = viser.ViserServer()
+    goal_network.plot_network_3d_viser(server, node_color=(0, 255, 0), edge_color=(0, 128, 0), label_prefix="Goal")
+    network.plot_network_3d_viser(server, node_color=(255, 0, 0), edge_color=(128, 0, 0), label_prefix="Current")
+    input("Press Enter to exit...")
 
 window.quit()

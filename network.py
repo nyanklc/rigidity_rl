@@ -1,9 +1,10 @@
 import numpy as np
-from util import circle_polygon, move_polygon, Pose
+from util import circle_polygon, move_polygon, Pose, invert_color
 import quaternion
 import rigidity
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+import viser
 
 
 class Agent:
@@ -79,57 +80,52 @@ class Network:
 
             import matplotlib.pyplot as plt
 
-    def plot_network_3d(
+    def plot_network_3d_viser(
         self,
-        ax=None,
-        title="3D Formation",
-        node_color='gray',
-        edge_color='gray',
-        node_alpha=1.0,
-        edge_alpha=0.5,
-        label_prefix=""
+        server: viser.ViserServer,
+        node_color=(0, 255, 0),
+        edge_color=(0, 128, 0),
+        node_size=1,
+        label_prefix="",
     ):
-        if ax is None:
-            fig = plt.figure(figsize=(10, 8))
-            ax = fig.add_subplot(111, projection='3d')
-
         positions = np.array([agent.pose.position for agent in self.agents])
 
-        for i, j in self.edges:
-            p1, p2 = positions[i], positions[j]
-            ax.plot([p1[0], p2[0]], [p1[1], p2[1]], [p1[2], p2[2]],
-                    color=edge_color, linestyle='--', alpha=edge_alpha)
-
-        ax.scatter(positions[:, 0], positions[:, 1], positions[:, 2],
-                color=node_color, s=50, alpha=node_alpha)
-
-        offset = np.ptp(positions) * 0.02 if len(positions) > 0 else 0.1
+        # nodes
         for i, p in enumerate(positions):
-            ax.text(p[0] + offset, p[1] + offset, p[2] + offset, f"{label_prefix}{i}",
-                    alpha=node_alpha)
+            server.scene.add_icosphere(
+                name=f"/node_{label_prefix}{i}",
+                radius=node_size,
+                color=node_color,
+                position=p,
+            )
 
-        # scale = 10
-        # for agent in self.agents:
-        #     p = agent.pose.position
-        #     R = agent.pose.rotation_mat()
-        #     for idx, color in enumerate(['r', 'g', 'b']):
-        #         direction = R[:, idx]
-        #         ax.plot(
-        #             np.array([p[0], p[0]+direction[0]]) / np.linalg.norm(np.array([p[0], p[0]+direction[0]]))*scale,
-        #             np.array([p[1], p[1]+direction[1]]) / np.linalg.norm(np.array([p[1], p[1]+direction[1]]))*scale,
-        #             np.array([p[2], p[2]+direction[2]]) / np.linalg.norm(np.array([p[2], p[2]+direction[2]]))*scale,
-        #             color=color, alpha=node_alpha
-        #         )
+            server.scene.add_label(
+                name=f"/label_{label_prefix}{i}",
+                text=f"{label_prefix}{i}",
+                position=p,
+            )
 
-        # axis_len = 100
-        # ax.quiver(0, 0, 0, axis_len, 0, 0, color='red', arrow_length_ratio=0.1)
-        # ax.quiver(0, 0, 0, 0, axis_len, 0, color='green', arrow_length_ratio=0.1)
-        # ax.quiver(0, 0, 0, 0, 0, axis_len, color='blue', arrow_length_ratio=0.1)
+        # edges
+        edge_line_segments = np.zeros((len(self.edges), 2, 3))
+        for k, (i, j) in enumerate(self.edges):
+            edge_line_segments[k] = np.array([positions[i], positions[j]])
+        server.scene.add_line_segments(
+            name=f"/edge_{label_prefix}{k}",
+            points=edge_line_segments,
+            colors=np.array(edge_color),
+        )
 
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y')
-        ax.set_zlabel('Z')
-        ax.set_title(title)
-        ax.set_box_aspect([1, 1, 1])
+        orientation_positions = positions
+        orientation_positions += [
+            node_size * agent.pose.rotation_mat() @ np.array([1, 0, 0])
+            for agent in self.agents
+        ]
 
-        return ax
+        # orientations
+        for i, p in enumerate(orientation_positions):
+            server.scene.add_icosphere(
+                name=f"/orientation_{label_prefix}{i}",
+                radius=node_size/2,
+                color=invert_color(node_color),
+                position=p,
+            )

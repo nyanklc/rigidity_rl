@@ -116,8 +116,8 @@ class SimWindow:
                 if e.key == pygame.K_ESCAPE or e.key == pygame.K_q:
                     terminate = True
 
-                # snapshot plot
+                # snapshot visualize
                 if e.key == pygame.K_SPACE:
-                    ret = "plot"
+                    ret = "visualize"
                     terminate = True
         return terminate, ret
