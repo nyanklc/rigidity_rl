@@ -21,4 +21,5 @@ class Controller:
         return np.diag(gain_mask) @ (brm.T @ self.goal)
 
     def error(self, current):
-        return np.linalg.norm(self.goal - current)
+        d = self.goal - current
+        return np.inner(d, d)
