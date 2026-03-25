@@ -5,7 +5,7 @@ from network import Network
 from control import Controller
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
-import viser
+from util import Pose
 
 ####################################################
 sim_step = 0.001  # seconds
@@ -63,7 +63,10 @@ positions = (
             [1, 0, 0],
             [1, 1, 0],
             [0, 1, 0],
-            [0.5, 0.5, 0],
+            # [0, 0, 1],
+            # [1, 0, 1],
+            # [1, 1, 1],
+            # [0, 1, 1],
         ],
         dtype=float,
     )
@@ -85,16 +88,22 @@ print(f"rigid: {network.is_IBR()}")
 goal_positions = (
     np.array(
         [
-            [1, 2, 0],
-            [1, 0, 0],
-            [1, 1, 0],
-            [0, 1, 0],
-            [0.5, 0.5, 0],
+            [5, 0, 0],
+            [6, 0, 0],
+            [6, 1, 0],
+            [5, 1, 0],
+            # [4, -1, 1],
+            # [7, -1, 1],
+            # [7, 2, 1],
+            # [4, 2, 1],
         ],
         dtype=float,
     )
     * 50
 )
+center = np.mean(goal_positions, axis=0)
+rotate = Pose(orientation_euler=(0, 0, np.pi/4)).rotation_mat()
+goal_positions = (goal_positions - center) @ rotate.T + center
 goal_network = Network(goal_positions, orientations_euler, edges)
 goal_bearings = goal_network.get_bearings()
 print(f"----------------goal network----------------")
@@ -157,4 +166,6 @@ while running:
         print(f"time: {curr_time - start_wall_time}, sim_time: {sim_time}, error: {error}")
         break
 
-input("Finished.")
+window.stop()
+
+print("Finished.")
