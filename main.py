@@ -1,3 +1,4 @@
+import signal
 import numpy as np
 import time
 from visualizer import Visualizer
@@ -11,7 +12,7 @@ from util import Pose
 sim_step = 0.001  # seconds
 tolerance = 1e-2  # bearing difference norm squared
 
-REALTIME = False
+REALTIME = True
 VISUALIZE = True
 ####################################################
 
@@ -47,9 +48,8 @@ def step(network: Network, controller: Controller, tolerance, converged, sim_ste
 
 
 # setup
-curr_time = time.time()
-prev_time = curr_time
-window = Visualizer()
+vis = Visualizer()
+signal.signal(signal.SIGINT, vis.handle_sigint)
 
 np.set_printoptions(threshold=np.inf)
 np.set_printoptions(linewidth=np.inf)
@@ -63,10 +63,7 @@ positions = (
             [1, 0, 0],
             [1, 1, 0],
             [0, 1, 0],
-            # [0, 0, 1],
-            # [1, 0, 1],
-            # [1, 1, 1],
-            # [0, 1, 1],
+            [0.5, 0.5, 2],
         ],
         dtype=float,
     )
@@ -77,8 +74,19 @@ orientations_euler = np.zeros((n, 3))
 # orientations_euler = np.random.rand(n, 3)
 # fully connected (no self loops)
 edges = np.asarray([(i, j) for i in range(n) for j in range(n) if i != j])
+# edges = np.asarray(
+#     [
+#         (0, 1),
+#         (1, 2),
+#         (2, 3),
+#         (3, 0),
+#         (0, 2),
+#     ]
+# )
 print(f"----------------network----------------")
 network = Network(positions, orientations_euler, edges)
+network.set_agents_domain_homogeneous("R^2xS^1")
+network.agents[4].set_domain("R^3xS^1")
 bearings = network.get_bearings()
 network.print()
 print(f"bearings: {bearings}")
@@ -88,23 +96,22 @@ print(f"rigid: {network.is_IBR()}")
 goal_positions = (
     np.array(
         [
-            [5, 0, 0],
-            [6, 0, 0],
-            [6, 1, 0],
-            [5, 1, 0],
-            # [4, -1, 1],
-            # [7, -1, 1],
-            # [7, 2, 1],
-            # [4, 2, 1],
+            [2, 0, 0],
+            [3, 0, 0],
+            [3, 1, 0],
+            [2, 1, 0],
+            [2.5, 3.5, 2],
         ],
         dtype=float,
     )
     * 50
 )
-center = np.mean(goal_positions, axis=0)
-rotate = Pose(orientation_euler=(0, 0, np.pi/4)).rotation_mat()
-goal_positions = (goal_positions - center) @ rotate.T + center
+# center = np.mean(goal_positions, axis=0)
+# rotate = Pose(orientation_euler=(0, 0, np.pi/4)).rotation_mat()
+# goal_positions = (goal_positions - center) @ rotate.T + center
 goal_network = Network(goal_positions, orientations_euler, edges)
+goal_network.set_agents_domain_homogeneous("R^2xS^1")
+goal_network.agents[4].set_domain("R^3xS^1")
 goal_bearings = goal_network.get_bearings()
 print(f"----------------goal network----------------")
 goal_network.print()
@@ -117,14 +124,28 @@ print("#####################################")
 
 # controller
 controller = Controller(
-    np.asarray(goal_bearings), lin_velocity_gain=1000, ang_velocity_gain=200
+    np.asarray(goal_bearings), lin_velocity_gain=100, ang_velocity_gain=100
 )
 
 # sim
 sim_time = 0.0
 accumulator = 0.0
 
+if VISUALIZE:
+    vis.draw_viser(
+        goal_network,
+        node_color=(0, 255, 0),
+        edge_color=(0, 128, 0),
+        label_prefix="Goal",
+    )
+    vis.draw_viser(
+        network, node_color=(255, 0, 0), edge_color=(128, 0, 0), label_prefix="Current"
+    )
+    vis.draw_info(sim_time, 0.0)
+input("ready to start")
+
 start_wall_time = time.time()
+curr_time = time.time()
 prev_time = time.time()
 
 running = True
@@ -157,8 +178,9 @@ while running:
 
     # visualize\
     if VISUALIZE:
-        window.draw_viser(goal_network, node_color=(0, 255, 0), edge_color=(0, 128, 0), label_prefix="Goal")
-        window.draw_viser(network, node_color=(255, 0, 0), edge_color=(128, 0, 0), label_prefix="Current")
+        vis.draw_viser(goal_network, node_color=(0, 255, 0), edge_color=(0, 128, 0), label_prefix="Goal")
+        vis.draw_viser(network, node_color=(255, 0, 0), edge_color=(128, 0, 0), label_prefix="Current")
+        vis.draw_info(sim_time, curr_time - start_wall_time)
 
     # terminate
     if converged:
@@ -166,6 +188,6 @@ while running:
         print(f"time: {curr_time - start_wall_time}, sim_time: {sim_time}, error: {error}")
         break
 
-window.stop()
+vis.stop()
 
 print("Finished.")

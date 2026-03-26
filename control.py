@@ -11,7 +11,7 @@ class Controller:
         self.goal = goal
 
     def control(self, network: Network):
-        brm = network.bearing_rigidity_matrix()
+        brm = network.extended_bearing_rigidity_matrix()
         # print(f"brm shape: {brm.shape} rank: {np.linalg.matrix_rank(brm)}")
         # print(f"goal shape: {self.goal.shape}")
         # print(f"brm: {brm}")

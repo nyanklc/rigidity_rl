@@ -5,10 +5,10 @@ import math
 
 
 class Pose:
+    # TODO: make sure trans and rot dofs are 3x3
     def __init__(self, position=None, orientation_euler=None):
         self.position = np.array(position if position is not None else [0.0, 0.0, 0.0],
                                  dtype=float)
-
         self.orientation = (
             quaternion.from_euler_angles(orientation_euler)
             if orientation_euler is not None
@@ -25,7 +25,7 @@ class Pose:
     def step(self, v, w, dt):
         self.position += v * dt
         dq = angular_velocity_to_quaternion(w, dt)
-        self.orientation = dq * self.orientation  # w_W * R_WB -> B2W in the end
+        self.orientation = dq * self.orientation  # w_W * R_WB -> B2W
         self.orientation = self.orientation.normalized()
 
     def rotation_mat(self):

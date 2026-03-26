@@ -9,12 +9,21 @@ import time
 class Visualizer:
     def __init__(self):
         self.server = viser.ViserServer()
-        while len(self.server.get_clients()) < 1:
-            print(f"waiting on viser client connection")
-            time.sleep(1)
+        # while len(self.server.get_clients()) < 1:
+        #     print(f"waiting on viser client connection")
+        #     time.sleep(1)
 
     def stop(self):
+        self.server.flush()
         self.server.stop()
+
+    def handle_sigint(self, sig, frame):
+        self.stop()
+
+    def draw_info(self, sim_time, real_time):
+        self.server.gui.set_panel_label(
+            f"sim time: {sim_time:.2f}s, real time: {real_time:.2f}s"
+        )
 
     def draw_viser(
         self,
@@ -50,27 +59,13 @@ class Visualizer:
                 colors=np.array(edge_color),
             )
 
-        # orientation_positions = positions
-        # orientation_positions += [
-        #     node_size * agent.pose.rotation_mat() @ np.array([1, 0, 0])
-        #     for agent in network.agents
-        # ]
-        # # orientations
-        # for i, p in enumerate(orientation_positions):
-        #     self.server.scene.add_icosphere(
-        #         name=f"/orientation_{label_prefix}{i}",
-        #         radius=node_size/2,
-        #         color=invert_color(node_color),
-        #         position=p,
-        #     )
-
         # orientations
         for i, agent in enumerate(network.agents):
             wxyz = np.asarray(quaternion.as_float_array(agent.pose.orientation))
             self.server.scene.add_frame(
                 name=f"/frame_{label_prefix}{i}",
-                axes_length=2,
-                axes_radius=0.2,
+                axes_length=4,
+                axes_radius=0.6,
                 position=agent.pose.position,
                 # w is stored on the last index in our case
                 wxyz=wxyz
