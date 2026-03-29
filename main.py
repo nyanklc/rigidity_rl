@@ -10,15 +10,16 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from util import Pose
 from scenario import load_scenario, save_scenario
+from tqdm import tqdm
 
 ####################################################
 sim_step = 0.001  # seconds
 tolerance = 1e-2  # bearing difference norm squared
 
-ACCUMULATE = True
+ACCUMULATE = False
 VISUALIZE = True
 
-RENDER_FPS = 30
+RENDER_FPS = 10
 ####################################################
 
 
@@ -80,15 +81,22 @@ print("#####################################")
 print("#####################################")
 
 # controller
-# controller = GradientBasedController(
-#     np.asarray(goal_bearings), lin_velocity_gain=100, ang_velocity_gain=100
-# )
 leader_idx = 0
-controller = GradientBasedControllerWithLeader(
-    np.asarray(goal_bearings), lin_velocity_gain=1000, ang_velocity_gain=10,
-    leader_idx=leader_idx, leader_goal=goal_network.agents[leader_idx].pose,
-    leader_vel_gain=0.05, leader_ang_vel_gain=1
+controller = GradientBasedController(
+    np.asarray(goal_bearings), lin_velocity_gain=100, ang_velocity_gain=1
 )
+# network.agents[leader_idx].domain = "leader"
+# goal_network.agents[leader_idx].domain = "leader"
+# controller = GradientBasedControllerWithLeader(
+#     np.asarray(goal_bearings), lin_velocity_gain=1000, ang_velocity_gain=1,
+#     leader_idx=leader_idx, leader_goal=goal_network.agents[leader_idx].pose,
+#     leader_vel_gain=0.05, leader_ang_vel_gain=1
+# )
+# controller = GradientBasedControllerWithUnicycleLeader(
+#     np.asarray(goal_bearings), lin_velocity_gain=1000, ang_velocity_gain=1,
+#     leader_idx=leader_idx, leader_goal=goal_network.agents[leader_idx].pose,
+#     leader_vel_gain=0.05, leader_ang_vel_gain=1
+# )
 
 # sim
 sim_time = 0.0
@@ -116,6 +124,7 @@ prev_time = time.time()
 
 converged = False
 error = 0.0
+pbar = tqdm(total=1, bar_format="{desc}", position=0, leave=True)
 while True:
     curr_time = time.time()
 
@@ -141,6 +150,9 @@ while True:
                                           converged,
                                           sim_step,
                                           sim_time)
+
+    pbar.set_description(f"Sim time: {sim_time:.3f} s | Error: {error:.6f}")
+    pbar.refresh()
 
     # visualize\
     if VISUALIZE:

@@ -4,6 +4,7 @@ from util import Pose
 from control import *
 import quaternion
 import json
+import copy
 
 
 def save_scenario(filename, network, goal_network):
@@ -87,48 +88,34 @@ if __name__ == "__main__":
     )
     n = len(positions)
     orientations_euler = np.zeros((n, 3))
-    # orientations_euler = np.random.rand(n, 3)
-    # fully connected (no self loops)
-    edges = np.asarray([(i, j) for i in range(n) for j in range(n) if i != j])
-    # edges = np.asarray(
-    #     [
-    #         (0, 1),
-    #         (1, 2),
-    #         (2, 3),
-    #         (3, 0),
-    #         (0, 2),
-    #     ]
-    # )
-    print(f"----------------network----------------")
+    # edges = np.asarray([(i, j) for i in range(n) for j in range(n) if i != j])
+    edges = np.asarray(
+        [
+            (0, 1),
+            (1, 2),
+            (2, 3),
+            (3, 0),
+            (0, 2),
+        ]
+    )
     network = Network(positions, orientations_euler, edges)
-    network.set_agents_domain_homogeneous("R^2xS^1")
+    network.set_agents_domain_homogeneous("R^2")
     # network.agents[4].set_domain("SE(3)")
     bearings = network.get_bearings()
+
+    # goal
+    goal_network = copy.deepcopy(network)
+    goal_network.translate_network([100, 100, 0])
+    goal_network.rotate_network([0, 0, 1], np.pi/4)
+    goal_network.agents[3].pose.position[0] = 150
+    goal_bearings = goal_network.get_bearings()
+
+
+
+    print(f"----------------network----------------")
     network.print()
     print(f"bearings: {bearings}")
     print(f"rigid: {network.is_IBR()}")
-
-    # goal
-    goal_positions = (
-        np.array(
-            [
-                [2, -2, 0],
-                [3, 0, 0],
-                [3, 1, 0],
-                [2, 1, 0],
-                # [2.5, 3.5, 2],
-            ],
-            dtype=float,
-        )
-        * 50
-    )
-    center = np.mean(goal_positions, axis=0)
-    rotate = Pose(orientation_euler=(0, 0, np.pi/4)).rotation_mat()
-    goal_positions = (goal_positions - center) @ rotate.T + center
-    goal_network = Network(goal_positions, orientations_euler, edges)
-    goal_network.set_agents_domain_homogeneous("R^2xS^1")
-    # goal_network.agents[4].set_domain("SE(3)")
-    goal_bearings = goal_network.get_bearings()
     print(f"----------------goal network----------------")
     goal_network.print()
     print(f"goal bearings: {goal_bearings}")

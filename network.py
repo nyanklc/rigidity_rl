@@ -5,6 +5,7 @@ import rigidity
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import viser
+from util import skew_symmetric
 
 
 class Agent:
@@ -47,8 +48,12 @@ class Agent:
     def get_bearing(self, other: "Agent"):
         p = other.pose.position - self.pose.position
         p = p / np.linalg.vector_norm(p)
-        # bearing in body frame
-        bearing = self.pose.rotation_mat().T @ p
+        bearing = np.zeros(3)
+        if self.domain not in ["R^3", "R^2"]:
+            # bearing in body frame
+            bearing = self.pose.rotation_mat().T @ p
+        else:
+            bearing = p
         return bearing
 
 
@@ -68,6 +73,41 @@ class Network:
         for i in range(n):
             self.agents[i].set_velocity(u[3 * i : 3 * i + 3])
             self.agents[i].set_angular_velocity(u[3 * n + 3 * i : 3 * n + 3 * i + 3])
+
+    def translate_network(self, dp):
+        for agent in self.agents:
+            agent.pose.position += np.array(dp)
+
+    def rotate_network(self, axis, angle):
+        axis = np.asarray(axis, dtype=float)
+        axis = axis / np.linalg.norm(axis)
+
+        positions = np.array([agent.pose.position for agent in self.agents])
+        center = np.mean(positions, axis=0)
+
+        K = skew_symmetric(axis)
+        # rodrigues
+        R = (
+            np.eye(3)
+            + np.sin(angle) * K
+            + (1 - np.cos(angle)) * (K @ K)
+        )
+        # rotate around center
+        positions = (positions - center) @ R.T + center
+
+        for i, agent in enumerate(self.agents):
+            agent.pose.position = positions[i]
+
+            if agent.domain not in ["R^3", "R^2"]:
+                # rotate the orientations also
+                R_agent = agent.pose.rotation_mat()
+                agent.pose.set_rotation_mat(R @ R_agent)
+
+    def scale_network(self, scale):
+        for agent in self.agents:
+            agent.pose.position.x *= scale[0]
+            agent.pose.position.y *= scale[1]
+            agent.pose.position.z *= scale[2]
 
     def set_agents_domain_homogeneous(self, domain: str, rotation_axis=None):
         print(f"agents' domain: {domain}")

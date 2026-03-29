@@ -62,12 +62,13 @@ class Visualizer:
 
         # orientations
         for i, agent in enumerate(network.agents):
-            wxyz = np.asarray(quaternion.as_float_array(agent.pose.orientation))
-            self.server.scene.add_frame(
-                name=f"/frame_{label_prefix}{i}",
-                axes_length=4,
-                axes_radius=0.6,
-                position=agent.pose.position,
-                # w is stored on the last index in our case
-                wxyz=wxyz
-            )
+            if agent.domain not in ["R^3", "R^2"]:
+                wxyz = np.asarray(quaternion.as_float_array(agent.pose.orientation))
+                self.server.scene.add_frame(
+                    name=f"/frame_{label_prefix}{i}",
+                    axes_length=4,
+                    axes_radius=0.6,
+                    position=agent.pose.position,
+                    # w is stored on the last index in our case
+                    wxyz=wxyz
+                )

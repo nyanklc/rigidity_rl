@@ -31,6 +31,10 @@ class Pose:
     def rotation_mat(self):
         return quaternion.as_rotation_matrix(self.orientation)
 
+    def set_rotation_mat(self, R):
+        q = quaternion.from_rotation_matrix(R)
+        self.orientation = q
+
     def euler_angles(self):
         return quaternion.as_euler_angles(self.orientation)
 
