@@ -9,21 +9,22 @@ import time
 class Visualizer:
     def __init__(self):
         self.server = viser.ViserServer()
-        # while len(self.server.get_clients()) < 1:
-        #     print(f"waiting on viser client connection")
-        #     time.sleep(1)
+        self.md = self.server.gui.add_markdown("start...")
+        self.button_start = self.server.gui.add_button("start")
 
     def stop(self):
-        self.server.flush()
         self.server.stop()
+
+    def wait_for_start(self):
+        while not self.button_start.value:
+            time.sleep(0.1)
+        self.button_start.value = False
 
     def handle_sigint(self, sig, frame):
         self.stop()
 
-    def draw_info(self, sim_time, real_time):
-        self.server.gui.set_panel_label(
-            f"sim time: {sim_time:.2f}s, real time: {real_time:.2f}s"
-        )
+    def draw_info(self, text):
+        self.md.content = text
 
     def draw_viser(
         self,

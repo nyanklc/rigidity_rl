@@ -137,5 +137,5 @@ def is_IBR(network):
     network_K.edges = np.asarray([(i, j) for i in range(n) for j in range(n) if i != j])
     brmat_K = extended_bearing_rigidity_matrix(network_K)
 
-    print(f"IBR check: {np.linalg.matrix_rank(brmat)} =? {np.linalg.matrix_rank(brmat_K)}")
+    # print(f"IBR check: {np.linalg.matrix_rank(brmat)} =? {np.linalg.matrix_rank(brmat_K)}")
     return np.linalg.matrix_rank(brmat) == np.linalg.matrix_rank(brmat_K)
