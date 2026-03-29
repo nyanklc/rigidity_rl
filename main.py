@@ -29,9 +29,9 @@ def step(network: Network, controller: Controller, tolerance, converged, sim_ste
     # control
     if not converged:
         velocities = controller.control(network)
-        error = controller.error(network.get_bearings())
+        error = controller.error(network)
 
-        if error < tolerance:
+        if sum(error) < tolerance:
             converged = True
 
         if converged:
@@ -43,7 +43,7 @@ def step(network: Network, controller: Controller, tolerance, converged, sim_ste
     network.step(sim_step)
     sim_time += sim_step
 
-    return sim_time, converged, error
+    return sim_time, converged, error, velocities
 
 
 if len(sys.argv) < 2:
@@ -85,12 +85,14 @@ leader_idx = 0
 controller = GradientBasedController(
     np.asarray(goal_bearings), lin_velocity_gain=100, ang_velocity_gain=1
 )
-# network.agents[leader_idx].domain = "leader"
-# goal_network.agents[leader_idx].domain = "leader"
 # controller = GradientBasedControllerWithLeader(
-#     np.asarray(goal_bearings), lin_velocity_gain=1000, ang_velocity_gain=1,
-#     leader_idx=leader_idx, leader_goal=goal_network.agents[leader_idx].pose,
-#     leader_vel_gain=0.05, leader_ang_vel_gain=1
+#     np.asarray(goal_bearings),
+#     lin_velocity_gain=1000,
+#     ang_velocity_gain=1,
+#     leader_idx=leader_idx,
+#     leader_goal=goal_network.agents[leader_idx].pose,
+#     leader_vel_gain=0.05,
+#     leader_ang_vel_gain=1,
 # )
 # controller = GradientBasedControllerWithUnicycleLeader(
 #     np.asarray(goal_bearings), lin_velocity_gain=1000, ang_velocity_gain=1,
@@ -123,35 +125,30 @@ curr_time = time.time()
 prev_time = time.time()
 
 converged = False
-error = 0.0
+error = []
 pbar = tqdm(total=1, bar_format="{desc}", position=0, leave=True)
 while True:
     curr_time = time.time()
 
     # update
+    velocities = np.zeros(6 * len(network.agents))
     if ACCUMULATE:
         dt = curr_time - prev_time
         prev_time = curr_time
         accumulator += dt
         while accumulator >= sim_step:
-            sim_time, converged, error = step(network,
-                                              controller,
-                                              tolerance,
-                                              converged,
-                                              sim_step,
-                                              sim_time)
+            sim_time, converged, error, velocities = step(
+                network, controller, tolerance, converged, sim_step, sim_time
+            )
             accumulator -= sim_step
             if converged:
                 break
     else:
-        sim_time, converged, error = step(network,
-                                          controller,
-                                          tolerance,
-                                          converged,
-                                          sim_step,
-                                          sim_time)
+        sim_time, converged, error, velocities = step(
+            network, controller, tolerance, converged, sim_step, sim_time
+        )
 
-    pbar.set_description(f"Sim time: {sim_time:.3f} s | Error: {error:.6f}")
+    pbar.set_description(f"Sim time: {sim_time:.3f} s | Error(sum): {sum(error)}")
     pbar.refresh()
 
     # visualize\
@@ -162,6 +159,10 @@ while True:
             vis.draw_viser(goal_network, node_color=(0, 255, 0), edge_color=(0, 128, 0), label_prefix="Goal")
             vis.draw_viser(network, node_color=(255, 0, 0), edge_color=(128, 0, 0), label_prefix="Current")
 
+            vels_info = "\n".join(
+                f"velocities ({i}): {velocities[3*i:3*i+3]}-{velocities[3*len(network.agents)+3*i:3*len(network.agents)+3*i+3]}"
+                for i in range(len(network.agents))
+            )
             vis.draw_info(
                 f"""sim time: {sim_time}\n
                 real time: {curr_time - start_wall_time}\n
@@ -169,7 +170,9 @@ while True:
                 error: {error}\n
                 network is rigid: {network.is_IBR()}\n
                 goal network is rigid: {goal_network.is_IBR()}\n
-                """)
+                {vels_info}
+                """
+            )
 
             vis.server.flush()
 
@@ -177,6 +180,20 @@ while True:
     if converged:
         print("Converged.")
         print(f"time: {curr_time - start_wall_time}, sim_time: {sim_time}, error: {error}")
+        vels_info = "\n".join(
+            f"velocities ({i}): {velocities[3*i:3*i+3]}-{velocities[3*len(network.agents)+3*i:3*len(network.agents)+3*i+3]}"
+            for i in range(len(network.agents))
+        )
+        info = f"""last step:
+sim time: {sim_time}
+real time: {curr_time - start_wall_time}
+converged: {converged}
+error: {error}
+network is rigid: {network.is_IBR()}
+goal network is rigid: {goal_network.is_IBR()}
+{vels_info}
+                """
+        print(info)
         break
 
 vis.stop()

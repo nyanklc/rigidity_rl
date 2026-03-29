@@ -9,6 +9,8 @@ import time
 class Visualizer:
     def __init__(self):
         self.server = viser.ViserServer()
+        # self.gui_container = self.server.scene.add_3d_gui_container("Info", position=np.array([-100, 0, 0]))
+        # with self.gui_container:
         self.md = self.server.gui.add_markdown("start...")
         self.button_start = self.server.gui.add_button("start")
 

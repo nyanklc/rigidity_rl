@@ -17,9 +17,9 @@ class Controller(ABC):
     def control(self, network: Network):
         pass
 
-    def error(self, current):
-        d = self.goal - current
-        return np.inner(d, d)
+    def error(self, network: Network):
+        d = self.goal - network.get_bearings()
+        return [np.inner(d, d)]
 
 
 class GradientBasedController(Controller):
@@ -61,13 +61,17 @@ class GradientBasedControllerWithLeader(Controller):
         vels = np.diag(gain_mask) @ (brm.T @ self.goal)
 
         leader = network.agents[self.leader_idx]
-        theta = leader.pose.euler_angles()[2]
 
-        leader_vel = self.leader_vel_gain * (self.leader_goal.position - leader.pose.position)
         def angle_diff(a, b):
             return (a - b + np.pi) % (2 * np.pi) - np.pi
-        angle_error = angle_diff(self.leader_goal.euler_angles()[2], theta)
-        leader_ang_vel = self.leader_ang_vel_gain * angle_error
+
+        angle_error = angle_diff(self.leader_goal.euler_angles()[0], leader.pose.euler_angles()[0])
+        leader_ang_vel_0 = self.leader_ang_vel_gain * angle_error
+        angle_error = angle_diff(self.leader_goal.euler_angles()[1], leader.pose.euler_angles()[1])
+        leader_ang_vel_1 = self.leader_ang_vel_gain * angle_error
+        angle_error = angle_diff(self.leader_goal.euler_angles()[2], leader.pose.euler_angles()[2])
+        leader_ang_vel_2 = self.leader_ang_vel_gain * angle_error
+        leader_vel = self.leader_vel_gain * (self.leader_goal.position - leader.pose.position)
 
         vels[3 * self.leader_idx : 3 * self.leader_idx + 3] = leader_vel
         vels[
@@ -75,9 +79,23 @@ class GradientBasedControllerWithLeader(Controller):
             + 3 * self.leader_idx : 3 * len(network.agents)
             + 3 * self.leader_idx
             + 3
-        ] = leader_ang_vel
+        ] = np.array([leader_ang_vel_0, leader_ang_vel_1, leader_ang_vel_2])
 
         return vels
+
+    def error(self, network: Network):
+       leader = network.agents[self.leader_idx]
+
+       d_bearing = self.goal - network.get_bearings()
+       d_bearing = np.dot(d_bearing, d_bearing)
+
+       d_pos = self.leader_goal.position - leader.pose.position
+       d_pos = np.dot(d_pos, d_pos)
+
+       d_ori = leader.pose.euler_angles() - self.leader_goal.euler_angles()
+       d_ori = sum([1 - np.cos(angle) for angle in d_ori])
+
+       return [d_bearing, d_pos, d_ori]
 
 
 class GradientBasedControllerWithUnicycleLeader(Controller):
@@ -138,3 +156,17 @@ class GradientBasedControllerWithUnicycleLeader(Controller):
         ] = leader_ang_vel
 
         return vels
+
+    def error(self, network: Network):
+       leader = network.agents[self.leader_idx]
+
+       d_bearing = self.goal - network.get_bearings()
+       d_bearing = np.dot(d_bearing, d_bearing)
+
+       d_pos = self.leader_goal.position - leader.pose.position
+       d_pos = np.dot(d_pos, d_pos)
+
+       d_ori = leader.pose.euler_angles() - self.leader_goal.euler_angles()
+       d_ori = sum([1 - np.cos(angle) for angle in d_ori])
+
+       return [d_bearing, d_pos, d_ori]
