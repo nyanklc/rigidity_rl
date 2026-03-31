@@ -80,6 +80,10 @@ if __name__ == "__main__":
                 [1, 0, 0],
                 [1, 1, 0],
                 [0, 1, 0],
+                [0, 0, 1],
+                [1, 0, 1],
+                [1, 1, 1],
+                [0, 1, 1],
                 # [0.5, 0.5, 1],
             ],
             dtype=float,
@@ -88,24 +92,36 @@ if __name__ == "__main__":
     )
     n = len(positions)
     orientations_euler = np.zeros((n, 3))
-    edges = np.asarray([(i, j) for i in range(n) for j in range(n) if i != j])
-    # edges = np.asarray(
-    #     [
-    #         (0, 1),
-    #         (1, 2),
-    #         (2, 3),
-    #         (3, 0),
-    #         (0, 2),
-    #     ]
-    # )
+    # edges = np.asarray([(i, j) for i in range(n) for j in range(n) if i != j])
+    edges = np.asarray(
+        [
+            (0, 1),
+            (1, 2),
+            (2, 3),
+            (3, 0),
+            (4, 5),
+            (5, 6),
+            (6, 7),
+            (7, 4),
+            (0, 4),
+            (1, 5),
+            (2, 6),
+            (3, 7),
+            (0, 6),
+        ]
+    )
     network = Network(positions, orientations_euler, edges)
-    network.set_agents_domain_homogeneous("R^2")
+    network.set_agents_domain_homogeneous("R^3")
     # network.agents[4].set_domain("SE(3)")
     bearings = network.get_bearings()
 
     # goal
     goal_network = copy.deepcopy(network)
-    goal_network.translate_network([100, 100, 0])
+    goal_network.agents[4].pose.position = np.array([-50, -50, 50])
+    goal_network.agents[5].pose.position = np.array([100, -50, 50])
+    goal_network.agents[6].pose.position = np.array([100, 100, 50])
+    goal_network.agents[7].pose.position = np.array([-50, 100, 50])
+    goal_network.translate_network([150, 150, 0])
     # goal_network.rotate_network([0, 0, 1], np.pi/4)
     # goal_network.agents[4].pose.position[0] += 50
     goal_bearings = goal_network.get_bearings()
