@@ -109,6 +109,12 @@ class Network:
             agent.pose.position.y *= scale[1]
             agent.pose.position.z *= scale[2]
 
+    def set_edges(self, i_indices, j_indices):
+        m = len(i_indices)
+        self.edges = np.zeros((m, 2), dtype=np.int32)
+        self.edges[:, 0] = i_indices
+        self.edges[:, 1] = j_indices
+
     def set_agents_domain_homogeneous(self, domain: str, rotation_axis=None):
         print(f"agents' domain: {domain}")
         # default values are for SE(3)

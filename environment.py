@@ -3,22 +3,103 @@ from gymnasium import spaces
 import numpy as np
 import time
 import signal
+from network import Network
+from rigidity import is_IBR
 
 from visualizer import Visualizer
 from scenario import load_scenario
 from control import GradientBasedController
 
 
+def define_action_space(type: str, env: "Environment"):
+    network = env.network
+
+    n = len(network.agents)
+    action_space = None
+    if type == "AllEdges":
+        action_space = spaces.MultiBinary(n * n)
+
+    return action_space
+
+
+def define_obs_space(type: str, env: "Environment"):
+    network = env.network
+
+    obs_space = None
+    if type == "Complete":
+        brm = network.extended_bearing_rigidity_matrix()
+        information_mat = brm.T @ brm
+        u, singular_values, v = np.linalg.svd(information_mat)
+        positions = np.array(
+            [agent.pose.position for agent in network.agents]
+        ).flatten()
+        orientations_euler = np.array(
+            [agent.pose.euler_angles() for agent in network.agents]
+        ).flatten()
+
+        obs_n = (
+            singular_values.shape[0] + positions.shape[0] + orientations_euler.shape[0]
+        )
+        obs_space = spaces.Box(-np.inf, np.inf, (obs_n,))
+
+    return obs_space
+
+def obs(type: str, env: "Environment"):
+    network = env.network
+
+    obs = None
+    if type == "Complete":
+        brm = network.extended_bearing_rigidity_matrix()
+        information_mat = brm.T @ brm
+        u, singular_values, v = np.linalg.svd(information_mat)
+        positions = np.array(
+            [agent.pose.position for agent in network.agents]
+        ).flatten()
+        orientations_euler = np.array(
+            [agent.pose.euler_angles() for agent in network.agents]
+        ).flatten()
+        obs = np.hstack([singular_values, positions, orientations_euler])
+
+    return obs
+
+def reward(type: str, env: "Environment", action):
+    network = env.network
+
+    reward = 0.0
+    if type == "Rigid":
+        if network.is_IBR():
+            reward += 10
+        else:
+            reward -= 10
+    elif type == "RigidAndMinSingularValue":
+        brm = network.extended_bearing_rigidity_matrix()
+        _, singular_values, _ = np.linalg.svd(brm)
+        nonzeros = singular_values[np.nonzero(singular_values)]
+        min_singular = 0.0
+        if len(nonzeros):
+            min_singular = min(singular_values[np.nonzero(singular_values)])
+        reward += min_singular
+
+        is_rigid = network.is_IBR()
+        if not is_rigid:
+            reward = -1.0
+
+    return reward
+
+
 class Environment(gym.Env):
     metadata = {"render_modes": ["human"], "render_fps": 10}
 
-    def __init__(self, scenario_file, sim_step=0.001, max_time=10.0, visualize=True):
+    def __init__(
+        self,
+        scenario_file,
+        action_space_type="AllEdges",
+        obs_space_type="Complete",
+        reward_type="Rigid",
+    ):
         super().__init__()
 
-        self.sim_step = sim_step
-        self.max_time = max_time
         self.filename = scenario_file
-        self.visualize = visualize
 
         self.network, self.goal_network = load_scenario(self.filename)
         self.n = len(self.network.agents)
@@ -26,117 +107,41 @@ class Environment(gym.Env):
 
         self.brm = self.network.extended_bearing_rigidity_matrix()
 
-        self.observation_space = spaces.Dict({
-            "brm": spaces.Box(-np.inf, np.inf, (min(self.brm.shape),), dtype=np.float32),
-            "controller": spaces.Box(-np.inf, np.inf, (6*self.n,), dtype=np.float32),
-            "bearings": spaces.Box(-np.inf, np.inf, (3*self.m,), dtype=np.float32),
-            "goal_bearings": spaces.Box(-np.inf, np.inf, (3*self.m,), dtype=np.float32),
-        })
-        self.action_space = spaces.Box(-10.0, 10.0, (6*self.n,), dtype=np.float32)
-
-        self.controller = GradientBasedController(
-            np.asarray(self.goal_network.get_bearings()),
-            lin_velocity_gain=100,
-            ang_velocity_gain=1,
-        )
-
-        self.sim_time = 0.0
-        self.converged = False
-
-        if self.visualize:
-            self.vis = Visualizer()
-            signal.signal(signal.SIGINT, self.vis.handle_sigint)
-
-            self.render_interval = 1.0 / self.metadata["render_fps"]
-            self.last_render_time = time.time()
-
-    def _get_obs(self):
-        self.brm = self.network.extended_bearing_rigidity_matrix()
-        u, s, v = np.linalg.svd(self.brm)
-        controller_velocities = self.controller.control(self.network)
-        return {"brm": s,
-                "controller": controller_velocities,
-                "bearings": self.network.get_bearings(),
-                "goal_bearings": self.goal_network.get_bearings()}
-
-    def _compute_reward(self, action, error):
-        reward = -np.sum(error) # error
-        reward -= 0.01 * np.linalg.norm(action) # control effort
-        reward -= 0.1 * self.sim_step # time penalty
-
-        if self.converged:
-            reward += 100.0
-
-        return reward
+        self.observation_space = define_obs_space(obs_space_type, self)
+        self.action_space = define_action_space(action_space_type, self)
+        self._get_obs = lambda: obs(obs_space_type, self)
+        self._compute_reward = lambda action: reward(reward_type, self, action)
 
     # -----------------------------------
     def step(self, action):
-        if not self.converged:
-            self.network.set_inputs(self.controller.control(self.network) + action)
+        # take action
+        n = len(self.network.agents)
+        action = action.reshape((n, n))
+        i_indices = []
+        j_indices = []
+        for i in range(n):
+            for j in range(n):
+                if action[i, j]:
+                    if i != j:
+                        i_indices.append(int(i))
+                        j_indices.append(int(j))
+        self.network.set_edges(i_indices, j_indices)
 
-        self.network.step(self.sim_step)
-        self.sim_time += self.sim_step
-
-        error = self.controller.error(self.network)
-
-        if np.sum(error) < 1e-2:
-            self.converged = True
-
+        # obs/reward
         obs = self._get_obs()
-        reward = self._compute_reward(action, error)
-
-        terminated = self.converged
-        truncated = self.sim_time >= self.max_time
+        reward = self._compute_reward(action)
 
         info = {
-            "error": error,
-            "sim_time": self.sim_time,
+            "action": action,
+            "singular_values": obs[:min(3*self.m, 6*self.n)],
             "is_rigid": self.network.is_IBR(),
+            "nr_edges": len(self.network.edges),
+            "reward": reward,
         }
-
-        if self.visualize:
-            self._render_frame(action, error)
+        truncated = False
+        terminated = True
 
         return obs, reward, terminated, truncated, info
-
-    # -----------------------------------
-    def _render_frame(self, velocities, error):
-        curr_time = time.time()
-
-        if curr_time - self.last_render_time < self.render_interval:
-            return
-
-        self.last_render_time = curr_time
-
-        self.vis.draw_viser(
-            self.goal_network,
-            node_color=(0, 255, 0),
-            edge_color=(0, 128, 0),
-            label_prefix="Goal",
-        )
-        self.vis.draw_viser(
-            self.network,
-            node_color=(255, 0, 0),
-            edge_color=(128, 0, 0),
-            label_prefix="Current",
-        )
-
-        vels_info = "\n".join(
-            f"vel ({i}): {velocities[3*i:3*i+3]} | "
-            f"{velocities[3*self.n+3*i:3*self.n+3*i+3]}"
-            for i in range(self.n)
-        )
-        self.vis.draw_info(
-            f"""sim time: {self.sim_time}\n
-            converged: {self.converged}\n
-            error: {error}\n
-            network is rigid: {self.network.is_IBR()}\n
-            goal network is rigid: {self.goal_network.is_IBR()}\n
-            {vels_info}
-            """
-        )
-
-        self.vis.server.flush()
 
     # -----------------------------------
     def reset(self, seed=None, options=None):
@@ -144,28 +149,4 @@ class Environment(gym.Env):
 
         self.network, self.goal_network = load_scenario(self.filename)
 
-        self.sim_time = 0.0
-        self.converged = False
-
-        if self.visualize:
-            self.vis.draw_viser(
-                self.goal_network,
-                node_color=(0, 255, 0),
-                edge_color=(0, 128, 0),
-                label_prefix="Goal",
-            )
-            self.vis.draw_viser(
-                self.network,
-                node_color=(255, 0, 0),
-                edge_color=(128, 0, 0),
-                label_prefix="Current",
-            )
-            self.vis.draw_info("reset")
-            self.vis.server.flush()
-
         return self._get_obs(), {}
-
-    # -----------------------------------
-    def close(self):
-        if self.visualize:
-            self.vis.stop()

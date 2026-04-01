@@ -128,6 +128,9 @@ def old_is_IBR(network):
     return np.linalg.matrix_rank(brmat) == brmat.shape[1] - (6+1)
 
 def is_IBR(network):
+    if len(network.edges) == 0:
+        return False
+
     # rigidity matrix
     brmat = extended_bearing_rigidity_matrix(network)
 
