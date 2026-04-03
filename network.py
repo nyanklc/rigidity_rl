@@ -115,6 +115,29 @@ class Network:
         self.edges[:, 0] = i_indices
         self.edges[:, 1] = j_indices
 
+    def add_edge(self, i_idx, j_idx):
+        if i_idx == j_idx:
+            return
+        if self._edge_exists(i_idx, j_idx):
+            return
+        new_edge = np.array([[i_idx, j_idx]], dtype=np.int32)
+        self.edges = np.vstack([self.edges, new_edge])
+
+    def remove_edge(self, i_idx, j_idx):
+        if i_idx == j_idx:
+            return
+        if not self._edge_exists(i_idx, j_idx):
+            return
+        mask = ~((self.edges[:, 0] == i_idx) & (self.edges[:, 1] == j_idx))
+        self.edges = self.edges[mask]
+
+    def _edge_exists(self, i_idx, j_idx):
+        if self.edges.size == 0:
+            return False
+        return np.any(
+            (self.edges[:, 0] == i_idx) & (self.edges[:, 1] == j_idx)
+        )
+
     def set_agents_domain_homogeneous(self, domain: str, rotation_axis=None):
         print(f"agents' domain: {domain}")
         # default values are for SE(3)

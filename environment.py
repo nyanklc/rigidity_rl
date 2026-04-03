@@ -13,14 +13,21 @@ from control import GradientBasedController
 
 def define_action_space(type: str, env: "Environment"):
     network = env.network
-
     n = len(network.agents)
+
     action_space = None
     if type == "AllEdges":
         action_space = spaces.MultiBinary(n * n)
+    elif type == "AddRemoveEdgeMultiDiscrete":
+        # add/remove/skip, i_index, j_index
+        action_space = spaces.MultiDiscrete([3, n, n])
+    elif type == "AddRemoveEdgeDiscrete":
+        # edge enumeration
+        ec = (n**2) // 2
+        # [0, ec-1]: add, [ec, 2*ec-1]: remove, last: skip
+        action_space = spaces.Discrete(2*ec + 1)
 
     return action_space
-
 
 def define_obs_space(type: str, env: "Environment"):
     network = env.network
@@ -51,14 +58,15 @@ def obs(type: str, env: "Environment"):
     if type == "Complete":
         brm = network.extended_bearing_rigidity_matrix()
         information_mat = brm.T @ brm
-        u, singular_values, v = np.linalg.svd(information_mat)
+        # symmetric
+        eigenvalues = np.linalg.eigvalsh(information_mat)
         positions = np.array(
             [agent.pose.position for agent in network.agents]
         ).flatten()
         orientations_euler = np.array(
             [agent.pose.euler_angles() for agent in network.agents]
         ).flatten()
-        obs = np.hstack([singular_values, positions, orientations_euler])
+        obs = np.hstack([eigenvalues, positions, orientations_euler])
 
     return obs
 
@@ -100,6 +108,9 @@ class Environment(gym.Env):
         super().__init__()
 
         self.filename = scenario_file
+        self.action_space_type = action_space_type
+        self.obs_space_type = obs_space_type
+        self.reward_type = reward_type
 
         self.network, self.goal_network = load_scenario(self.filename)
         self.n = len(self.network.agents)
@@ -111,25 +122,65 @@ class Environment(gym.Env):
         self.action_space = define_action_space(action_space_type, self)
         self._get_obs = lambda: obs(obs_space_type, self)
         self._compute_reward = lambda action: reward(reward_type, self, action)
+        self.last_reward = 0.0
 
     # -----------------------------------
     def step(self, action):
         # take action
-        n = len(self.network.agents)
-        action = action.reshape((n, n))
-        i_indices = []
-        j_indices = []
-        for i in range(n):
-            for j in range(n):
-                if action[i, j]:
-                    if i != j:
-                        i_indices.append(int(i))
-                        j_indices.append(int(j))
-        self.network.set_edges(i_indices, j_indices)
+        if self.action_space_type == "AllEdges":
+            n = len(self.network.agents)
+            action_adj = action.reshape((n, n))
+            i_indices = []
+            j_indices = []
+            for i in range(n):
+                for j in range(n):
+                    if action_adj[i, j]:
+                        if i != j:
+                            i_indices.append(int(i))
+                            j_indices.append(int(j))
+            self.network.set_edges(i_indices, j_indices)
+        elif self.action_space_type == "AddRemoveEdgeMultiDiscrete":
+            # TODO: punish unnecessary additions/removals
+            if action[0] == 0:
+            # add
+                i_idx = action[1]
+                j_idx = action[2]
+                self.network.add_edge(i_idx, j_idx)
+            elif action[0] == 1:
+            # remove
+                i_idx = action[1]
+                j_idx = action[2]
+                self.network.remove_edge(i_idx, j_idx)
+            elif action[0] == 2:
+            # skip
+                pass
+        elif self.action_space_type == "AddRemoveEdgeDiscrete":
+            ec = (n**2) // 2
+            if action == 2 * ec:
+                # skip
+                pass
+            if action < ec:
+                # add
+                edge_idx = action
+                i_idx, j_idx = np.triu_indices(n, k=1)
+                i_idx = i_idx[edge_idx]
+                j_idx = j_idx[edge_idx]
+                self.network.add_edge(i_idx, j_idx)
+            else:
+                # remove
+                edge_idx = action - ec
+                i_idx, j_idx = np.triu_indices(n, k=1)
+                i_idx = i_idx[edge_idx]
+                j_idx = j_idx[edge_idx]
+                self.network.remove_edge(i_idx, j_idx)
 
         # obs/reward
         obs = self._get_obs()
+
         reward = self._compute_reward(action)
+        tmp = self.last_reward
+        self.last_reward = reward
+        reward = reward - tmp
 
         info = {
             "action": action,

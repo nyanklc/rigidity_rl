@@ -10,7 +10,7 @@ from datetime import datetime
 #############################################
 TOTAL_TIMESTEPS = 2e5
 NR_ENVS = 8
-ACTION_TYPE = "AllEdges"
+ACTION_TYPE = "AddRemoveEdgeMultiDiscrete"
 OBS_TYPE = "Complete"
 REWARD_TYPE = "RigidAndMinSingularValue"
 #############################################
