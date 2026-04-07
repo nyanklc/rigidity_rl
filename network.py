@@ -56,6 +56,24 @@ class Agent:
             bearing = p
         return bearing
 
+    def randomize_position(self, low=[-100, -100, -100], high=[100, 100, 100]):
+        if self.domain in ["R^2", "R^2xS^1"]:
+            pos = np.random.uniform(low[:2], high[:2], size=2)
+            self.pose.position = np.hstack([pos, [0.0]])
+        else:
+            self.pose.position = np.random.uniform(low[:3], high[:3], size=3)
+
+    def randomize_orientation(self):
+        if self.domain == "SE(3)":
+            euler = np.random.uniform(0, 2*np.pi, size=3)
+            self.pose.orientation = quaternion.from_euler_angles(euler)
+        elif self.domain in ["R^3xS^1", "R^2xS^1"]:
+            axis = self.rotation_axis if self.rotation_axis is not None else np.array([0,0,1])
+            angle = np.random.uniform(0, 2*np.pi)
+            self.pose.orientation = quaternion.from_rotation_vector(axis * angle)
+        else:
+            self.pose.orientation = quaternion.one
+
 
 class Network:
     def __init__(self, positions, orientations_euler, edges):
@@ -109,8 +127,19 @@ class Network:
             agent.pose.position.y *= scale[1]
             agent.pose.position.z *= scale[2]
 
+    def randomize_positions(self, low, high):
+        for agent in self.agents:
+            agent.randomize_position(low, high)
+
+    def randomize_orientations(self):
+        for agent in self.agents:
+            agent.randomize_orientation()
+
     def set_edges(self, i_indices, j_indices):
         m = len(i_indices)
+        if m == 0:
+            self.edges = np.empty((0, 2))
+            return
         self.edges = np.zeros((m, 2), dtype=np.int32)
         self.edges[:, 0] = i_indices
         self.edges[:, 1] = j_indices
@@ -118,20 +147,23 @@ class Network:
     def add_edge(self, i_idx, j_idx):
         if i_idx == j_idx:
             return
-        if self._edge_exists(i_idx, j_idx):
+        if self.edge_exists(i_idx, j_idx):
             return
         new_edge = np.array([[i_idx, j_idx]], dtype=np.int32)
+        if len(self.edges) == 0:
+            self.edges = new_edge
+            return
         self.edges = np.vstack([self.edges, new_edge])
 
     def remove_edge(self, i_idx, j_idx):
         if i_idx == j_idx:
             return
-        if not self._edge_exists(i_idx, j_idx):
+        if not self.edge_exists(i_idx, j_idx):
             return
         mask = ~((self.edges[:, 0] == i_idx) & (self.edges[:, 1] == j_idx))
         self.edges = self.edges[mask]
 
-    def _edge_exists(self, i_idx, j_idx):
+    def edge_exists(self, i_idx, j_idx):
         if self.edges.size == 0:
             return False
         return np.any(
@@ -139,7 +171,7 @@ class Network:
         )
 
     def set_agents_domain_homogeneous(self, domain: str, rotation_axis=None):
-        print(f"agents' domain: {domain}")
+        # print(f"agents' domain: {domain}")
         # default values are for SE(3)
         if domain == "R^3xSO(3)" or domain == "" or domain == None:
             domain = "SE(3)"

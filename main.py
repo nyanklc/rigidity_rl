@@ -9,8 +9,9 @@ from control import *
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from util import Pose
-from scenario import load_scenario, save_scenario
+from scenario import load_scenario, save_scenario, random_scenario
 from tqdm import tqdm
+import textwrap
 
 ####################################################
 sim_step = 0.001  # seconds
@@ -64,6 +65,7 @@ np.set_printoptions(formatter={"all": lambda x: "{:.4g}".format(x)})
 
 # graph/network
 network, goal_network = load_scenario(filedir)
+# network, goal_network = random_scenario(4, "R^2")
 bearings = network.get_bearings()
 goal_bearings = goal_network.get_bearings()
 
@@ -184,15 +186,15 @@ while True:
             f"velocities ({i}): {velocities[3*i:3*i+3]}-{velocities[3*len(network.agents)+3*i:3*len(network.agents)+3*i+3]}"
             for i in range(len(network.agents))
         )
-        info = f"""last step:
-sim time: {sim_time}
-real time: {curr_time - start_wall_time}
-converged: {converged}
-error: {error}
-network is rigid: {network.is_IBR()}
-goal network is rigid: {goal_network.is_IBR()}
-{vels_info}
-                """
+        info = textwrap.dedent(f"""\
+                sim time: {sim_time}
+                real time: {curr_time - start_wall_time:.2f}s
+                converged: {converged}
+                error: {error}
+                network is rigid: {network.is_IBR()}
+                goal network is rigid: {goal_network.is_IBR()}
+                {vels_info}
+            """)
         print(info)
         break
 

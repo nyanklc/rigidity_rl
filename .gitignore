@@ -1,5 +1,6 @@
 __pycache__/
 scenarios/
+environments/
 models/
 tboard_logs/
 *.zip

@@ -5,6 +5,53 @@ from control import *
 import quaternion
 import json
 import copy
+import os
+
+
+# TODO: collinearity check
+def random_scenario(
+    n,
+    domains: str | list[str] = "SE(3)",
+    pos_limits=([-100, -100, -100], [100, 100, 100]),
+):
+    low, high = np.array(pos_limits[0]), np.array(pos_limits[1])
+    positions = np.zeros((n, 3))
+    orientations_euler = np.random.uniform(0, 2 * np.pi, size=(n, 3))
+
+    network = Network(positions, orientations_euler, edges=np.zeros((0, 2), dtype=int))
+    if isinstance(domains, str):
+        network.set_agents_domain_homogeneous(domains)
+    else:
+        for agent, domain in zip(network.agents, domains):
+            agent.set_domain(domain)
+    network.randomize_positions(low, high)
+    network.randomize_orientations()
+
+    edge_set = set()
+    max_possible_edges = n * (n - 1)
+    m = np.random.randint(1, max_possible_edges + 1)
+    while len(edge_set) < m:
+        i, j = np.random.choice(n, size=2, replace=False)
+        if ((i, j) not in edge_set) and (i != j):
+            edge_set.add((i, j))
+    edges = np.array(list(edge_set))
+    network.set_edges(edges[:, 0], edges[:, 1])
+
+    orientations_euler = np.random.uniform(0, 2 * np.pi, size=(n, 3))
+    goal_network = Network(
+        positions, orientations_euler, edges=np.zeros((0, 2), dtype=int)
+    )
+    if isinstance(domains, str):
+        goal_network.set_agents_domain_homogeneous(domains)
+    else:
+        for agent, domain in zip(goal_network.agents, domains):
+            agent.set_domain(domain)
+    goal_network.randomize_positions(low, high)
+    goal_network.randomize_orientations()
+    # same edges
+    goal_network.set_edges(edges[:, 0], edges[:, 1])
+
+    return network, goal_network
 
 
 def save_scenario(filename, network, goal_network):
@@ -30,6 +77,7 @@ def save_scenario(filename, network, goal_network):
     }
 
     with open(filename, "w") as f:
+        os.makedirs("./scenarios/", exist_ok=True)
         json.dump(data, f, indent=2)
 
 
@@ -80,10 +128,10 @@ if __name__ == "__main__":
                 [1, 0, 0],
                 [1, 1, 0],
                 [0, 1, 0],
-                # [0, 0, 1],
-                # [1, 0, 1],
-                # [1, 1, 1],
-                # [0, 1, 1],
+                [0, 0, 1],
+                [1, 0, 1],
+                [1, 1, 1],
+                [0, 1, 1],
                 # [0.5, 0.5, 1],
             ],
             dtype=float,
@@ -93,24 +141,25 @@ if __name__ == "__main__":
     n = len(positions)
     orientations_euler = np.zeros((n, 3))
     # edges = np.asarray([(i, j) for i in range(n) for j in range(n) if i != j])
-    edges = np.asarray(
-        [
-            (0, 1),
-            (1, 2),
-            (2, 3),
-            (3, 0),
-            # (4, 5),
-            # (5, 6),
-            # (6, 7),
-            # (7, 4),
-            # (0, 4),
-            # (1, 5),
-            # (2, 6),
-            # (3, 7),
-            # (0, 6),
-            (0, 2),
-        ]
-    )
+    # edges = np.asarray(
+    #     [
+    #         (0, 1),
+    #         (1, 2),
+    #         (2, 3),
+    #         (3, 0),
+    #         # (4, 5),
+    #         # (5, 6),
+    #         # (6, 7),
+    #         # (7, 4),
+    #         # (0, 4),
+    #         # (1, 5),
+    #         # (2, 6),
+    #         # (3, 7),
+    #         # (0, 6),
+    #         (0, 2),
+    #     ]
+    # )
+    edges = np.empty((0, 2))
     network = Network(positions, orientations_euler, edges)
     network.set_agents_domain_homogeneous("R^3")
     # network.agents[4].set_domain("SE(3)")
