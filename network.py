@@ -77,10 +77,17 @@ class Agent:
 
 class Network:
     def __init__(self, positions, orientations_euler, edges):
-        self.edges = edges
+        n = len(positions)
+        self.edges = np.zeros((n, n), dtype=bool)
+        if edges.shape[1] == n: # adj matrix provided
+            self.edges = edges
+        else: # edge list provided
+            for k, (i, j) in enumerate(edges):
+                self.edges[i, j] = True
         self.agents: list[Agent] = []
         for i in range(len(positions)):
             self.agents.append(Agent(Pose(positions[i], orientations_euler[i])))
+        self.nr_max_edges = n**2
 
     def step(self, dt):
         for agent in self.agents:
@@ -136,39 +143,21 @@ class Network:
             agent.randomize_orientation()
 
     def set_edges(self, i_indices, j_indices):
+        n = len(self.agents)
+        self.edges = np.zeros((n, n), dtype=bool)
         m = len(i_indices)
         if m == 0:
-            self.edges = np.empty((0, 2))
             return
-        self.edges = np.zeros((m, 2), dtype=np.int32)
-        self.edges[:, 0] = i_indices
-        self.edges[:, 1] = j_indices
+        self.edges[i_indices, j_indices] = True
 
     def add_edge(self, i_idx, j_idx):
-        if i_idx == j_idx:
-            return
-        if self.edge_exists(i_idx, j_idx):
-            return
-        new_edge = np.array([[i_idx, j_idx]], dtype=np.int32)
-        if len(self.edges) == 0:
-            self.edges = new_edge
-            return
-        self.edges = np.vstack([self.edges, new_edge])
+        self.edges[i_idx, j_idx] = True
 
     def remove_edge(self, i_idx, j_idx):
-        if i_idx == j_idx:
-            return
-        if not self.edge_exists(i_idx, j_idx):
-            return
-        mask = ~((self.edges[:, 0] == i_idx) & (self.edges[:, 1] == j_idx))
-        self.edges = self.edges[mask]
+        self.edges[i_idx, j_idx] = False
 
     def edge_exists(self, i_idx, j_idx):
-        if self.edges.size == 0:
-            return False
-        return np.any(
-            (self.edges[:, 0] == i_idx) & (self.edges[:, 1] == j_idx)
-        )
+        return self.edges[i_idx, j_idx]
 
     def set_agents_domain_homogeneous(self, domain: str, rotation_axis=None):
         # print(f"agents' domain: {domain}")
@@ -197,9 +186,18 @@ class Network:
         # return rigidity.old_is_IBR(self)
         return rigidity.is_IBR(self)
 
+    def is_MBR(self):
+        # for agent in self.agents:
+        #     if agent.domain not in ["R^2", "R^3"]:
+        #         raise Exception("Minimally Bearing Rigidity is not defined for domains other than R^d.")
+
+        return rigidity.is_MBR(self)
+
     def get_bearings(self):
-        bearings = np.zeros(len(self.edges)*3)
-        for k, (i, j) in enumerate(self.edges):
+        i_indices, j_indices = np.nonzero(self.edges)
+        m = len(i_indices)
+        bearings = np.zeros(3 * m)
+        for k, (i, j) in enumerate(zip(i_indices, j_indices)):
             bearings[3*k:3*k+3] = self.agents[i].get_bearing(self.agents[j])
         return bearings
 
@@ -210,7 +208,9 @@ class Network:
                 f"agent {i} in {agent.domain} with rotation axis {agent.rotation_axis}"
             )
             agent.pose.print()
-        print("edges: [")
-        for k, (i, j) in enumerate(self.edges):
-            print(f"({i}, {j}),")
-        print("]")
+        print("edges:")
+        n = len(self.agents)
+        for i in range(n):
+            for j in range(n):
+                if self.edges[i, j]:
+                    print(f"{i} -> {j}")

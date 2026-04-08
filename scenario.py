@@ -28,11 +28,11 @@ def random_scenario(
     network.randomize_orientations()
 
     edge_set = set()
-    max_possible_edges = n * (n - 1)
+    max_possible_edges = n**2
     m = np.random.randint(1, max_possible_edges + 1)
     while len(edge_set) < m:
-        i, j = np.random.choice(n, size=2, replace=False)
-        if ((i, j) not in edge_set) and (i != j):
+        i, j = np.random.choice(n, size=2)
+        if ((i, j) not in edge_set):
             edge_set.add((i, j))
     edges = np.array(list(edge_set))
     network.set_edges(edges[:, 0], edges[:, 1])
@@ -140,7 +140,7 @@ if __name__ == "__main__":
     )
     n = len(positions)
     orientations_euler = np.zeros((n, 3))
-    # edges = np.asarray([(i, j) for i in range(n) for j in range(n) if i != j])
+    edges = np.asarray([(i, j) for i in range(n) for j in range(n) if i != j])
     # edges = np.asarray(
     #     [
     #         (0, 1),
@@ -159,7 +159,6 @@ if __name__ == "__main__":
     #         (0, 2),
     #     ]
     # )
-    edges = np.empty((0, 2))
     network = Network(positions, orientations_euler, edges)
     network.set_agents_domain_homogeneous("R^3")
     # network.agents[4].set_domain("SE(3)")

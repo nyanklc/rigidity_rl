@@ -9,11 +9,13 @@ def old_extended_bearing_rigidity_matrix(network):
     edges = network.edges
 
     n = len(positions)
-    m = len(edges)
+    m = int(edges.sum())
 
     B = np.zeros((3*m, 6*n))
 
-    for k, (i, j) in enumerate(edges):
+    i_indices, j_indices = np.nonzero(edges)
+    # TODO: there should be a more efficient implementation using the adjacency mat, i was lazy
+    for k, (i, j) in enumerate(zip(i_indices, j_indices)):
 
         p_ij = positions[j] - positions[i]
         dist = np.linalg.norm(p_ij)
@@ -78,13 +80,16 @@ def extended_bearing_rigidity_matrix(network):
     edges = network.edges
 
     n = len(p)
-    m = len(edges)
+    m = int(edges.sum())
 
     E = np.zeros((n, m))
     Eo = np.zeros((n, m))
     U = np.zeros((3*m, 3*m))
     V = np.zeros((3*m, 3*m))
-    for k, (i, j) in enumerate(edges):
+
+    i_indices, j_indices = np.nonzero(edges)
+    # TODO: there should be a more efficient implementation using the adjacency mat, i was lazy
+    for k, (i, j) in enumerate(zip(i_indices, j_indices)):
         E[i, k] = -1
         E[j, k] = +1
         Eo[i, k] = -1
@@ -98,7 +103,12 @@ def extended_bearing_rigidity_matrix(network):
 
     Dp = np.zeros((3*m, 3*m))
     Da = np.zeros((3*m, 3*m))
-    for k, (i, j) in enumerate(edges):
+    for k, (i, j) in enumerate(zip(i_indices, j_indices)):
+
+        # TODO: not sure if we should do this
+        if i == j:
+            continue
+
         pij = p[j] - p[i]
         s = 1.0 / np.linalg.norm(pij)
         p_bar = s * pij
@@ -114,7 +124,6 @@ def extended_bearing_rigidity_matrix(network):
 
         Da[3*k:3*(k+1), 3*k:3*(k+1)] = Da_k
 
-
     Bp = Dp @ U @ E_bar.T
     Ba = Da @ V @ Eo_bar.T
     B = np.hstack([Bp, Ba])
@@ -128,7 +137,7 @@ def old_is_IBR(network):
     return np.linalg.matrix_rank(brmat) == brmat.shape[1] - (6+1)
 
 def is_IBR(network):
-    if len(network.edges) == 0:
+    if int(network.edges.sum()) == 0:
         return False
 
     # rigidity matrix
@@ -137,8 +146,33 @@ def is_IBR(network):
     # rigidity matrix of the fully connected graph
     network_K = copy.copy(network)
     n = len(network_K.agents)
-    network_K.edges = np.asarray([(i, j) for i in range(n) for j in range(n) if i != j])
+    network_K.edges = np.ones((n, n))
     brmat_K = extended_bearing_rigidity_matrix(network_K)
 
     # print(f"IBR check: {np.linalg.matrix_rank(brmat)} =? {np.linalg.matrix_rank(brmat_K)}")
     return np.linalg.matrix_rank(brmat) == np.linalg.matrix_rank(brmat_K)
+
+# M. H. Trinh, Q. Van Tran, and H.-S. Ahn, “Minimal and Redundant Bearing Rigidity: Conditions and Applications,” IEEE Transactions on Automatic Control, vol. 65, no. 10, pp. 4186–4200, Oct. 2020, doi: 10.1109/TAC.2019.2958563.
+# NOTE: ONLY FOR R^d
+def is_MBR(network):
+    if len(network.agents) == 0:
+        return False
+
+    n = len(network.agents)
+    d = 2 if network.agents[0].domain in ["R^2", "R^2xS^1"] else 3
+    m = int(network.edges.sum())
+
+    if d < 2 or n < 3:
+        return False
+
+    # cycle graph
+    if 3 <= n <= d + 1:
+        return m == n
+
+    k = (n - 2) // (d - 1)
+    r = (n - 2) % (d - 1)
+    sgn = 1 if r > 0 else 0
+
+    m_required = 1 + k * d + r + sgn
+
+    return m == m_required

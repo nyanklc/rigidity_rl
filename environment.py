@@ -64,32 +64,32 @@ def action_AddRemoveEdgeMultiDiscrete(action, env: "Environment", reward, action
         j_idx = action[2]
         action_info += f"add {i_idx}-{j_idx}"
         if i_idx == j_idx:
-            reward -= 2 # unnecessary action
+            reward -= 5 # adding memory
             action_info += " (self loop)"
         if env.network.edge_exists(i_idx, j_idx):
-            reward -= 2 # unnecessary action
+            reward -= 20 # unnecessary action
             action_info += " (existed)"
         env.network.add_edge(i_idx, j_idx)
         reward -= 1 # measurement effort
-        reward -= 5 # time taken
     # remove
     elif action[0] == 1:
         i_idx = action[1]
         j_idx = action[2]
         action_info += f"remove {i_idx}-{j_idx}"
         if i_idx == j_idx:
-            reward -= 2 # unnecessary action
+            reward += 5 # removing memory
             action_info += " (self loop)"
         if not env.network.edge_exists(i_idx, j_idx):
-            reward -= 2 # unnecessary action
+            reward -= 20 # unnecessary action
             action_info += " (didn't exist)"
         env.network.remove_edge(i_idx, j_idx)
         reward += 1 # measurement effort
-        reward -= 5 # time taken
     # skip
     elif action[0] == 2:
         action_info += "skip"
         pass
+
+    reward -= 5 # time taken
 
     return reward, action_info
 
@@ -100,34 +100,34 @@ def action_AddRemoveEdgeDiscrete(action, env: "Environment", reward, action_info
         # skip
         action_info += "skip"
         pass
-    if action < ec:
+    elif action < ec:
         # add
         i_idx = action // n
         j_idx = action % n
         action_info += f"add {i_idx}-{j_idx}"
         if i_idx == j_idx:
-            reward -= 2 # unnecessary action
+            reward -= 5 # adding memory
             action_info += " (self loop)"
         if env.network.edge_exists(i_idx, j_idx):
-            reward -= 2 # unnecessary action
+            reward -= 20 # unnecessary action
             action_info += " (existed)"
         env.network.add_edge(i_idx, j_idx)
         reward -= 1 # measurement effort
-        reward -= 5 # time taken
     else:
         # remove
-        i_idx = action // n
-        j_idx = action % n
+        i_idx = (action-ec) // n
+        j_idx = (action-ec) % n
         action_info += f"remove {i_idx}-{j_idx}"
         if i_idx == j_idx:
-            reward -= 2 # unnecessary action
+            reward += 5 # removing memory
             action_info += " (self loop)"
         if not env.network.edge_exists(i_idx, j_idx):
-            reward -= 2 # unnecessary action
+            reward -= 20 # unnecessary action
             action_info += " (didn't exist)"
         env.network.remove_edge(i_idx, j_idx)
         reward += 1 # measurement effort
-        reward -= 5 # time taken
+
+    reward -= 5 # time taken
 
     return reward, action_info
 
@@ -144,14 +144,15 @@ def action_AddEdgeDiscrete(action, env: "Environment", reward, action_info):
         j_idx = action % n
         action_info += f"add {i_idx}-{j_idx}"
         if i_idx == j_idx:
-            reward -= 2 # unnecessary action
+            reward -= 5 # adding memory
             action_info += " (self loop)"
         if env.network.edge_exists(i_idx, j_idx):
-            reward -= 2 # unnecessary action
+            reward -= 20 # unnecessary action
             action_info += " (existed)"
         env.network.add_edge(i_idx, j_idx)
         reward -= 1 # measurement effort
-        reward -= 5 # time taken
+
+    reward -= 5 # time taken
 
     return reward, action_info
 
@@ -178,9 +179,7 @@ def obs(type: str, env: "Environment", define_type=False):
             obs_space = spaces.Box(-np.inf, np.inf, (obs_n,))
     elif type == "AdjFlatAndEigenvalues":
         n = len(env.network.agents)
-        A = np.zeros((n, n), dtype=np.float32)
-        for i, j in env.network.edges:
-            A[i, j] = 1
+        A = env.network.edges.astype(np.float32)
         brm = network.extended_bearing_rigidity_matrix()
         information_mat = brm.T @ brm
         eigenvalues = np.linalg.eigvalsh(information_mat)
@@ -232,7 +231,7 @@ class Environment(gym.Env):
             self.network, self.goal_network = random_scenario(n, domains)
 
         self.n = len(self.network.agents)
-        self.m = len(self.network.edges)
+        self.m = int(self.network.edges.sum())
 
         self.brm = self.network.extended_bearing_rigidity_matrix()
 
@@ -240,7 +239,7 @@ class Environment(gym.Env):
         self.action_space = define_action_space(action_space_type, self)
         self._get_obs = lambda: obs(obs_space_type, self, False)[0]
 
-        self.nr_max_edges = self.n * (self.n - 1)
+        self.nr_max_edges = self.n**2
         self.step_counter = 0
         self.max_steps = max_steps
 
@@ -251,7 +250,8 @@ class Environment(gym.Env):
         reward = 0.0
         n = len(self.network.agents)
 
-        is_IBR_before = self.network.is_IBR()
+        was_IBR = self.network.is_IBR()
+        was_MBR = self.network.is_MBR()
         action_info = ""
 
         # action and reward based on action
@@ -264,27 +264,52 @@ class Environment(gym.Env):
         elif self.action_space_type == "AddEdgeDiscrete":
             reward, action_info = action_AddEdgeDiscrete(action, self, reward, action_info)
 
+        action_reward = reward
+
         # obs
         obs = self._get_obs()
 
         # reward based on state
-        is_rigid = self.network.is_IBR()
+        is_IBR = self.network.is_IBR()
+        is_MBR = self.network.is_MBR()
         if self.reward_type == "Rigid":
-            if is_rigid:
+            if is_IBR:
                 reward += 10
             else:
                 reward -= 10
-        elif self.reward_type == "RigidAndMinSingularValue":
+        elif self.reward_type == "RigidAndMinEigenvalue":
             brm = self.network.extended_bearing_rigidity_matrix()
-            _, singular_values, _ = np.linalg.svd(brm)
-            nonzeros = singular_values[np.nonzero(singular_values)]
-            min_singular = 0.0
+            information_mat = brm.T @ brm
+            # symmetric
+            eigenvalues = np.linalg.eigvalsh(information_mat)
+            nonzeros = eigenvalues[np.nonzero(eigenvalues)]
+            min_eig = 0.0
             if len(nonzeros):
-                min_singular = min(singular_values[np.nonzero(singular_values)])
-            reward += 1 + min_singular
+                min_eig = min(eigenvalues[np.nonzero(eigenvalues)])
+            reward += 10 + min_eig
+            if not is_IBR:
+                reward += -10
+        elif self.reward_type == "RigidAndMinRigid":
+            if is_IBR:
+                reward += 10
+                if is_MBR:
+                    reward += 10
+                else:
+                    reward -= 10
+            else:
+                reward -= 20
+        elif self.reward_type == "MinEigenvalue":
+            brm = self.network.extended_bearing_rigidity_matrix()
+            information_mat = brm.T @ brm
+            # symmetric
+            eigenvalues = np.linalg.eigvalsh(information_mat)
+            nonzeros = eigenvalues[np.nonzero(eigenvalues)]
+            min_eig = 0.0
+            if len(nonzeros):
+                min_eig = min(eigenvalues[np.nonzero(eigenvalues)])
+            reward += min_eig
 
-            if not is_rigid:
-                reward += -1.0
+        state_reward = reward - action_reward
 
         self.step_counter += 1
 
@@ -295,25 +320,39 @@ class Environment(gym.Env):
             if self.step_counter >= self.max_steps:
                 terminated = True
         elif self.termination_condition_type == "Rigid":
-            if is_rigid:
-                reward += 100
+            if is_IBR:
+                reward += self.network.nr_max_edges * 10
+                # reward += 100
                 terminated = True
+        elif self.termination_condition_type == "MinimallyRigid":
+            if is_MBR:
+                self.network.nr_max_edges * 10
+                # reward += 100
+                terminated = True
+
+        termination_reward = reward - state_reward - action_reward
 
         # (incremental) reward
         last_reward_copy = self.last_reward
         self.last_reward = reward
+        # TODO: do we want this? or perhaps add a flag
         # reward = reward - last_reward_copy
 
         # debug
         info = {
-            "step": f"{self.step_counter}/{self.nr_max_edges}",
+            "step": f"{self.step_counter}",
             "action": action_info,
             "reward (step)": reward,
             "reward (raw)": self.last_reward,
+            "reward (action)": action_reward,
+            "reward (state)": state_reward,
+            "reward (termination)": termination_reward,
             "last reward": last_reward_copy,
-            "is rigid": is_rigid,
-            "was rigid": is_IBR_before,
-            "nr edges": len(self.network.edges),
+            "is rigid": is_IBR,
+            "was rigid": was_IBR,
+            "is min rigid": is_MBR,
+            "was min rigid": was_MBR,
+            "nr edges": int(self.network.edges.sum()),
             "terminated": terminated,
             "truncated": truncated,
         }
@@ -334,11 +373,11 @@ class Environment(gym.Env):
             self.network, self.goal_network = random_scenario(self.arg_n, self.arg_domains)
 
         self.n = len(self.network.agents)
-        self.m = len(self.network.edges)
+        self.m = int(self.network.edges.sum())
 
         self.brm = self.network.extended_bearing_rigidity_matrix()
 
-        self.nr_max_edges = self.n * (self.n - 1)
+        self.nr_max_edges = self.n**2
         self.step_counter = 0
         self.max_steps = self.arg_max_steps
 
@@ -351,17 +390,20 @@ if __name__ == "__main__":
     #############################################
     # ACTION_TYPE = "AllEdges"
     # ACTION_TYPE = "AddRemoveEdgeMultiDiscrete"
-    # ACTION_TYPE = "AddRemoveEdgeDiscrete"
-    ACTION_TYPE = "AddEdgeDiscrete"
+    ACTION_TYPE = "AddRemoveEdgeDiscrete"
+    # ACTION_TYPE = "AddEdgeDiscrete"
 
     # OBS_TYPE = "Complete"
     OBS_TYPE = "AdjFlatAndEigenvalues"
 
-    REWARD_TYPE = "Rigid"
-    # REWARD_TYPE = "RigidAndMinSingularValue"
+    # REWARD_TYPE = "Rigid"
+    # REWARD_TYPE = "RigidAndMinEigenvalue"
+    REWARD_TYPE = "RigidAndMinRigid"
+    # REWARD_TYPE = "MinEigenvalue"
 
     # TERMINATION_CONDITION_TYPE = "MaxSteps"
-    TERMINATION_CONDITION_TYPE = "Rigid"
+    # TERMINATION_CONDITION_TYPE = "Rigid"
+    TERMINATION_CONDITION_TYPE = "MinimallyRigid"
 
     MAX_STEPS = 1e4
     #############################################
@@ -400,7 +442,7 @@ if __name__ == "__main__":
     now_str = now.strftime("%Y_%m_%d_%H_%M_%S")
 
     n_domains = f"n{n}_{domains_str}"
-    model_name = f"{now_str}_{ACTION_TYPE}_{OBS_TYPE}_{REWARD_TYPE}_{scenario_name if scenario_name is not None else n_domains}"
+    model_name = f"{now_str}_action{ACTION_TYPE}_obs{OBS_TYPE}_reward{REWARD_TYPE}_term{TERMINATION_CONDITION_TYPE}_{scenario_name if scenario_name is not None else n_domains}"
     print(f"MODEL NAME: {model_name}")
 
     log_dir = "./tboard_logs/"
@@ -414,7 +456,8 @@ if __name__ == "__main__":
     else:
         print(f"creating environment with n={n}, domains={domains}")
 
-    env = Environment(
+    # just to make sure everything works as intended
+    _ = Environment(
         n,
         domains,
         action_space_type=ACTION_TYPE,
@@ -441,3 +484,4 @@ if __name__ == "__main__":
         os.makedirs("./environments/", exist_ok=True)
         json.dump(env_config, f, indent=2)
         print(f"SAVED: {env_path}")
+        print(f"env: env_{model_name}")
