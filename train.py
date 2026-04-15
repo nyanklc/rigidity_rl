@@ -10,7 +10,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 import json
 
 ######################################
-TOTAL_TIMESTEPS = 1e5/2
+TOTAL_TIMESTEPS = 4e5
 NR_ENVS = 1
 USE_CHECKPOINTS = False
 ######################################
@@ -27,8 +27,13 @@ class InfoLoggingCallback(BaseCallback):
             info = infos[i]
             self.logger.record(f"env{i}/nr_edges", info.get("nr edges", 0))
             self.logger.record(f"env{i}/is_rigid", int(info.get("is rigid", False)))
-            self.logger.record(f"env{i}/reward_step", info.get("reward (step)", 0))
+            self.logger.record(f"env{i}/is_min_rigid", int(info.get("is min rigid", False)))
             self.logger.record(f"env{i}/reward_raw", info.get("reward (raw)", 0))
+            self.logger.record(f"env{i}/reward_step", info.get("reward (step)", 0))
+            self.logger.record(f"env{i}/reward_action", info.get("reward (action)", 0))
+            self.logger.record(f"env{i}/reward_state", info.get("reward (state)", 0))
+            self.logger.record(f"env{i}/reward_termination", info.get("reward (termination)", 0))
+            self.logger.record(f"env{i}/min_eig", info.get("min eigenvalue", 0.0))
 
         return True
 
@@ -52,6 +57,7 @@ ACTION_TYPE = config["action_type"]
 OBS_TYPE = config["obs_type"]
 REWARD_TYPE = config["reward_type"]
 TERMINATION_CONDITION_TYPE = config["termination_condition_type"]
+ACTION_REWARDS_ENABLE = config["action_rewards_enable"]
 MAX_STEPS = config["max_steps"]
 scenario_name = config["scenario"]
 scenario_path = "scenarios/" + scenario_name + ".json" if scenario_name is not None else None
@@ -62,7 +68,7 @@ domains_str = domains
 domains_str = domains_str.replace("^", "").replace("(", "").replace(")", "")
 n_domains = f"n{n}_{domains_str}"
 
-model_name = f"{now_str}_action{ACTION_TYPE}_obs{OBS_TYPE}_reward{REWARD_TYPE}_term{TERMINATION_CONDITION_TYPE}_{scenario_name if scenario_name is not None else n_domains}"
+model_name = f"action{ACTION_TYPE}_obs{OBS_TYPE}_reward{REWARD_TYPE}_term{TERMINATION_CONDITION_TYPE}_{scenario_name if scenario_name is not None else n_domains}"
 log_dir = "./tboard_logs/"
 os.makedirs(log_dir, exist_ok=True)
 os.makedirs("./models/", exist_ok=True)
@@ -75,6 +81,7 @@ env = make_vec_env(
         obs_space_type=OBS_TYPE,
         reward_type=REWARD_TYPE,
         termination_condition_type=TERMINATION_CONDITION_TYPE,
+        action_rewards_enable=ACTION_REWARDS_ENABLE,
         max_steps=MAX_STEPS,
         filepath=scenario_path,
     ),

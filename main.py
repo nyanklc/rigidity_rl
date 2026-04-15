@@ -48,7 +48,8 @@ def step(network: Network, controller: Controller, tolerance, converged, sim_ste
 
 
 if len(sys.argv) < 2:
-    print(f"input scenario filename as argument")
+    print(f"usage: python3 main.py [scenario_name]")
+    quit()
 filename = sys.argv[1]
 filedir = "./scenarios/" + filename + ".json"
 if not os.path.exists(filedir):

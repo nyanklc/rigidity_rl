@@ -77,17 +77,20 @@ class Agent:
 
 class Network:
     def __init__(self, positions, orientations_euler, edges):
-        n = len(positions)
-        self.edges = np.zeros((n, n), dtype=bool)
-        if edges.shape[1] == n: # adj matrix provided
-            self.edges = edges
-        else: # edge list provided
-            for k, (i, j) in enumerate(edges):
-                self.edges[i, j] = True
+        self.n = len(positions)
+        self.edges = np.zeros((self.n, self.n), dtype=bool)
+        if edges is not None:
+            if edges.shape[1] == self.n: # adj matrix provided
+                self.edges = edges
+                np.fill_diagonal(self.edges, False) # ignore self-loops
+            else: # edge list provided
+                for k, (i, j) in enumerate(edges):
+                    if i != j:
+                        self.edges[i, j] = True
         self.agents: list[Agent] = []
         for i in range(len(positions)):
             self.agents.append(Agent(Pose(positions[i], orientations_euler[i])))
-        self.nr_max_edges = n**2
+        self.nr_max_edges = self.n**2
 
     def step(self, dt):
         for agent in self.agents:
@@ -142,7 +145,11 @@ class Network:
         for agent in self.agents:
             agent.randomize_orientation()
 
-    def set_edges(self, i_indices, j_indices):
+    def set_edges(self, edges):
+        if edges is not None:
+            self.edges = edges
+
+    def set_edges_indices(self, i_indices, j_indices):
         n = len(self.agents)
         self.edges = np.zeros((n, n), dtype=bool)
         m = len(i_indices)
@@ -150,8 +157,19 @@ class Network:
             return
         self.edges[i_indices, j_indices] = True
 
+    def set_edges_list(self, lst):
+        n = len(self.agents)
+        self.edges = np.zeros((n, n), dtype=bool)
+        m = len(lst)
+        if m == 0:
+            return
+
+        for i, j in lst:
+            self.edges[i, j] = True
+
     def add_edge(self, i_idx, j_idx):
-        self.edges[i_idx, j_idx] = True
+        if i_idx != j_idx:
+            self.edges[i_idx, j_idx] = True
 
     def remove_edge(self, i_idx, j_idx):
         self.edges[i_idx, j_idx] = False
@@ -192,6 +210,14 @@ class Network:
         #         raise Exception("Minimally Bearing Rigidity is not defined for domains other than R^d.")
 
         return rigidity.is_MBR(self)
+
+    def eigenvalues(self):
+        brm = self.extended_bearing_rigidity_matrix()
+        information_mat = brm.T @ brm
+        # symmetric
+        eigenvalues = np.linalg.eigvalsh(information_mat)
+        eigenvalues.sort()
+        return eigenvalues
 
     def get_bearings(self):
         i_indices, j_indices = np.nonzero(self.edges)
