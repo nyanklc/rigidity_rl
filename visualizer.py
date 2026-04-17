@@ -36,6 +36,8 @@ class Visualizer:
         node_size=1,
         label_prefix="",
     ):
+        self.server.scene.reset()
+
         positions = np.array([agent.pose.position for agent in network.agents])
 
         # nodes

@@ -55,6 +55,7 @@ OBS_TYPE = config["obs_type"]
 REWARD_TYPE = config["reward_type"]
 TERMINATION_CONDITION_TYPE = config["termination_condition_type"]
 ACTION_REWARDS_ENABLE = config["action_rewards_enable"]
+INCREMENTAL_REWARDS_ENABLE = config["incremental_rewards_enable"],
 MAX_STEPS = config["max_steps"]
 scenario_name = config["scenario"]
 scenario_path = "scenarios/" + scenario_name + ".json" if scenario_name is not None else None
@@ -67,6 +68,7 @@ env = Environment(
     reward_type=REWARD_TYPE,
     termination_condition_type=TERMINATION_CONDITION_TYPE,
     action_rewards_enable=ACTION_REWARDS_ENABLE,
+    incremental_rewards_enable=INCREMENTAL_REWARDS_ENABLE,
     max_steps=MAX_STEPS,
     filepath=scenario_path
 )

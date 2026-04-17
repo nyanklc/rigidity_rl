@@ -158,6 +158,9 @@ def is_MBR(network):
     if len(network.agents) == 0:
         return False
 
+    if not is_IBR(network):
+        return False
+
     n = len(network.agents)
     d = 2 if network.agents[0].domain in ["R^2", "R^2xS^1"] else 3
     m = int(network.edges.sum())

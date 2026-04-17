@@ -201,8 +201,6 @@ def obs(type: str, env: "Environment", define_type=False):
 
 
 class Environment(gym.Env):
-    metadata = {"render_modes": ["human"], "render_fps": 10}
-
     def __init__(
         self,
         n,
@@ -212,6 +210,7 @@ class Environment(gym.Env):
         reward_type="Rigid",
         termination_condition_type="MaxSteps",
         action_rewards_enable=False,
+        incremental_rewards_enable=False,
         max_steps=1e4,
         filepath=None
     ):
@@ -225,6 +224,7 @@ class Environment(gym.Env):
         self.arg_reward_type = reward_type
         self.arg_termination_condition_type = termination_condition_type
         self.arg_action_rewards_enable = action_rewards_enable
+        self.arg_incremental_rewards_enable = incremental_rewards_enable
         self.arg_max_steps = max_steps
         self.arg_filepath = filepath
         ###############################
@@ -257,6 +257,7 @@ class Environment(gym.Env):
         self.last_reward = 0
 
         self.action_rewards_enable = action_rewards_enable
+        self.incremental_rewards_enable = incremental_rewards_enable
 
         self.was_IBR = None
         self.was_MBR = None
@@ -298,30 +299,32 @@ class Environment(gym.Env):
             else:
                 reward -= 10
         elif self.reward_type == "RigidAndMinEigenvalue":
-            min_eig = min(self.network.eigenvalues())
-            reward += min_eig
-            punish = 100
+            punish = 10
             if not is_IBR:
                 reward -= punish
-        elif self.reward_type == "RigidAndMinRigid":
-            if is_IBR:
+            else:
+                eigs = self.network.eigenvalues()
+                nonzero = eigs[eigs > 0.0]
+                min_eig = nonzero[0] if len(nonzero) else 0
+                reward += min_eig
+        elif self.reward_type == "MinRigid":
+            if is_MBR:
                 reward += 10
-                if is_MBR:
-                    reward += 10
-                else:
-                    reward -= 10
             else:
                 reward -= 10
-        elif self.reward_type == "RigidAndMinRigidAndMinEigenvalue":
-            min_eig = min(self.network.eigenvalues())
-            reward += min_eig
-            punish = 100
+        elif self.reward_type == "MinRigidAndMinEigenvalue":
+            punish = 10
             if not is_IBR:
                 reward -= punish
-            if not is_MBR:
-                reward -= punish
+            else:
+                eigs = self.network.eigenvalues()
+                nonzero = eigs[eigs > 0.0]
+                min_eig = nonzero[0] if len(nonzero) else 0
+                reward += min_eig
         elif self.reward_type == "MinEigenvalue":
-            min_eig = min(self.network.eigenvalues())
+            eigs = self.network.eigenvalues()
+            nonzero = eigs[eigs > 0.0]
+            min_eig = nonzero[0] if len(nonzero) else 0
             reward += min_eig
 
         state_reward = reward - action_reward
@@ -336,13 +339,13 @@ class Environment(gym.Env):
                 terminated = True
         elif self.termination_condition_type == "Rigid":
             if is_IBR:
-                reward += self.network.nr_max_edges * 10
-                # reward += 100
+                # reward += self.network.nr_max_edges * 10
+                reward += 10
                 terminated = True
         elif self.termination_condition_type == "MinimallyRigid":
             if is_MBR:
-                reward += self.network.nr_max_edges * 10
-                # reward += 100
+                # reward += self.network.nr_max_edges * 10
+                reward += 10
                 terminated = True
         elif self.termination_condition_type == "Bandit":
             if self.step_counter >= 1:
@@ -353,11 +356,13 @@ class Environment(gym.Env):
         # (incremental) reward
         last_reward_copy = self.last_reward
         self.last_reward = reward
-        # TODO: do we want this? or perhaps add a flag
-        # reward = reward - last_reward_copy
+        if self.incremental_rewards_enable:
+            reward = reward - last_reward_copy
 
         # debug
         eigs = self.network.eigenvalues()
+        nonzero = eigs[eigs != 0.0]
+        min_eig = nonzero[0] if len(nonzero) else 0
         info = {
             "step": f"{self.step_counter}",
             "action": action_info,
@@ -375,7 +380,9 @@ class Environment(gym.Env):
             "terminated": terminated,
             "truncated": truncated,
             "eigenvalues": eigs,
-            "min eigenvalue": eigs[0],
+            "nonzero_eigenvalues": nonzero,
+            "min eigenvalue": min_eig,
+            "second min eigenvalue": nonzero[1] if len(nonzero) >= 2 else 0.0,
         }
         # print(info)
 
@@ -395,15 +402,15 @@ class Environment(gym.Env):
         if self.filepath:
             self.network, self.goal_network = load_scenario(self.filepath)
         else:
-            # self.network, self.goal_network = random_scenario(self.arg_n, self.arg_domains)
+            self.network, self.goal_network = random_scenario(self.arg_n, self.arg_domains)
 
             # TODO: with "Complete" observations, this doesn't make sense since the pos/orient stay the same
             # just randomize the edges
             # TODO: create flags to handle the network reset.
             # depending on how we want to train, we may want to randomize only the
+
             # poses and remove all edges for instance (e.g. empty scenario with AllEdges actions).
-            redgs = np.random.choice(a=[False, True], size=(self.network.n, self.network.n), p=[0.5, 0.5])
-            self.network.set_edges(redgs)
+            # redgs = np.random.choice(a=[False, True], size=(self.network.n, self.network.n), p=[0.5, 0.5]) self.network.set_edges(redgs)
 
         self.n = len(self.network.agents)
         self.m = int(self.network.edges.sum())
@@ -432,19 +439,22 @@ if __name__ == "__main__":
     ACTION_REWARDS_ENABLE = True
     # ACTION_REWARDS_ENABLE = False
 
+    INCREMENTAL_REWARDS_ENABLE = False
+    # INCREMENTAL_REWARDS_ENABLE = False
+
     OBS_TYPE = "Complete"
     # OBS_TYPE = "AdjFlatAndEigenvalues"
 
     # REWARD_TYPE = "Rigid"
-    # REWARD_TYPE = "RigidAndMinEigenvalue"
-    REWARD_TYPE = "RigidAndMinRigid"
-    # REWARD_TYPE = "RigidAndMinRigidAndMinEigenvalue"
+    REWARD_TYPE = "RigidAndMinEigenvalue"
+    # REWARD_TYPE = "MinRigid"
+    # REWARD_TYPE = "MinRigidAndMinEigenvalue"
     # REWARD_TYPE = "MinEigenvalue"
 
-    TERMINATION_CONDITION_TYPE = "MaxSteps"
+    # TERMINATION_CONDITION_TYPE = "MaxSteps"
     # TERMINATION_CONDITION_TYPE = "Rigid"
     # TERMINATION_CONDITION_TYPE = "MinimallyRigid"
-    # TERMINATION_CONDITION_TYPE = "Bandit"
+    TERMINATION_CONDITION_TYPE = "Bandit"
 
     MAX_STEPS = 10
     #############################################
@@ -506,6 +516,7 @@ if __name__ == "__main__":
         reward_type=REWARD_TYPE,
         termination_condition_type=TERMINATION_CONDITION_TYPE,
         action_rewards_enable=ACTION_REWARDS_ENABLE,
+        incremental_rewards_enable=INCREMENTAL_REWARDS_ENABLE,
         max_steps=MAX_STEPS,
         filepath=filepath,
     )
@@ -518,6 +529,7 @@ if __name__ == "__main__":
         "n": n,
         "domains": domains,
         "action_rewards_enable": ACTION_REWARDS_ENABLE,
+        "incremental_rewards_enable": INCREMENTAL_REWARDS_ENABLE,
         "max_steps": MAX_STEPS,
         "scenario": scenario_name,
     }

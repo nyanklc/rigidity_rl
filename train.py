@@ -34,15 +34,21 @@ class InfoLoggingCallback(BaseCallback):
             self.logger.record(f"env{i}/reward_state", info.get("reward (state)", 0))
             self.logger.record(f"env{i}/reward_termination", info.get("reward (termination)", 0))
             self.logger.record(f"env{i}/min_eig", info.get("min eigenvalue", 0.0))
+            self.logger.record(f"env{i}/second_min_eig", info.get("second min eigenvalue", 0.0))
+            # eigs = info.get("nonzero_eigenvalues", [])
+            # for j, eig in enumerate(eigs):
+            #     self.logger.record(f"env{i}/nonzero_eigs/eig_{j}", eig)
 
         return True
 
 
-if len(sys.argv) < 2:
-    print(f"usage: python3 train.py [environment_name]")
+if len(sys.argv) < 3:
+    print(f"usage: python3 train.py [model_name] [environment_name]")
     quit()
 
-filename = sys.argv[1]
+model_name_prefix = sys.argv[1]
+
+filename = sys.argv[2]
 filepath = "./environments/" + filename + ".json"
 if not os.path.exists(filepath):
     print(f"file environments/{filename}.json does not exist")
@@ -58,6 +64,7 @@ OBS_TYPE = config["obs_type"]
 REWARD_TYPE = config["reward_type"]
 TERMINATION_CONDITION_TYPE = config["termination_condition_type"]
 ACTION_REWARDS_ENABLE = config["action_rewards_enable"]
+INCREMENTAL_REWARDS_ENABLE = config["incremental_rewards_enable"]
 MAX_STEPS = config["max_steps"]
 scenario_name = config["scenario"]
 scenario_path = "scenarios/" + scenario_name + ".json" if scenario_name is not None else None
@@ -68,7 +75,7 @@ domains_str = domains
 domains_str = domains_str.replace("^", "").replace("(", "").replace(")", "")
 n_domains = f"n{n}_{domains_str}"
 
-model_name = f"action{ACTION_TYPE}_obs{OBS_TYPE}_reward{REWARD_TYPE}_term{TERMINATION_CONDITION_TYPE}_{scenario_name if scenario_name is not None else n_domains}"
+model_name = model_name_prefix + f"_action{ACTION_TYPE}_obs{OBS_TYPE}_reward{REWARD_TYPE}_term{TERMINATION_CONDITION_TYPE}_{scenario_name if scenario_name is not None else n_domains}"
 log_dir = "./tboard_logs/"
 os.makedirs(log_dir, exist_ok=True)
 os.makedirs("./models/", exist_ok=True)
@@ -82,6 +89,7 @@ env = make_vec_env(
         reward_type=REWARD_TYPE,
         termination_condition_type=TERMINATION_CONDITION_TYPE,
         action_rewards_enable=ACTION_REWARDS_ENABLE,
+        incremental_rewards_enable=INCREMENTAL_REWARDS_ENABLE,
         max_steps=MAX_STEPS,
         filepath=scenario_path,
     ),
