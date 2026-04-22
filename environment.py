@@ -44,6 +44,11 @@ def define_action_space(type: str, env: "Environment"):
         ec = n**2
         # [0, ec-1]: add
         action_space = spaces.Discrete(ec)
+    elif type == "AddEdgeDiscreteNoSkipNoSelfLoops":
+        # edge enumeration
+        ec = n**2
+        # [0, ec-1]: add
+        action_space = spaces.Discrete(ec - n)
 
     return action_space
 
@@ -199,6 +204,33 @@ def action_AddEdgeDiscreteNoSkip(action, env: "Environment", reward, action_info
 
     return reward, action_info
 
+
+def action_AddEdgeDiscreteNoSkipNoSelfLoops(
+    action, env: "Environment", reward, action_info
+):
+    n = len(env.network.agents)
+
+    i_idx = action // (n - 1)
+    j_idx = action % (n - 1)
+    if j_idx >= i_idx:
+        j_idx += 1
+
+    action_info += f"add {i_idx}-{j_idx}"
+    if i_idx == j_idx:
+        action_info += " (self loop)"
+
+    if env.network.edge_exists(i_idx, j_idx):
+        # reward -= 20 # unnecessary action
+        action_info += " (existed)"
+
+    env.network.add_edge(i_idx, j_idx)
+    reward -= 1  # measurement effort
+
+    reward -= 0.5  # time taken
+
+    return reward, action_info
+
+
 def obs(type: str, env: "Environment", define_type=False):
     obs_space = None
 
@@ -257,7 +289,11 @@ def obs(type: str, env: "Environment", define_type=False):
 
 
 class Environment(gym.Env):
-    def __init__(
+    def __init__(self):
+        super().__init__()
+        print("environment constructed (not initialized)")
+
+    def initialize(
         self,
         n,
         domains,
@@ -271,10 +307,9 @@ class Environment(gym.Env):
         max_steps=1e4,
         only_randomize_edges=False,
         filepath=None,
-
-        experiment_name="experiment", # hack to log custom values to tensorboard
     ):
-        super().__init__()
+        print("initializing environment")
+
         ###############################
         # to use in reset because i'm lazy
         self.arg_n = n
@@ -290,7 +325,6 @@ class Environment(gym.Env):
         self.arg_only_randomize_edges = only_randomize_edges
         self.arg_filepath = filepath
         ###############################
-
 
         self.action_space_type = action_space_type
         self.obs_space_type = obs_space_type
@@ -320,15 +354,53 @@ class Environment(gym.Env):
 
         self.last_reward = 0
 
-        self.writer = SummaryWriter(log_dir=os.path.join("runs", experiment_name))
-        self.writer_counter = 0 # don't reset this
-
         self.action_rewards_enable = action_rewards_enable
         self.incremental_rewards_enable = incremental_rewards_enable
         self.track_data_enable = track_data_enable
 
         self.was_IBR = None
         self.was_MBR = None
+
+    def set_writer(self, experiment_name):
+        self.writer = SummaryWriter(log_dir=os.path.join("runs", experiment_name))
+        self.writer_counter = 0 # don't reset this
+
+    def load(self, filepath):
+        with open(filepath, "r") as f:
+            config = json.load(f)
+
+        n = config["n"]
+        domains = config["domains"]
+        ACTION_TYPE = config["action_type"]
+        OBS_TYPE = config["obs_type"]
+        REWARD_TYPE = config["reward_type"]
+        TERMINATION_CONDITION_TYPE = config["termination_condition_type"]
+        ACTION_REWARDS_ENABLE = config["action_rewards_enable"]
+        INCREMENTAL_REWARDS_ENABLE = (config["incremental_rewards_enable"],)
+        TRACK_DATA_ENABLE = config["track_data_enable"]
+        MAX_STEPS = config["max_steps"]
+        ONLY_RANDOMIZE_EDGES = config["only_randomize_edges"]
+        scenario_name = config["scenario"]
+        scenario_path = (
+            "scenarios/" + scenario_name + ".json"
+            if scenario_name is not None
+            else None
+        )
+
+        self.initialize(
+            n,
+            domains,
+            action_space_type=ACTION_TYPE,
+            obs_space_type=OBS_TYPE,
+            reward_type=REWARD_TYPE,
+            termination_condition_type=TERMINATION_CONDITION_TYPE,
+            action_rewards_enable=ACTION_REWARDS_ENABLE,
+            incremental_rewards_enable=INCREMENTAL_REWARDS_ENABLE,
+            track_data_enable=TRACK_DATA_ENABLE,
+            max_steps=MAX_STEPS,
+            only_randomize_edges=ONLY_RANDOMIZE_EDGES,
+            filepath=scenario_path,
+        )
 
     # -----------------------------------
     def step(self, action):
@@ -349,6 +421,13 @@ class Environment(gym.Env):
             action_return = action_AddEdgeDiscrete(action, self, reward, action_info)
         elif self.action_space_type == "AddEdgeDiscreteNoSkip":
             action_return = action_AddEdgeDiscreteNoSkip(action, self, reward, action_info)
+        elif self.action_space_type == "AddEdgeDiscreteNoSkipNoSelfLoops":
+            action_return = action_AddEdgeDiscreteNoSkipNoSelfLoops(
+                action, self, reward, action_info
+            )
+        else:
+            print(f"faulty action space definition?")
+            quit()
 
         if self.action_rewards_enable:
             reward, action_info = action_return
@@ -537,7 +616,8 @@ if __name__ == "__main__":
     # ACTION_TYPE = "AddRemoveEdgeMultiDiscrete"
     # ACTION_TYPE = "AddRemoveEdgeDiscrete"
     # ACTION_TYPE = "AddEdgeDiscrete"
-    ACTION_TYPE = "AddEdgeDiscreteNoSkip"
+    # ACTION_TYPE = "AddEdgeDiscreteNoSkip"
+    ACTION_TYPE = "AddEdgeDiscreteNoSkipNoSelfLoops"
 
     ACTION_REWARDS_ENABLE = True
     # ACTION_REWARDS_ENABLE = False
@@ -623,22 +703,6 @@ if __name__ == "__main__":
         print(f"loading environment from scenario {filepath}")
     else:
         print(f"creating environment with n={n}, domains={domains}")
-
-    # just to make sure everything works as intended
-    _ = Environment(
-        n,
-        domains,
-        action_space_type=ACTION_TYPE,
-        obs_space_type=OBS_TYPE,
-        reward_type=REWARD_TYPE,
-        termination_condition_type=TERMINATION_CONDITION_TYPE,
-        action_rewards_enable=ACTION_REWARDS_ENABLE,
-        incremental_rewards_enable=INCREMENTAL_REWARDS_ENABLE,
-        track_data_enable=TRACK_DATA_ENABLE,
-        max_steps=MAX_STEPS,
-        only_randomize_edges=ONLY_RANDOMIZE_EDGES,
-        filepath=filepath,
-    )
 
     env_config = {
         "action_type": ACTION_TYPE,

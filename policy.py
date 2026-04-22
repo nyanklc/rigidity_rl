@@ -87,6 +87,11 @@ class ActorModel(CategoricalMixin, Model):
 
         logits = self.head(edge_embeddings).squeeze(-1).reshape(batch_size, -1)
 
+        # exclude self loops
+        logits = logits.view(batch_size, self.n, self.n)
+        mask = ~torch.eye(self.n, dtype=torch.bool, device=logits.device)  # (n, n)
+        logits = logits[:, mask]  # (B, n*n - n)
+
         return logits, {}
 
 

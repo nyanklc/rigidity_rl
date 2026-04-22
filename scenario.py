@@ -139,12 +139,12 @@ if __name__ == "__main__":
             ],
             dtype=float,
         )
-        * 0.1
+        * 50
     )
     n = len(positions)
     orientations_euler = np.zeros((n, 3))
-    edges = None
-    # edges = np.asarray([(i, j) for i in range(n) for j in range(n) if i != j])
+    # edges = None
+    edges = np.asarray([(i, j) for i in range(n) for j in range(n) if i != j])
     # edges = np.asarray(
     #     [
     #         (0, 1),

@@ -37,32 +37,22 @@ if not os.path.exists(filepath):
     print(f"file environments/{filename}.json does not exist")
     quit()
 
-with open(filepath, "r") as f:
-    config = json.load(f)
+raw_env = Environment()
+raw_env.load(filepath)
 
-n = config["n"]
-domains = config["domains"]
-ACTION_TYPE = config["action_type"]
-OBS_TYPE = config["obs_type"]
-REWARD_TYPE = config["reward_type"]
-TERMINATION_CONDITION_TYPE = config["termination_condition_type"]
-ACTION_REWARDS_ENABLE = config["action_rewards_enable"]
-INCREMENTAL_REWARDS_ENABLE = config["incremental_rewards_enable"]
-TRACK_DATA_ENABLE = config["track_data_enable"]
-MAX_STEPS = config["max_steps"]
-ONLY_RANDOMIZE_EDGES = config["only_randomize_edges"]
-scenario_name = config["scenario"]
-scenario_path = (
-    "scenarios/" + scenario_name + ".json" if scenario_name is not None else None
-)
-
-domains_str = domains
+n = len(raw_env.network.agents)
+domains_str = raw_env.network.agents[0].domain if n > 0 else "domain"
 domains_str = domains_str.replace("^", "").replace("(", "").replace(")", "")
 n_domains = f"n{n}_{domains_str}"
 
+# yeah i can't be bothered
+with open(filepath, "r") as f:
+    config = json.load(f)
+    scenario_name = config["scenario"]
+
 model_name = (
     model_name_prefix
-    + f"_action{ACTION_TYPE}_obs{OBS_TYPE}_reward{REWARD_TYPE}_term{TERMINATION_CONDITION_TYPE}_{scenario_name if scenario_name is not None else n_domains}"
+    + f"_action{raw_env.action_space_type}_obs{raw_env.obs_space_type}_reward{raw_env.reward_type}_term{raw_env.termination_condition_type}_{scenario_name if scenario_name is not None else n_domains}"
 )
 log_dir = "./tboard_logs/"
 os.makedirs(log_dir, exist_ok=True)
@@ -71,24 +61,8 @@ os.makedirs("./models/", exist_ok=True)
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 device = "cpu"
 
-raw_env = Environment(
-    n,
-    domains,
-    action_space_type=ACTION_TYPE,
-    obs_space_type=OBS_TYPE,
-    reward_type=REWARD_TYPE,
-    termination_condition_type=TERMINATION_CONDITION_TYPE,
-    action_rewards_enable=ACTION_REWARDS_ENABLE,
-    incremental_rewards_enable=INCREMENTAL_REWARDS_ENABLE,
-    track_data_enable=TRACK_DATA_ENABLE,
-    max_steps=MAX_STEPS,
-    only_randomize_edges=ONLY_RANDOMIZE_EDGES,
-    filepath=scenario_path,
-
-    experiment_name=model_name, # hack to log values
-)
-
 raw_env.device = device
+raw_env.set_writer(model_name) # initializes summary writer for env
 env = wrap_env(raw_env)
 
 node_features_dim = raw_env.observation_space["node_features"].shape[1]

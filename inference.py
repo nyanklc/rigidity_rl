@@ -45,37 +45,8 @@ if not os.path.exists(filepath):
     print(f"file environments/{filename}.json does not exist")
     quit()
 
-with open(filepath, "r") as f:
-    config = json.load(f)
-
-n = config["n"]
-domains = config["domains"]
-ACTION_TYPE = config["action_type"]
-OBS_TYPE = config["obs_type"]
-REWARD_TYPE = config["reward_type"]
-TERMINATION_CONDITION_TYPE = config["termination_condition_type"]
-ACTION_REWARDS_ENABLE = config["action_rewards_enable"]
-INCREMENTAL_REWARDS_ENABLE = config["incremental_rewards_enable"],
-TRACK_DATA_ENABLE = config["track_data_enable"]
-MAX_STEPS = config["max_steps"]
-ONLY_RANDOMIZE_EDGES = config["only_randomize_edges"]
-scenario_name = config["scenario"]
-scenario_path = "scenarios/" + scenario_name + ".json" if scenario_name is not None else None
-
-env = Environment(
-    n,
-    domains,
-    action_space_type=ACTION_TYPE,
-    obs_space_type=OBS_TYPE,
-    reward_type=REWARD_TYPE,
-    termination_condition_type=TERMINATION_CONDITION_TYPE,
-    action_rewards_enable=ACTION_REWARDS_ENABLE,
-    incremental_rewards_enable=INCREMENTAL_REWARDS_ENABLE,
-    track_data_enable=TRACK_DATA_ENABLE,
-    max_steps=MAX_STEPS,
-    only_randomize_edges=ONLY_RANDOMIZE_EDGES,
-    filepath=scenario_path
-)
+env = Environment()
+env.load(filepath)
 obs, _ = env.reset()
 
 if env.network.agents[0].domain not in ["R^2", "R^3"]:
