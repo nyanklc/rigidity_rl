@@ -38,6 +38,10 @@ class Agent:
     def set_angular_velocity(self, ang_vel):
         self.angular_velocity = ang_vel
 
+    def get_node_features(self):
+        # TODO: add the domain?
+        return np.hstack([self.pose.position, self.pose.euler_angles()])
+
     def get_footprint(self):
         x, y = self.pose.position[:2]
         yaw = quaternion.as_euler_angles(self.pose.orientation)[2]

@@ -131,20 +131,20 @@ if __name__ == "__main__":
                 [1, 0, 0],
                 [1, 1, 0],
                 [0, 1, 0],
-                [0, 0, 1],
-                [1, 0, 1],
-                [1, 1, 1],
-                [0, 1, 1],
+                # [0, 0, 1],
+                # [1, 0, 1],
+                # [1, 1, 1],
+                # [0, 1, 1],
                 # [0.5, 0.5, 1],
             ],
             dtype=float,
         )
-        * 50
+        * 0.1
     )
     n = len(positions)
     orientations_euler = np.zeros((n, 3))
-    # edges = None
-    edges = np.asarray([(i, j) for i in range(n) for j in range(n) if i != j])
+    edges = None
+    # edges = np.asarray([(i, j) for i in range(n) for j in range(n) if i != j])
     # edges = np.asarray(
     #     [
     #         (0, 1),
@@ -164,7 +164,7 @@ if __name__ == "__main__":
     #     ]
     # )
     network = Network(positions, orientations_euler, edges)
-    network.set_agents_domain_homogeneous("R^3")
+    network.set_agents_domain_homogeneous("R^2")
     # network.agents[4].set_domain("SE(3)")
     bearings = network.get_bearings()
 

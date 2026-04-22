@@ -12,6 +12,7 @@ from rigidity import is_IBR
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.vec_env import VecNormalize
+from skrl.utils.tensorboard import SummaryWriter
 
 from visualizer import Visualizer
 from scenario import load_scenario, random_scenario
@@ -38,6 +39,11 @@ def define_action_space(type: str, env: "Environment"):
         ec = n**2
         # [0, ec-1]: add, last: skip
         action_space = spaces.Discrete(ec + 1)
+    elif type == "AddEdgeDiscreteNoSkip":
+        # edge enumeration
+        ec = n**2
+        # [0, ec-1]: add
+        action_space = spaces.Discrete(ec)
 
     return action_space
 
@@ -67,7 +73,7 @@ def action_AddRemoveEdgeMultiDiscrete(action, env: "Environment", reward, action
             action_info += " (self loop)"
 
         if env.network.edge_exists(i_idx, j_idx):
-            reward -= 20 # unnecessary action
+            # reward -= 20 # unnecessary action
             action_info += " (existed)"
 
         if i_idx != j_idx:
@@ -83,7 +89,7 @@ def action_AddRemoveEdgeMultiDiscrete(action, env: "Environment", reward, action
             action_info += " (self loop)"
 
         if not env.network.edge_exists(i_idx, j_idx):
-            reward -= 20 # unnecessary action
+            # reward -= 20 # unnecessary action
             action_info += " (didn't exist)"
 
         if i_idx != j_idx:
@@ -94,7 +100,7 @@ def action_AddRemoveEdgeMultiDiscrete(action, env: "Environment", reward, action
         action_info += "skip"
         pass
 
-    # reward -= 5 # time taken
+    # reward -= 0.5 # time taken
 
     return reward, action_info
 
@@ -115,7 +121,7 @@ def action_AddRemoveEdgeDiscrete(action, env: "Environment", reward, action_info
             action_info += " (self loop)"
 
         if env.network.edge_exists(i_idx, j_idx):
-            reward -= 20 # unnecessary action
+            # reward -= 20 # unnecessary action
             action_info += " (existed)"
 
         if i_idx != j_idx:
@@ -131,14 +137,14 @@ def action_AddRemoveEdgeDiscrete(action, env: "Environment", reward, action_info
             action_info += " (self loop)"
 
         if not env.network.edge_exists(i_idx, j_idx):
-            reward -= 20 # unnecessary action
+            # reward -= 20 # unnecessary action
             action_info += " (didn't exist)"
 
         if i_idx != j_idx:
             env.network.remove_edge(i_idx, j_idx)
             reward += 10 # measurement effort
 
-    # reward -= 5 # time taken
+    # reward -= 0.5 # time taken
 
     return reward, action_info
 
@@ -159,14 +165,37 @@ def action_AddEdgeDiscrete(action, env: "Environment", reward, action_info):
             action_info += " (self loop)"
 
         if env.network.edge_exists(i_idx, j_idx):
-            reward -= 20 # unnecessary action
+            # reward -= 20 # unnecessary action
             action_info += " (existed)"
 
         if i_idx != j_idx:
             env.network.add_edge(i_idx, j_idx)
             reward -= 1 # measurement effort
 
-    reward -= 5 # time taken
+    reward -= 0.5 # time taken
+
+    return reward, action_info
+
+def action_AddEdgeDiscreteNoSkip(action, env: "Environment", reward, action_info):
+    n = len(env.network.agents)
+
+    # add
+    i_idx = action // n
+    j_idx = action % n
+
+    action_info += f"add {i_idx}-{j_idx}"
+    if i_idx == j_idx:
+        action_info += " (self loop)"
+
+    if env.network.edge_exists(i_idx, j_idx):
+        # reward -= 20 # unnecessary action
+        action_info += " (existed)"
+
+    if i_idx != j_idx:
+        env.network.add_edge(i_idx, j_idx)
+        reward -= 1 # measurement effort
+
+    reward -= 0.5 # time taken
 
     return reward, action_info
 
@@ -174,10 +203,24 @@ def obs(type: str, env: "Environment", define_type=False):
     obs_space = None
 
     network = env.network
+    n = network.n
 
     obs = None
     if type == "Complete":
         A = env.network.edges.astype(np.float32)
+        positions = np.array(
+            [agent.pose.position for agent in network.agents]
+        ).flatten()
+        orientations_euler = np.array(
+            [agent.pose.euler_angles() for agent in network.agents]
+        ).flatten()
+        obs = np.hstack([positions, orientations_euler, A.flatten()])
+        if define_type:
+            obs_n = obs.shape[0]
+            obs_space = spaces.Box(-np.inf, np.inf, (obs_n,))
+    elif type == "CompleteAndEigenvalues":
+        A = env.network.edges.astype(np.float32)
+        # can't just take the nonzero ones since dimension might change
         eigenvalues = env.network.eigenvalues()
         positions = np.array(
             [agent.pose.position for agent in network.agents]
@@ -185,7 +228,7 @@ def obs(type: str, env: "Environment", define_type=False):
         orientations_euler = np.array(
             [agent.pose.euler_angles() for agent in network.agents]
         ).flatten()
-        obs = np.hstack([A.flatten(), eigenvalues, positions, orientations_euler])
+        obs = np.hstack([positions, orientations_euler, eigenvalues, A.flatten()])
         if define_type:
             obs_n = obs.shape[0]
             obs_space = spaces.Box(-np.inf, np.inf, (obs_n,))
@@ -196,6 +239,19 @@ def obs(type: str, env: "Environment", define_type=False):
         if define_type:
             obs_n = obs.shape[0]
             obs_space = spaces.Box(-np.inf, np.inf, (obs_n,))
+    elif type == "DictNodeFeaturesAndAdj":
+        node_features = np.asarray([agent.get_node_features() for agent in network.agents])
+        node_features = np.asarray([a.get_node_features() for a in network.agents])
+        adj = network.edges.astype(np.float32)
+        obs = {
+            "node_features": node_features,
+            "adj": adj
+        }
+        if define_type:
+            obs_space = spaces.Dict({
+                "node_features": spaces.Box(-np.inf, np.inf, (n, node_features.shape[1])), # N agents, 10 features
+                "adj": spaces.Box(0, 1, (n, n))
+            })
 
     return obs, obs_space
 
@@ -211,8 +267,12 @@ class Environment(gym.Env):
         termination_condition_type="MaxSteps",
         action_rewards_enable=False,
         incremental_rewards_enable=False,
+        track_data_enable=False,
         max_steps=1e4,
-        filepath=None
+        only_randomize_edges=False,
+        filepath=None,
+
+        experiment_name="experiment", # hack to log custom values to tensorboard
     ):
         super().__init__()
         ###############################
@@ -224,8 +284,10 @@ class Environment(gym.Env):
         self.arg_reward_type = reward_type
         self.arg_termination_condition_type = termination_condition_type
         self.arg_action_rewards_enable = action_rewards_enable
+        self.arg_track_data_enable = track_data_enable
         self.arg_incremental_rewards_enable = incremental_rewards_enable
         self.arg_max_steps = max_steps
+        self.arg_only_randomize_edges = only_randomize_edges
         self.arg_filepath = filepath
         ###############################
 
@@ -254,10 +316,16 @@ class Environment(gym.Env):
         self.step_counter = 0
         self.max_steps = max_steps
 
+        self.only_randomize_edges = only_randomize_edges
+
         self.last_reward = 0
+
+        self.writer = SummaryWriter(log_dir=os.path.join("runs", experiment_name))
+        self.writer_counter = 0 # don't reset this
 
         self.action_rewards_enable = action_rewards_enable
         self.incremental_rewards_enable = incremental_rewards_enable
+        self.track_data_enable = track_data_enable
 
         self.was_IBR = None
         self.was_MBR = None
@@ -279,6 +347,8 @@ class Environment(gym.Env):
             action_return = action_AddRemoveEdgeDiscrete(action, self, reward, action_info)
         elif self.action_space_type == "AddEdgeDiscrete":
             action_return = action_AddEdgeDiscrete(action, self, reward, action_info)
+        elif self.action_space_type == "AddEdgeDiscreteNoSkip":
+            action_return = action_AddEdgeDiscreteNoSkip(action, self, reward, action_info)
 
         if self.action_rewards_enable:
             reward, action_info = action_return
@@ -342,6 +412,12 @@ class Environment(gym.Env):
                 # reward += self.network.nr_max_edges * 10
                 reward += 10
                 terminated = True
+        elif self.termination_condition_type == "RigidMinEigBonus":
+            if is_IBR:
+                eigs = self.network.eigenvalues
+                nonzero_eigs = eigs[eigs != 0.0]
+                reward += min(nonzero_eigs) # TODO: the value of this is pretty small
+                terminated = True
         elif self.termination_condition_type == "MinimallyRigid":
             if is_MBR:
                 # reward += self.network.nr_max_edges * 10
@@ -385,11 +461,33 @@ class Environment(gym.Env):
             "second min eigenvalue": nonzero[1] if len(nonzero) >= 2 else 0.0,
         }
         # print(info)
+        self.info = info
+        if self.track_data_enable:
+            self.writer_counter += 1
+            self.track_data()
 
         self.was_IBR = is_IBR
         self.was_MBR = is_MBR
 
         return obs, reward, terminated, truncated, info
+
+    # TODO: this is expensive if logged every step, we should log mean values over episodes maybe or idk how to handle "is rigid"
+    def track_data(self, value=None, tag=None):
+        log_period = 1
+        if value is None:
+            if self.info is not None and (self.writer_counter % log_period == 0):
+                self.writer.add_scalar(tag="Environment/ Nr edges", value=self.info["nr edges"], timestep=self.writer_counter)
+                self.writer.add_scalar(tag="Environment/ Is rigid", value=self.info["is rigid"], timestep=self.writer_counter)
+                self.writer.add_scalar(tag="Environment/ Is min rigid", value=self.info["is min rigid"],timestep=self.writer_counter)
+                self.writer.add_scalar(tag="Environment/ Reward raw", value=self.info["reward (raw)"], timestep=self.writer_counter)
+                self.writer.add_scalar(tag="Environment/ Reward step", value=self.info["reward (step)"], timestep=self.writer_counter)
+                self.writer.add_scalar(tag="Environment/ Reward action", value=self.info["reward (action)"], timestep=self.writer_counter)
+                self.writer.add_scalar(tag="Environment/ Reward state", value=self.info["reward (state)"], timestep=self.writer_counter)
+                self.writer.add_scalar(tag="Environment/ Reward termination", value=self.info["reward (termination)"], timestep=self.writer_counter)
+                self.writer.add_scalar(tag="Environment/ Min eig", value=self.info["min eigenvalue"], timestep=self.writer_counter)
+                self.writer.add_scalar(tag="Environment/ Second min eig", value=self.info["second min eigenvalue"], timestep=self.writer_counter)
+        else:
+            self.writer.add_scalar(tag=tag, value=value, timestep=self.writer_counter)
 
     # -----------------------------------
     def reset(self, seed=None, options=None):
@@ -402,15 +500,17 @@ class Environment(gym.Env):
         if self.filepath:
             self.network, self.goal_network = load_scenario(self.filepath)
         else:
-            self.network, self.goal_network = random_scenario(self.arg_n, self.arg_domains)
-
             # TODO: with "Complete" observations, this doesn't make sense since the pos/orient stay the same
             # just randomize the edges
             # TODO: create flags to handle the network reset.
             # depending on how we want to train, we may want to randomize only the
-
             # poses and remove all edges for instance (e.g. empty scenario with AllEdges actions).
-            # redgs = np.random.choice(a=[False, True], size=(self.network.n, self.network.n), p=[0.5, 0.5]) self.network.set_edges(redgs)
+
+            if self.only_randomize_edges:
+                redgs = np.random.choice(a=[False, True], size=(self.network.n, self.network.n), p=[0.5, 0.5])
+                self.network.set_edges(redgs)
+            else:
+                self.network, self.goal_network = random_scenario(self.arg_n, self.arg_domains)
 
         self.n = len(self.network.agents)
         self.m = int(self.network.edges.sum())
@@ -423,6 +523,8 @@ class Environment(gym.Env):
 
         self.last_reward = 0
 
+        self.info = None
+
         self.was_IBR = None
         self.was_MBR = None
 
@@ -431,36 +533,45 @@ class Environment(gym.Env):
 
 if __name__ == "__main__":
     #############################################
-    ACTION_TYPE = "AllEdges"
+    # ACTION_TYPE = "AllEdges"
     # ACTION_TYPE = "AddRemoveEdgeMultiDiscrete"
     # ACTION_TYPE = "AddRemoveEdgeDiscrete"
     # ACTION_TYPE = "AddEdgeDiscrete"
+    ACTION_TYPE = "AddEdgeDiscreteNoSkip"
 
     ACTION_REWARDS_ENABLE = True
     # ACTION_REWARDS_ENABLE = False
 
     INCREMENTAL_REWARDS_ENABLE = False
-    # INCREMENTAL_REWARDS_ENABLE = False
+    # INCREMENTAL_REWARDS_ENABLE = True
 
-    OBS_TYPE = "Complete"
+    TRACK_DATA_ENABLE = True
+    # TRACK_DATA_ENABLE = False
+
+    # OBS_TYPE = "Complete"
+    # OBS_TYPE = "CompleteAndEigenvalues"
     # OBS_TYPE = "AdjFlatAndEigenvalues"
+    OBS_TYPE = "DictNodeFeaturesAndAdj"
 
-    # REWARD_TYPE = "Rigid"
-    REWARD_TYPE = "RigidAndMinEigenvalue"
+    REWARD_TYPE = "Rigid"
+    # REWARD_TYPE = "RigidAndMinEigenvalue"
     # REWARD_TYPE = "MinRigid"
     # REWARD_TYPE = "MinRigidAndMinEigenvalue"
     # REWARD_TYPE = "MinEigenvalue"
 
     # TERMINATION_CONDITION_TYPE = "MaxSteps"
-    # TERMINATION_CONDITION_TYPE = "Rigid"
+    TERMINATION_CONDITION_TYPE = "Rigid"
+    # TERMINATION_CON/DITION_TYPE = "RigidMinEigBonus"
     # TERMINATION_CONDITION_TYPE = "MinimallyRigid"
-    TERMINATION_CONDITION_TYPE = "Bandit"
+    # TERMINATION_CONDITION_TYPE = "Bandit"
 
     MAX_STEPS = 10
+    ONLY_RANDOMIZE_EDGES = True
     #############################################
 
     if len(sys.argv) < 3:
         print("Usage: python3 environment.py [n] [domains] or python3 environment.py file [scenario_name]")
+        print(f"Note: Only homogeneous networks for now")
         quit()
 
     n = 0
@@ -485,6 +596,12 @@ if __name__ == "__main__":
         if not os.path.exists(filepath):
             print(f"file scenarios/{filepath}.json does not exists")
             quit()
+
+        # get n and domains from scenario
+        with open(filepath, "r") as f:
+            config = json.load(f)
+            n = len(config["positions"])
+            domains = config["domains"][0]
 
     domains_str = domains
     domains_str = domains_str.replace("^", "").replace("(", "").replace(")", "")
@@ -517,7 +634,9 @@ if __name__ == "__main__":
         termination_condition_type=TERMINATION_CONDITION_TYPE,
         action_rewards_enable=ACTION_REWARDS_ENABLE,
         incremental_rewards_enable=INCREMENTAL_REWARDS_ENABLE,
+        track_data_enable=TRACK_DATA_ENABLE,
         max_steps=MAX_STEPS,
+        only_randomize_edges=ONLY_RANDOMIZE_EDGES,
         filepath=filepath,
     )
 
@@ -530,7 +649,9 @@ if __name__ == "__main__":
         "domains": domains,
         "action_rewards_enable": ACTION_REWARDS_ENABLE,
         "incremental_rewards_enable": INCREMENTAL_REWARDS_ENABLE,
+        "track_data_enable": TRACK_DATA_ENABLE,
         "max_steps": MAX_STEPS,
+        "only_randomize_edges": ONLY_RANDOMIZE_EDGES,
         "scenario": scenario_name,
     }
     env_filename = f"env_{model_name}.json"

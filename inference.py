@@ -56,7 +56,9 @@ REWARD_TYPE = config["reward_type"]
 TERMINATION_CONDITION_TYPE = config["termination_condition_type"]
 ACTION_REWARDS_ENABLE = config["action_rewards_enable"]
 INCREMENTAL_REWARDS_ENABLE = config["incremental_rewards_enable"],
+TRACK_DATA_ENABLE = config["track_data_enable"]
 MAX_STEPS = config["max_steps"]
+ONLY_RANDOMIZE_EDGES = config["only_randomize_edges"]
 scenario_name = config["scenario"]
 scenario_path = "scenarios/" + scenario_name + ".json" if scenario_name is not None else None
 
@@ -69,7 +71,9 @@ env = Environment(
     termination_condition_type=TERMINATION_CONDITION_TYPE,
     action_rewards_enable=ACTION_REWARDS_ENABLE,
     incremental_rewards_enable=INCREMENTAL_REWARDS_ENABLE,
+    track_data_enable=TRACK_DATA_ENABLE,
     max_steps=MAX_STEPS,
+    only_randomize_edges=ONLY_RANDOMIZE_EDGES,
     filepath=scenario_path
 )
 obs, _ = env.reset()

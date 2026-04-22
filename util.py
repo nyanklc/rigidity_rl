@@ -2,6 +2,7 @@ import numpy as np
 import quaternion
 import matplotlib.pyplot as plt
 import math
+import torch
 
 
 class Pose:
@@ -143,3 +144,21 @@ def translate_polygon(polygon, x, y):
 
 def invert_color(color):
     return (255 - color[0], 255 - color[1], 255 - color[2])
+
+
+def adj_to_edge_index(adj):
+    if isinstance(adj, np.ndarray):
+        adj = torch.from_numpy(adj)
+    edge_index = adj.nonzero().t().contiguous()
+    return edge_index
+
+def batched_adj_to_edge_index(adj_batch):
+    batch_size, n, _ = adj_batch.shape
+    edge_indices = []
+    for i in range(batch_size):
+        # get edges for this specific graph
+        edges = adj_batch[i].nonzero().t()
+        # offset indices by the number of nodes already processed
+        edges += i * n
+        edge_indices.append(edges)
+    return torch.cat(edge_indices, dim=1)
