@@ -42,17 +42,21 @@ def define_action_space(type: str, env: "Environment"):
     elif type == "AddEdgeDiscreteNoSkip":
         # edge enumeration
         ec = n**2
-        # [0, ec-1]: add
         action_space = spaces.Discrete(ec)
     elif type == "AddEdgeDiscreteNoSkipNoSelfLoops":
         # edge enumeration
         ec = n**2
-        # [0, ec-1]: add
         action_space = spaces.Discrete(ec - n)
+    elif type == "AddRemoveEdgeDiscreteNoSelfLoops":
+        # edge enumeration
+        ec = n**2
+        action_space = spaces.Discrete(2*ec - 2*n + 1)
 
     return action_space
 
 def action_AllEdges(action, env: "Environment", reward, action_info):
+    action_info += f"(action={action}) "
+
     n = len(env.network.agents)
     action_adj = action.reshape((n, n))
     np.fill_diagonal(action_adj, 0) # ignore self-loops
@@ -68,6 +72,8 @@ def action_AllEdges(action, env: "Environment", reward, action_info):
     return reward, action_info
 
 def action_AddRemoveEdgeMultiDiscrete(action, env: "Environment", reward, action_info):
+    action_info += f"(action={action}) "
+
     # add
     if action[0] == 0:
         i_idx = action[1]
@@ -105,11 +111,11 @@ def action_AddRemoveEdgeMultiDiscrete(action, env: "Environment", reward, action
         action_info += "skip"
         pass
 
-    # reward -= 0.5 # time taken
-
     return reward, action_info
 
 def action_AddRemoveEdgeDiscrete(action, env: "Environment", reward, action_info):
+    action_info += f"(action={action}) "
+
     n = len(env.network.agents)
     ec = n**2
     if action == 2 * ec:
@@ -149,11 +155,11 @@ def action_AddRemoveEdgeDiscrete(action, env: "Environment", reward, action_info
             env.network.remove_edge(i_idx, j_idx)
             reward += 10 # measurement effort
 
-    # reward -= 0.5 # time taken
-
     return reward, action_info
 
 def action_AddEdgeDiscrete(action, env: "Environment", reward, action_info):
+    action_info += f"(action={action}) "
+
     n = len(env.network.agents)
     ec = n**2
     if action == ec:
@@ -177,11 +183,11 @@ def action_AddEdgeDiscrete(action, env: "Environment", reward, action_info):
             env.network.add_edge(i_idx, j_idx)
             reward -= 1 # measurement effort
 
-    reward -= 0.5 # time taken
-
     return reward, action_info
 
 def action_AddEdgeDiscreteNoSkip(action, env: "Environment", reward, action_info):
+    action_info += f"(action={action}) "
+
     n = len(env.network.agents)
 
     # add
@@ -200,14 +206,14 @@ def action_AddEdgeDiscreteNoSkip(action, env: "Environment", reward, action_info
         env.network.add_edge(i_idx, j_idx)
         reward -= 1 # measurement effort
 
-    reward -= 0.5 # time taken
-
     return reward, action_info
 
 
 def action_AddEdgeDiscreteNoSkipNoSelfLoops(
     action, env: "Environment", reward, action_info
 ):
+    action_info += f"(action={action}) "
+
     n = len(env.network.agents)
 
     i_idx = action // (n - 1)
@@ -226,10 +232,57 @@ def action_AddEdgeDiscreteNoSkipNoSelfLoops(
     env.network.add_edge(i_idx, j_idx)
     reward -= 1  # measurement effort
 
-    reward -= 0.5  # time taken
-
     return reward, action_info
 
+def action_AddRemoveEdgeDiscreteNoSelfLoops(
+        action, env: "Environment", reward, action_info
+):
+    action_info += f"(action={action}) "
+
+    n = len(env.network.agents)
+    ec = n**2
+    action_space_len = 2*ec - 2*n + 1
+
+    if action == action_space_len - 1:
+        # skip
+        action_info += "skip"
+        pass
+    elif action < (action_space_len - 1) // 2:
+        # add
+        i_idx = action // (n - 1)
+        j_idx = action % (n - 1)
+        if j_idx >= i_idx:
+            j_idx += 1
+
+        action_info += f"add {i_idx}-{j_idx}"
+        if i_idx == j_idx:
+            action_info += " (self loop)"
+
+        if env.network.edge_exists(i_idx, j_idx):
+            # reward -= 20 # unnecessary action
+            action_info += " (existed)"
+        else:
+            env.network.add_edge(i_idx, j_idx)
+            reward -= 1 # measurement effort
+    else:
+        # remove
+        i_idx = (action - ((action_space_len - 1) // 2)) // (n - 1)
+        j_idx = (action - ((action_space_len - 1) // 2)) % (n - 1)
+        if j_idx >= i_idx:
+            j_idx += 1
+
+        action_info += f"remove {i_idx}-{j_idx}"
+        if i_idx == j_idx:
+            action_info += " (self loop)"
+
+        if not env.network.edge_exists(i_idx, j_idx):
+            # reward -= 20 # unnecessary action
+            action_info += " (didn't exist)"
+        else:
+            env.network.remove_edge(i_idx, j_idx)
+            reward += 1 # measurement effort
+
+    return reward, action_info
 
 def obs(type: str, env: "Environment", define_type=False):
     obs_space = None
@@ -273,7 +326,6 @@ def obs(type: str, env: "Environment", define_type=False):
             obs_space = spaces.Box(-np.inf, np.inf, (obs_n,))
     elif type == "DictNodeFeaturesAndAdj":
         node_features = np.asarray([agent.get_node_features() for agent in network.agents])
-        node_features = np.asarray([a.get_node_features() for a in network.agents])
         adj = network.edges.astype(np.float32)
         obs = {
             "node_features": node_features,
@@ -302,9 +354,12 @@ class Environment(gym.Env):
         reward_type="Rigid",
         termination_condition_type="MaxSteps",
         action_rewards_enable=False,
+        time_penalty_value=0.0,
         incremental_rewards_enable=False,
         track_data_enable=False,
         max_steps=1e4,
+        truncate_enable=True,
+        truncate_max_steps=1e4,
         only_randomize_edges=False,
         filepath=None,
     ):
@@ -319,9 +374,12 @@ class Environment(gym.Env):
         self.arg_reward_type = reward_type
         self.arg_termination_condition_type = termination_condition_type
         self.arg_action_rewards_enable = action_rewards_enable
+        self.arg_time_penalty_value = time_penalty_value
         self.arg_track_data_enable = track_data_enable
         self.arg_incremental_rewards_enable = incremental_rewards_enable
         self.arg_max_steps = max_steps
+        self.arg_truncate_enable = truncate_enable
+        self.arg_truncate_max_steps = truncate_max_steps
         self.arg_only_randomize_edges = only_randomize_edges
         self.arg_filepath = filepath
         ###############################
@@ -350,6 +408,9 @@ class Environment(gym.Env):
         self.step_counter = 0
         self.max_steps = max_steps
 
+        self.truncate_enable = truncate_enable
+        self.truncate_max_steps = truncate_max_steps
+
         self.only_randomize_edges = only_randomize_edges
 
         self.last_reward = 0
@@ -358,8 +419,12 @@ class Environment(gym.Env):
         self.incremental_rewards_enable = incremental_rewards_enable
         self.track_data_enable = track_data_enable
 
+        self.time_penalty_value = time_penalty_value
+
         self.was_IBR = None
         self.was_MBR = None
+
+        self.writer = None
 
     def set_writer(self, experiment_name):
         self.writer = SummaryWriter(log_dir=os.path.join("runs", experiment_name))
@@ -376,9 +441,11 @@ class Environment(gym.Env):
         REWARD_TYPE = config["reward_type"]
         TERMINATION_CONDITION_TYPE = config["termination_condition_type"]
         ACTION_REWARDS_ENABLE = config["action_rewards_enable"]
-        INCREMENTAL_REWARDS_ENABLE = (config["incremental_rewards_enable"],)
+        INCREMENTAL_REWARDS_ENABLE = config["incremental_rewards_enable"]
         TRACK_DATA_ENABLE = config["track_data_enable"]
         MAX_STEPS = config["max_steps"]
+        TRUNCATE_ENABLE = config["truncate_enable"]
+        TRUNCATE_MAX_STEPS = config["truncate_max_steps"]
         ONLY_RANDOMIZE_EDGES = config["only_randomize_edges"]
         scenario_name = config["scenario"]
         scenario_path = (
@@ -398,6 +465,8 @@ class Environment(gym.Env):
             incremental_rewards_enable=INCREMENTAL_REWARDS_ENABLE,
             track_data_enable=TRACK_DATA_ENABLE,
             max_steps=MAX_STEPS,
+            truncate_enable=TRUNCATE_ENABLE,
+            truncate_max_steps=TRUNCATE_MAX_STEPS,
             only_randomize_edges=ONLY_RANDOMIZE_EDGES,
             filepath=scenario_path,
         )
@@ -405,6 +474,7 @@ class Environment(gym.Env):
     # -----------------------------------
     def step(self, action):
         reward = 0.0
+        reward -= self.time_penalty_value # time taken
         n = len(self.network.agents)
 
         action_info = ""
@@ -425,6 +495,10 @@ class Environment(gym.Env):
             action_return = action_AddEdgeDiscreteNoSkipNoSelfLoops(
                 action, self, reward, action_info
             )
+        elif self.action_space_type == "AddRemoveEdgeDiscreteNoSelfLoops":
+            action_return = action_AddRemoveEdgeDiscreteNoSelfLoops(
+                action, self, reward, action_info
+            )
         else:
             print(f"faulty action space definition?")
             quit()
@@ -440,8 +514,7 @@ class Environment(gym.Env):
         obs = self._get_obs()
 
         # reward based on state
-        is_IBR = self.network.is_IBR()
-        is_MBR = self.network.is_MBR()
+        is_MBR, is_IBR = self.network.is_MBR()
         if self.reward_type == "Rigid":
             if is_IBR:
                 reward += 10
@@ -456,6 +529,11 @@ class Environment(gym.Env):
                 nonzero = eigs[eigs > 0.0]
                 min_eig = nonzero[0] if len(nonzero) else 0
                 reward += min_eig
+        elif self.reward_type == "RigidAndMinRigid":
+            if is_IBR:
+                reward += 10
+            if is_MBR:
+                reward += 10
         elif self.reward_type == "MinRigid":
             if is_MBR:
                 reward += 10
@@ -475,6 +553,8 @@ class Environment(gym.Env):
             nonzero = eigs[eigs > 0.0]
             min_eig = nonzero[0] if len(nonzero) else 0
             reward += min_eig
+        elif self.reward_type == "None" or None:
+            pass
 
         state_reward = reward - action_reward
 
@@ -500,11 +580,15 @@ class Environment(gym.Env):
         elif self.termination_condition_type == "MinimallyRigid":
             if is_MBR:
                 # reward += self.network.nr_max_edges * 10
-                reward += 10
+                reward += 100
                 terminated = True
         elif self.termination_condition_type == "Bandit":
             if self.step_counter >= 1:
                 terminated = True
+
+        if self.truncate_enable:
+            if self.step_counter >= self.truncate_max_steps:
+                truncated = True
 
         termination_reward = reward - state_reward - action_reward
 
@@ -520,6 +604,7 @@ class Environment(gym.Env):
         min_eig = nonzero[0] if len(nonzero) else 0
         info = {
             "step": f"{self.step_counter}",
+            "action (raw)": action,
             "action": action_info,
             "reward (raw)": self.last_reward,
             "reward (step)": reward,
@@ -541,9 +626,9 @@ class Environment(gym.Env):
         }
         # print(info)
         self.info = info
-        if self.track_data_enable:
+        if self.track_data_enable and self.writer is not None:
             self.writer_counter += 1
-            self.track_data()
+            self.write()
 
         self.was_IBR = is_IBR
         self.was_MBR = is_MBR
@@ -551,7 +636,7 @@ class Environment(gym.Env):
         return obs, reward, terminated, truncated, info
 
     # TODO: this is expensive if logged every step, we should log mean values over episodes maybe or idk how to handle "is rigid"
-    def track_data(self, value=None, tag=None):
+    def write(self, value=None, tag=None):
         log_period = 1
         if value is None:
             if self.info is not None and (self.writer_counter % log_period == 0):
@@ -565,6 +650,7 @@ class Environment(gym.Env):
                 self.writer.add_scalar(tag="Environment/ Reward termination", value=self.info["reward (termination)"], timestep=self.writer_counter)
                 self.writer.add_scalar(tag="Environment/ Min eig", value=self.info["min eigenvalue"], timestep=self.writer_counter)
                 self.writer.add_scalar(tag="Environment/ Second min eig", value=self.info["second min eigenvalue"], timestep=self.writer_counter)
+                self.writer.add_scalar(tag="Environment/ Action", value=self.info["action (raw)"], timestep=self.writer_counter)
         else:
             self.writer.add_scalar(tag=tag, value=value, timestep=self.writer_counter)
 
@@ -586,8 +672,19 @@ class Environment(gym.Env):
             # poses and remove all edges for instance (e.g. empty scenario with AllEdges actions).
 
             if self.only_randomize_edges:
-                redgs = np.random.choice(a=[False, True], size=(self.network.n, self.network.n), p=[0.5, 0.5])
-                self.network.set_edges(redgs)
+                edge_set = set()
+                n = self.network.n
+                max_possible_edges = n**2 - n # no self loops
+                m = np.random.randint(0, max_possible_edges + 1)
+                while len(edge_set) < m:
+                    i, j = np.random.choice(n, size=2, replace=False)
+                    if ((i, j) not in edge_set):
+                        edge_set.add((i, j))
+                edges = np.array(list(edge_set))
+                if len(edge_set) == 0:
+                    self.network.set_edges(None)
+                else:
+                    self.network.set_edges_indices(edges[:, 0], edges[:, 1])
             else:
                 self.network, self.goal_network = random_scenario(self.arg_n, self.arg_domains)
 
@@ -617,10 +714,13 @@ if __name__ == "__main__":
     # ACTION_TYPE = "AddRemoveEdgeDiscrete"
     # ACTION_TYPE = "AddEdgeDiscrete"
     # ACTION_TYPE = "AddEdgeDiscreteNoSkip"
-    ACTION_TYPE = "AddEdgeDiscreteNoSkipNoSelfLoops"
+    # ACTION_TYPE = "AddEdgeDiscreteNoSkipNoSelfLoops"
+    ACTION_TYPE = "AddRemoveEdgeDiscreteNoSelfLoops"
 
     ACTION_REWARDS_ENABLE = True
     # ACTION_REWARDS_ENABLE = False
+
+    TIME_PENALTY_VALUE = 1.0
 
     INCREMENTAL_REWARDS_ENABLE = False
     # INCREMENTAL_REWARDS_ENABLE = True
@@ -633,19 +733,24 @@ if __name__ == "__main__":
     # OBS_TYPE = "AdjFlatAndEigenvalues"
     OBS_TYPE = "DictNodeFeaturesAndAdj"
 
-    REWARD_TYPE = "Rigid"
+    # REWARD_TYPE = "Rigid"
     # REWARD_TYPE = "RigidAndMinEigenvalue"
+    # REWARD_TYPE = "RigidAndMinRigid"
     # REWARD_TYPE = "MinRigid"
     # REWARD_TYPE = "MinRigidAndMinEigenvalue"
-    # REWARD_TYPE = "MinEigenvalue"
+    REWARD_TYPE = "MinEigenvalue"
+    # REWARD_TYPE = "None"
 
     # TERMINATION_CONDITION_TYPE = "MaxSteps"
-    TERMINATION_CONDITION_TYPE = "Rigid"
-    # TERMINATION_CON/DITION_TYPE = "RigidMinEigBonus"
-    # TERMINATION_CONDITION_TYPE = "MinimallyRigid"
+    # TERMINATION_CONDITION_TYPE = "Rigid"
+    # TERMINATION_CONDITION_TYPE = "RigidMinEigBonus"
+    TERMINATION_CONDITION_TYPE = "MinimallyRigid"
     # TERMINATION_CONDITION_TYPE = "Bandit"
 
-    MAX_STEPS = 10
+
+    MAX_STEPS = 1000
+    TRUNCATE_ENABLE = False
+    TRUNCATE_MAX_STEPS = 100
     ONLY_RANDOMIZE_EDGES = True
     #############################################
 
@@ -712,9 +817,12 @@ if __name__ == "__main__":
         "n": n,
         "domains": domains,
         "action_rewards_enable": ACTION_REWARDS_ENABLE,
+        "time_penalty_value": TIME_PENALTY_VALUE,
         "incremental_rewards_enable": INCREMENTAL_REWARDS_ENABLE,
         "track_data_enable": TRACK_DATA_ENABLE,
         "max_steps": MAX_STEPS,
+        "truncate_enable": TRUNCATE_ENABLE,
+        "truncate_max_steps": TRUNCATE_MAX_STEPS,
         "only_randomize_edges": ONLY_RANDOMIZE_EDGES,
         "scenario": scenario_name,
     }

@@ -155,18 +155,20 @@ def is_IBR(network):
 # M. H. Trinh, Q. Van Tran, and H.-S. Ahn, “Minimal and Redundant Bearing Rigidity: Conditions and Applications,” IEEE Transactions on Automatic Control, vol. 65, no. 10, pp. 4186–4200, Oct. 2020, doi: 10.1109/TAC.2019.2958563.
 # NOTE: ONLY FOR R^d
 def is_MBR(network):
-    if len(network.agents) == 0:
-        return False
+    isIBR = is_IBR(network)
 
-    if not is_IBR(network):
-        return False
+    if len(network.agents) == 0:
+        return False, isIBR
+
+    if not isIBR:
+        return False, isIBR
 
     n = len(network.agents)
     d = 2 if network.agents[0].domain in ["R^2", "R^2xS^1"] else 3
     m = int(network.edges.sum())
 
     if d < 2 or n < 3:
-        return False
+        return False, isIBR
 
     # cycle graph
     if 3 <= n <= d + 1:
@@ -178,4 +180,9 @@ def is_MBR(network):
 
     m_required = 1 + k * d + r + sgn
 
-    return m == m_required
+    return m == m_required, isIBR
+
+# J. F. Presenza, L. J. Colombo, J. I. Giribet, and I. Mas, “Angle-based Localization and Rigidity Maintenance Control for Multi-Robot Networks,” Apr. 17, 2026, arXiv: arXiv:2604.11754. doi: 10.48550/arXiv.2604.11754.
+def isIAR(network):
+    print(f"IAR not implemented.")
+    quit()

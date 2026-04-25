@@ -181,6 +181,10 @@ class Network:
     def edge_exists(self, i_idx, j_idx):
         return self.edges[i_idx, j_idx]
 
+    def get_edge_list(self):
+        lists = np.nonzero(self.edges)
+        return [(int(lists[0][i]), int(lists[1][i])) for i in range(len(lists[0]))]
+
     def set_agents_domain_homogeneous(self, domain: str, rotation_axis=None):
         # print(f"agents' domain: {domain}")
         # default values are for SE(3)
@@ -208,6 +212,7 @@ class Network:
         # return rigidity.old_is_IBR(self)
         return rigidity.is_IBR(self)
 
+    # also returns is IBR
     def is_MBR(self):
         # for agent in self.agents:
         #     if agent.domain not in ["R^2", "R^3"]:
@@ -215,11 +220,12 @@ class Network:
 
         return rigidity.is_MBR(self)
 
-    def eigenvalues(self):
+    def eigenvalues(self, eps=1e-10):
         brm = self.extended_bearing_rigidity_matrix()
         information_mat = brm.T @ brm
         # symmetric
         eigenvalues = np.linalg.eigvalsh(information_mat)
+        eigenvalues[np.abs(eigenvalues) < eps] = 0.0
         eigenvalues.sort()
         return eigenvalues
 
@@ -240,7 +246,6 @@ class Network:
             agent.pose.print()
         print("edges:")
         n = len(self.agents)
-        for i in range(n):
-            for j in range(n):
-                if self.edges[i, j]:
-                    print(f"{i} -> {j}")
+        edge_list = self.get_edge_list()
+        for i, j in edge_list:
+            print(f"{i} -> {j}")

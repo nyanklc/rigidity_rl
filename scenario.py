@@ -28,10 +28,10 @@ def random_scenario(
     network.randomize_orientations()
 
     edge_set = set()
-    max_possible_edges = n**2
+    max_possible_edges = n**2 - n # no self loops
     m = np.random.randint(0, max_possible_edges + 1)
     while len(edge_set) < m:
-        i, j = np.random.choice(n, size=2)
+        i, j = np.random.choice(n, size=2, replace=False)
         if ((i, j) not in edge_set):
             edge_set.add((i, j))
     edges = np.array(list(edge_set))

@@ -8,20 +8,21 @@ import torch
 from datetime import datetime
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
-from skrl.agents.torch.ppo import PPO, PPO_CFG
+from skrl.agents.torch.dqn import DQN, DQN_CFG
 from skrl.trainers.torch import SequentialTrainer, SequentialTrainerCfg
 from skrl.resources.preprocessors.torch import RunningStandardScaler
-from policy import ActorModel, CriticModel
+from policy import *
+import copy
 
 ######################################
-TOTAL_TIMESTEPS = int(4e5)
+TOTAL_TIMESTEPS = int(2e5)
 NR_ENVS = 1
 MEM_SIZE = 2048
-USE_CHECKPOINTS = False
 
 GNN_HIDDEN_DIM = 32
-ACTOR_HEAD_HIDDEN_DIM = 128
-CRITIC_HEAD_HIDDEN_DIM = 128
+QNETWORK_HEAD_HIDDEN_DIM = 1288
+
+DEVICE = "cuda"
 ######################################
 
 
@@ -54,12 +55,8 @@ model_name = (
     model_name_prefix
     + f"_action{raw_env.action_space_type}_obs{raw_env.obs_space_type}_reward{raw_env.reward_type}_term{raw_env.termination_condition_type}_{scenario_name if scenario_name is not None else n_domains}"
 )
-log_dir = "./tboard_logs/"
-os.makedirs(log_dir, exist_ok=True)
-os.makedirs("./models/", exist_ok=True)
 
-# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-device = "cpu"
+device = DEVICE
 
 raw_env.device = device
 raw_env.set_writer(model_name) # initializes summary writer for env
@@ -68,46 +65,51 @@ env = wrap_env(raw_env)
 node_features_dim = raw_env.observation_space["node_features"].shape[1]
 
 models = {}
-# actor
-models["policy"] = ActorModel(
-    n,
-    node_feat_dim=node_features_dim,
-    gnn_hidden_dim=GNN_HIDDEN_DIM,
-    head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
+# q network
+if raw_env.action_space_type == "AddRemoveEdgeDiscreteNoSelfLoops":
+    # models["q_network"] = ActorModel_AddRemoveEdgeDiscreteNoSelfLoops_FC(
+    #     n,
+    #     node_feat_dim=node_features_dim,
+    #     gnn_hidden_dim=GNN_HIDDEN_DIM,
+    #     head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
+    #     observation_space=env.observation_space,
+    #     action_space=env.action_space,
+    #     device=device,
+    # )
+    models["q_network"] = DQN_QNetwork_AddRemoveEdgeDiscreteNoSelfLoops(
+        n,
+        node_feat_dim=node_features_dim,
+        gnn_hidden_dim=GNN_HIDDEN_DIM,
+        head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
+        observation_space=env.observation_space,
+        action_space=env.action_space,
+        device=device,
+    )
+else:
+    print(f"Q network for {raw_env.action_space_type} is not implemented.")
+    quit()
 
-    observation_space=env.observation_space,
-    action_space=env.action_space,
-    device=device,
-)
-# critic
-models["value"] = CriticModel(
-    n,
-    node_feat_dim=node_features_dim,
-    gnn_hidden_dim=GNN_HIDDEN_DIM,
-    head_hidden_dim=CRITIC_HEAD_HIDDEN_DIM,
-
-    observation_space=env.observation_space,
-    action_space=env.action_space,
-    device=device,
-)
+# target
+models["target_q_network"] = copy.deepcopy(models["q_network"])
 
 # for rollouts
 # TODO: env.num_envs??
 memory = RandomMemory(memory_size=MEM_SIZE, num_envs=NR_ENVS, device=device)
 
-cfg = PPO_CFG()
-cfg.rollouts = MEM_SIZE # to ensure we don't get garbage data from memory
+cfg = DQN_CFG()
 cfg.experiment.directory = "runs"
 cfg.experiment.experiment_name = model_name
+cfg.learning_rate = 1e-4
 
 os.makedirs("./models", exist_ok=True)
 os.makedirs("./models/complete", exist_ok=True)
+os.makedirs("./models/complete/DQN", exist_ok=True)
 os.makedirs("./models/experiment", exist_ok=True)
 
 torch.set_printoptions(threshold=10000)
 
 
-agent = PPO(
+agent = DQN(
     models=models,
     memory=memory,
     cfg=cfg,
@@ -129,5 +131,8 @@ print("##########################################")
 print(f"Training on {device}...")
 trainer.train()
 
-os.makedirs("./models/complete", exist_ok=True)
-agent.save(f"./models/complete/{model_name}.pt")
+agent.save(f"./models/complete/DQN/{model_name}.pt")
+
+print(f"Completed.")
+print(f"Model saved: models/complete/{model_name}.pt")
+print(f"Model name: {model_name}")
