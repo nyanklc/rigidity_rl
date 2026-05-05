@@ -31,6 +31,85 @@ class GNNBackbone(nn.Module):
 ###############################################################################
 # PPO
 
+class PPO_ActorModel_AddEdgeDiscreteNoSelfLoops(CategoricalMixin, Model):
+    def __init__(
+        self,
+        n,
+        node_feat_dim,
+        gnn_hidden_dim,
+        head_hidden_dim,
+
+        observation_space,
+        action_space,
+        device,
+    ):
+        # Model.__init__(self, observation_space, action_space, device)
+        Model.__init__(self, observation_space=observation_space, action_space=action_space, device=device)
+        CategoricalMixin.__init__(self)
+
+        # +1 since we'll add the degree as a node feature
+        self.gnn = GNNBackbone(
+            node_feat_dim + 1, gnn_hidden_dim
+        )  # output dim = hidden dim
+        self.n = n
+
+        adj_fc = torch.ones((self.n, self.n)) - torch.eye(self.n)
+        self.fc_edge_index = adj_fc.nonzero().t().contiguous()
+
+        # +1 since we'll add the adj information on the edge embeddings
+        self.head = nn.Sequential(
+            nn.Linear(2 * gnn_hidden_dim + 1, head_hidden_dim),
+            nn.Linear(head_hidden_dim, 1),  # output single logit ("add")
+        )
+
+        self.skip_head = nn.Linear(gnn_hidden_dim, 1)
+
+
+    def compute(self, inputs, role):
+        # TODO: for some reason untensorize_space doesn't work for us.
+        # idk how to properly use the api, and we shouldn't even need to do this
+        observations = unflatten_tensorized_space(self.observation_space, inputs["observations"])
+        # observations = untensorize_space(self.observation_space, inputs["observations"])
+
+        # # Don't squeeze, we'll lose the batch that way
+        # node_features = observations["node_features"].squeeze()
+        # adj = observations["adj"].squeeze()
+
+        node_features = observations["node_features"]
+        adj = observations["adj"]
+
+        batch_size = node_features.shape[0]
+
+        batch_fc_edges = []
+        for i in range(batch_size):
+            batch_fc_edges.append(self.fc_edge_index + (i * self.n))
+        full_fc_edge_index = torch.cat(batch_fc_edges, dim=1).to(self.device)
+
+        out_degrees = adj.sum(dim=-1, keepdim=True)
+        node_features = torch.cat([node_features, out_degrees], dim=-1)
+
+        # fully connected pass
+        h = self.gnn(node_features, full_fc_edge_index)
+        h_i = h.unsqueeze(2).expand(-1, -1, self.n, -1)
+        h_j = h.unsqueeze(1).expand(-1, self.n, -1, -1)
+        exists_flag = adj.unsqueeze(-1)
+        edge_embeddings = torch.cat([h_i, h_j, exists_flag], dim=-1) # (b, n, n, edge_feat)
+
+        logits = self.head(edge_embeddings).squeeze(-1).reshape(batch_size, -1) # (b, n*n)
+
+        # exclude self loops
+        logits = logits.view(batch_size, self.n, self.n)
+        mask = ~torch.eye(self.n, dtype=torch.bool, device=logits.device)  # (n, n)
+        logits = logits[:, mask]  # (b, n*n - n)
+
+        skip_logit = self.skip_head(torch.mean(h, dim=1))
+
+        logits = torch.cat([
+            logits,
+            skip_logit
+        ], dim=1)
+
+        return logits, {}
 
 class PPO_ActorModel_AddEdgeDiscreteNoSkipNoSelfLoops(CategoricalMixin, Model):
     def __init__(
@@ -131,7 +210,7 @@ class PPO_ActorModel_AllEdges(CategoricalMixin, Model):
             nn.Linear(head_hidden_dim, 2),  # two logits ("add", "remove")
         )
 
-        self.skip_logit = nn.Parameter(torch.zeros(1))
+        self.skip_head = nn.Linear(gnn_hidden_dim, 1)
 
     def compute(self, inputs, role):
         observations = unflatten_tensorized_space(self.observation_space, inputs["observations"])
@@ -166,7 +245,7 @@ class PPO_ActorModel_AllEdges(CategoricalMixin, Model):
 
         add_logits = edge_logits[:, :, 0]      # (B, E)
         remove_logits = edge_logits[:, :, 1]   # (B, E)
-        skip_logit = self.skip_logit.expand(batch_size, 1)
+        skip_logit = self.skip_head(torch.mean(h, dim=1))
 
         logits = torch.cat([
             add_logits,
@@ -209,7 +288,7 @@ class PPO_ActorModel_AddRemoveEdgeDiscreteNoSelfLoops_FC(CategoricalMixin, Model
             nn.Linear(head_hidden_dim, 2),  # two logits ("add", "remove")
         )
 
-        self.skip_logit = nn.Parameter(torch.zeros(1))
+        self.skip_head = nn.Linear(gnn_hidden_dim, 1)
 
     def compute(self, inputs, role):
         observations = unflatten_tensorized_space(self.observation_space, inputs["observations"])
@@ -244,7 +323,7 @@ class PPO_ActorModel_AddRemoveEdgeDiscreteNoSelfLoops_FC(CategoricalMixin, Model
 
         add_logits = edge_logits[:, :, 0]      # (B, E)
         remove_logits = edge_logits[:, :, 1]   # (B, E)
-        skip_logit = self.skip_logit.expand(batch_size, 1)
+        skip_logit = self.skip_head(torch.mean(h, dim=1))
 
         logits = torch.cat([
             add_logits,
@@ -284,7 +363,10 @@ class PPO_ActorModel_AddRemoveEdgeDiscreteNoSelfLoops(CategoricalMixin, Model):
             nn.Linear(head_hidden_dim, 2),  # two logits ("add", "remove")
         )
 
-        self.skip_logit = nn.Parameter(torch.zeros(1))
+        self.skip_head = nn.Sequential(
+            nn.Linear(gnn_hidden_dim, gnn_hidden_dim),
+            nn.Linear(gnn_hidden_dim, 1)
+        )
 
     def compute(self, inputs, role):
         observations = unflatten_tensorized_space(self.observation_space, inputs["observations"])
@@ -322,13 +404,29 @@ class PPO_ActorModel_AddRemoveEdgeDiscreteNoSelfLoops(CategoricalMixin, Model):
 
         add_logits = edge_logits[:, :, 0]      # (B, E)
         remove_logits = edge_logits[:, :, 1]   # (B, E)
-        skip_logit = self.skip_logit.expand(batch_size, 1)
+        skip_logit = self.skip_head(torch.mean(h, dim=1))
 
         logits = torch.cat([
             add_logits,
             remove_logits,
             skip_logit
         ], dim=1)   # (B, 2*ec - 2*n + 1)
+
+        # mask invalid ADD
+        add_mask = (adj == 0)  # only allow add where edge doesn't exist
+        add_mask = add_mask[:, ~torch.eye(self.n, dtype=torch.bool, device=adj.device)]
+        add_mask = add_mask.view(batch_size, -1)
+
+        # mask invalid REMOVE
+        remove_mask = (adj == 1)
+        remove_mask = remove_mask[:, ~torch.eye(self.n, dtype=torch.bool, device=adj.device)]
+        remove_mask = remove_mask.view(batch_size, -1)
+
+        # apply masks
+        # effectively settings the probability of these actions to 0
+        E = (logits.shape[-1]-1)//2
+        logits[:, :E][~add_mask] = -1e9
+        logits[:, E:2*E][~remove_mask] = -1e9
 
         # print(f"probs: {torch.softmax(logits, dim=1)} -> {torch.argmax(torch.softmax(logits, dim=1))}")
 
@@ -348,19 +446,27 @@ class PPO_ActorModel_AddRemoveEdgeMultiDiscrete(MultiCategoricalMixin, Model):
     ):
         # Model.__init__(self, observation_space, action_space, device)
         Model.__init__(self, observation_space=observation_space, action_space=action_space, device=device)
-        CategoricalMixin.__init__(self)
+        MultiCategoricalMixin.__init__(self)
 
         self.gnn = GNNBackbone(
             node_feat_dim, gnn_hidden_dim
         )  # output dim = hidden dim
         self.n = n
 
-        self.head = nn.Sequential(
+        # takes in node embeddings and outputs logits for selection of the "i" node
+        self.select_i_head = nn.Sequential(
             nn.Linear(gnn_hidden_dim, head_hidden_dim),
             nn.Linear(head_hidden_dim, 1),
         )
 
-        self.action_type_logit = nn.Parameter(torch.zeros(3))
+        # takes in node embeddings and outputs logits for selection of the "j" node
+        self.select_j_head = nn.Sequential(
+            nn.Linear(gnn_hidden_dim, head_hidden_dim),
+            nn.Linear(head_hidden_dim, 1),
+        )
+
+        # takes in global embedding (mean) and decides to add/remove/skip
+        self.action_type_head = nn.Linear(gnn_hidden_dim, 3)
 
     def compute(self, inputs, role):
         observations = unflatten_tensorized_space(self.observation_space, inputs["observations"])
@@ -381,14 +487,24 @@ class PPO_ActorModel_AddRemoveEdgeMultiDiscrete(MultiCategoricalMixin, Model):
         # current graph pass
         h = self.gnn(node_features, full_edge_index)
 
-        node_scores = self.head(h)
+        # graph embedding
+        batch_mapping = torch.arange(batch_size, device=h.device).repeat_interleave(
+            self.n
+        )
+        graph_latent = global_mean_pool(h.reshape(-1, h.shape[-1]), batch_mapping)
 
-        logits = torch.cat([
-            self.action_type_logit,
-            node_scores
-        ], dim=1)
+        action_type_logits = self.action_type_head(graph_latent)
+        i_logits = self.select_i_head(h).squeeze(-1)
+        j_logits = self.select_j_head(h).squeeze(-1)
 
-        return logits, {}
+        print(f"action_type_logits: {action_type_logits.shape}")
+        print(f"i_logits: {i_logits.shape}")
+        print(f"j_logits: {j_logits.shape}")
+
+        cat = torch.cat([action_type_logits, i_logits, j_logits], dim=-1)
+        print(f"cat: {cat.shape}")
+
+        return cat, {}
 
 
 class PPO_CriticModel(DeterministicMixin, Model):
@@ -478,7 +594,7 @@ class DQN_QNetwork_AddRemoveEdgeDiscreteNoSelfLoops(TabularMixin, Model):
             nn.Linear(head_hidden_dim, 2),  # two logits ("add", "remove")
         )
 
-        self.skip_logit = nn.Parameter(torch.zeros(1))
+        self.skip_head = nn.Linear(gnn_hidden_dim, 1)
 
     def compute(self, inputs, role):
         observations = unflatten_tensorized_space(self.observation_space, inputs["observations"])
@@ -516,15 +632,130 @@ class DQN_QNetwork_AddRemoveEdgeDiscreteNoSelfLoops(TabularMixin, Model):
 
         add_logits = edge_logits[:, :, 0]      # (B, E)
         remove_logits = edge_logits[:, :, 1]   # (B, E)
-        skip_logit = self.skip_logit.expand(batch_size, 1)
+        skip_logit = self.skip_head(torch.mean(h, dim=1))
 
-        logits = torch.cat([
+        q_values = torch.cat([
             add_logits,
             remove_logits,
             skip_logit
         ], dim=1)   # (B, 2*ec - 2*n + 1)
 
-        # print(f"probs: {torch.softmax(logits, dim=1)} -> {torch.argmax(torch.softmax(logits, dim=1))}")
+        # mask invalid ADD
+        add_mask = (adj == 0)  # only allow add where edge doesn't exist
+        add_mask = add_mask[:, ~torch.eye(self.n, dtype=torch.bool, device=adj.device)]
+        add_mask = add_mask.view(batch_size, -1)
 
-        return logits, {}
+        # mask invalid REMOVE
+        remove_mask = (adj == 1)
+        remove_mask = remove_mask[:, ~torch.eye(self.n, dtype=torch.bool, device=adj.device)]
+        remove_mask = remove_mask.view(batch_size, -1)
 
+        # apply masks
+        E = (q_values.shape[-1]-1)//2
+        # TODO: masking with a big (negative) number would work with softmax, but these are q values.
+        with torch.no_grad():
+            dynamic_min = q_values.min() - 1.0
+        q_values[:, :E][~add_mask] = dynamic_min
+        q_values[:, E:2*E][~remove_mask] = dynamic_min
+
+        return q_values, {}
+
+class DQN_QNetwork_AddEdgeDiscreteNoSelfLoops(TabularMixin, Model):
+    def __init__(
+        self,
+        n,
+        node_feat_dim,
+        gnn_hidden_dim,
+        head_hidden_dim,
+
+        observation_space,
+        action_space,
+        device,
+    ):
+        # Model.__init__(self, observation_space, action_space, device)
+        Model.__init__(self, observation_space=observation_space, action_space=action_space, device=device)
+        TabularMixin.__init__(self)
+
+        # +1 since we'll add the degree as a node feature
+        self.gnn = GNNBackbone(
+            node_feat_dim + 1, gnn_hidden_dim
+        )  # output dim = hidden dim
+        self.n = n
+
+        # +1 since we'll add the adj information on the edge embeddings
+        self.head = nn.Sequential(
+            nn.Linear(2 * gnn_hidden_dim + 1, head_hidden_dim),
+            nn.Linear(head_hidden_dim, 1),  # output single logit ("add")
+        )
+
+        self.skip_head = nn.Linear(gnn_hidden_dim, 1)
+
+    def compute(self, inputs, role):
+        # TODO: for some reason untensorize_space doesn't work for us.
+        # idk how to properly use the api, and we shouldn't even need to do this
+        observations = unflatten_tensorized_space(self.observation_space, inputs["observations"])
+        # observations = untensorize_space(self.observation_space, inputs["observations"])
+
+        # # Don't squeeze, we'll lose the batch that way
+        # node_features = observations["node_features"].squeeze()
+        # adj = observations["adj"].squeeze()
+
+        node_features = observations["node_features"]
+        adj = observations["adj"]
+
+        batch_size = node_features.shape[0]
+
+        # adj comes in batched
+        batch_edges = []
+        for i in range(batch_size):
+            env_edges = adj[i].nonzero().t().contiguous()
+            env_edges = env_edges + (i * self.n)
+            batch_edges.append(env_edges)
+        full_edge_index = torch.cat(batch_edges, dim=1).to(self.device)
+
+        out_degrees = adj.sum(dim=-1, keepdim=True)
+        node_features = torch.cat([node_features, out_degrees], dim=-1)
+
+        # fully connected pass
+        h = self.gnn(node_features, full_edge_index)
+        h_i = h.unsqueeze(2).expand(-1, -1, self.n, -1)
+        h_j = h.unsqueeze(1).expand(-1, self.n, -1, -1)
+        exists_flag = adj.unsqueeze(-1)
+        edge_embeddings = torch.cat([h_i, h_j, exists_flag], dim=-1) # (b, n, n, edge_feat)
+
+        q_values = self.head(edge_embeddings).squeeze(-1).reshape(batch_size, -1) # (b, n*n)
+
+        # exclude self loops
+        q_values = q_values.view(batch_size, self.n, self.n)
+        mask = ~torch.eye(self.n, dtype=torch.bool, device=q_values.device)  # (n, n)
+        q_values = q_values[:, mask]  # (b, n*n - n)
+
+        skip_logit = self.skip_head(torch.mean(h, dim=1))
+
+        q_values = torch.cat([
+            q_values,
+            skip_logit
+        ], dim=1)
+
+        add_mask = (adj == 0)
+        add_mask = add_mask[:, ~torch.eye(self.n, dtype=torch.bool, device=adj.device)].view(batch_size, -1)
+        q_values[:, :-1][~add_mask] = -5
+
+        # action = torch.argmax(q_values)
+        # print(f"==> {q_values}, max: {action}")
+        # def dummy():
+        #     n = adj.shape[-1]
+
+        #     # skip
+        #     if action == n**2 - n:
+        #         pass
+        #     # add
+        #     else:
+        #         i_idx = action // (n - 1)
+        #         j_idx = action % (n - 1)
+        #         if j_idx >= i_idx:
+        #             j_idx += 1
+        #         print(f"==> ALKJAK {i_idx} -> {j_idx}")
+        # dummy()
+
+        return q_values, {}

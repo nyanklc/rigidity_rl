@@ -17,20 +17,33 @@ from datetime import datetime
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
 from skrl.agents.torch.ppo import PPO, PPO_CFG
+from skrl.agents.torch.dqn import DQN, DQN_CFG
 from skrl.trainers.torch import SequentialTrainer, SequentialTrainerCfg
 from skrl.resources.preprocessors.torch import RunningStandardScaler
 from policy import *
 
 
 #############################################
+MODEL_TYPE = "PPO"
 BRUTE_FORCE_BEST = True
+#############################################
 
 # these should be the same as the training
-NR_ENVS = 1
-MEM_SIZE = 2048
-GNN_HIDDEN_DIM = 32
-ACTOR_HEAD_HIDDEN_DIM = 128
-CRITIC_HEAD_HIDDEN_DIM = 128
+
+# PPO
+if MODEL_TYPE == "PPO":
+    NR_ENVS = 1
+    MEM_SIZE = 2048
+    GNN_HIDDEN_DIM = 32
+    ACTOR_HEAD_HIDDEN_DIM = 32
+    CRITIC_HEAD_HIDDEN_DIM = 32
+
+# DQN
+if MODEL_TYPE == "DQN":
+    NR_ENVS = 1
+    MEM_SIZE = 20000
+    GNN_HIDDEN_DIM = 32
+    QNETWORK_HEAD_HIDDEN_DIM = 128
 #############################################
 
 
@@ -54,10 +67,16 @@ if len(sys.argv) < 3:
     quit()
 
 model_name = sys.argv[1]
-modelpath = "./models/complete/" + model_name + ".pt"
-if not os.path.exists(modelpath):
-    print(f"file models/complete/{model_name}.pt does not exist")
-    quit()
+if MODEL_TYPE == "PPO":
+    modelpath = "./models/complete/PPO/" + model_name + ".pt"
+    if not os.path.exists(modelpath):
+        print(f"file models/complete/PPO/{model_name}.pt does not exist")
+        quit()
+if MODEL_TYPE == "DQN":
+    modelpath = "./models/complete/DQN/" + model_name + ".pt"
+    if not os.path.exists(modelpath):
+        print(f"file models/complete/DQN/{model_name}.pt does not exist")
+        quit()
 
 env_name = sys.argv[2]
 filepath = "./environments/" + env_name + ".json"
@@ -77,60 +96,124 @@ env.reset()
 
 n = len(raw_env.network.agents)
 node_features_dim = raw_env.observation_space["node_features"].shape[1]
+################################################################################
 
-models = {}
-# actor
-if raw_env.action_space_type == "AddEdgeDiscreteNoSkipNoSelfLoops":
-    models["policy"] = ActorModel_AddEdgeDiscreteNoSkipNoSelfLoops(
+
+# PPO
+if MODEL_TYPE == "PPO":
+    models = {}
+    # actor
+    if raw_env.action_space_type == "AddEdgeDiscreteNoSkipNoSelfLoops":
+        models["policy"] = PPO_ActorModel_AddEdgeDiscreteNoSkipNoSelfLoops(
+            n,
+            node_feat_dim=node_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
+    elif raw_env.action_space_type == "AddRemoveEdgeDiscreteNoSelfLoops":
+        # models["policy"] = PPO_ActorModel_AddRemoveEdgeDiscreteNoSelfLoops_FC(
+        #     n,
+        #     node_feat_dim=node_features_dim,
+        #     gnn_hidden_dim=GNN_HIDDEN_DIM,
+        #     head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
+        #     observation_space=env.observation_space,
+        #     action_space=env.action_space,
+        #     device=device,
+        # )
+        models["policy"] = PPO_ActorModel_AddRemoveEdgeDiscreteNoSelfLoops(
+            n,
+            node_feat_dim=node_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
+    else:
+        print(f"Actor for action {raw_env.action_space_type} is not implemented.")
+        quit()
+
+    # critic
+    models["value"] = PPO_CriticModel(
         n,
         node_feat_dim=node_features_dim,
         gnn_hidden_dim=GNN_HIDDEN_DIM,
-        head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
+        head_hidden_dim=CRITIC_HEAD_HIDDEN_DIM,
+
         observation_space=env.observation_space,
         action_space=env.action_space,
         device=device,
     )
-elif raw_env.action_space_type == "AddRemoveEdgeDiscreteNoSelfLoops":
-    models["policy"] = ActorModel_AddRemoveEdgeDiscreteNoSelfLoops_FC(
-        n,
-        node_feat_dim=node_features_dim,
-        gnn_hidden_dim=GNN_HIDDEN_DIM,
-        head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
-        observation_space=env.observation_space,
-        action_space=env.action_space,
-        device=device,
-    )
-else:
-    print(f"Actor for action {raw_env.action_space_type} is not implemented.")
-    quit()
 
-# critic
-models["value"] = CriticModel(
-    n,
-    node_feat_dim=node_features_dim,
-    gnn_hidden_dim=GNN_HIDDEN_DIM,
-    head_hidden_dim=CRITIC_HEAD_HIDDEN_DIM,
 
-    observation_space=env.observation_space,
-    action_space=env.action_space,
-    device=device,
-)
+# DQN
+if MODEL_TYPE == "DQN":
+    models = {}
+    # q network
+    if raw_env.action_space_type == "AddRemoveEdgeDiscreteNoSelfLoops":
+        # models["q_network"] = ActorModel_AddRemoveEdgeDiscreteNoSelfLoops_FC(
+        #     n,
+        #     node_feat_dim=node_features_dim,
+        #     gnn_hidden_dim=GNN_HIDDEN_DIM,
+        #     head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
+        #     observation_space=env.observation_space,
+        #     action_space=env.action_space,
+        #     device=device,
+        # )
+        models["q_network"] = DQN_QNetwork_AddRemoveEdgeDiscreteNoSelfLoops(
+            n,
+            node_feat_dim=node_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
+    else:
+        print(f"Q network for {raw_env.action_space_type} is not implemented.")
+        quit()
+    # target
+    models["target_q_network"] = copy.deepcopy(models["q_network"])
 
+
+
+################################################################################
 memory = RandomMemory(memory_size=MEM_SIZE, num_envs=NR_ENVS, device=device)
-cfg = PPO_CFG()
-cfg.rollouts = MEM_SIZE # to ensure we don't get garbage data from memory
-cfg.experiment.directory = "runs_inference"
-cfg.experiment.experiment_name = model_name
 
+if MODEL_TYPE == "DQN":
+    cfg = DQN_CFG()
+    cfg.experiment.directory = "runs"
+    cfg.experiment.experiment_name = model_name
+    # cfg.learning_rate = 1e-4
+    cfg.update_interval = 4
 
-agent = PPO(
-    models=models,
-    memory=memory,
-    cfg=cfg,
-    observation_space=env.observation_space,
-    action_space=env.action_space,
-    device=device,
-)
+    agent = DQN(
+        models=models,
+        memory=memory,
+        cfg=cfg,
+        observation_space=env.observation_space,
+        action_space=env.action_space,
+        device=device,
+    )
+
+if MODEL_TYPE == "PPO":
+    cfg = PPO_CFG()
+    cfg.rollouts = MEM_SIZE # to ensure we don't get garbage data from memory
+    cfg.experiment.directory = "runs_inference"
+    cfg.experiment.experiment_name = model_name
+
+    agent = PPO(
+        models=models,
+        memory=memory,
+        cfg=cfg,
+        observation_space=env.observation_space,
+        action_space=env.action_space,
+        device=device,
+    )
+
 agent.load(modelpath)
 
 
@@ -211,9 +294,9 @@ done = False
 truncated = False
 step_idx = 1
 
+obs, _ = env.reset()
 vis.draw_viser(raw_env.network, node_color=(255, 0, 0), edge_color=(128, 0, 0), label_prefix="Env")
 raw_env.network.print()
-obs, _ = env.reset()
 while not (done or truncated):
     wait_for_step()
 

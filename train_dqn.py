@@ -13,18 +13,18 @@ from skrl.trainers.torch import SequentialTrainer, SequentialTrainerCfg
 from skrl.resources.preprocessors.torch import RunningStandardScaler
 from policy import *
 import copy
+import numpy as np
 
 ######################################
-TOTAL_TIMESTEPS = int(2e5)
+TOTAL_TIMESTEPS = int(4e5)
 NR_ENVS = 1
-MEM_SIZE = 2048
+MEM_SIZE = 20000
 
 GNN_HIDDEN_DIM = 32
-QNETWORK_HEAD_HIDDEN_DIM = 1288
+QNETWORK_HEAD_HIDDEN_DIM = 128
 
 DEVICE = "cuda"
-######################################
-
+##################
 
 if len(sys.argv) < 3:
     print(f"usage: python3 train.py [environment_name] [model_name]")
@@ -60,6 +60,7 @@ device = DEVICE
 
 raw_env.device = device
 raw_env.set_writer(model_name) # initializes summary writer for env
+# raw_env.action_space.seed(42) # doesn't work
 env = wrap_env(raw_env)
 
 node_features_dim = raw_env.observation_space["node_features"].shape[1]
@@ -85,6 +86,16 @@ if raw_env.action_space_type == "AddRemoveEdgeDiscreteNoSelfLoops":
         action_space=env.action_space,
         device=device,
     )
+elif raw_env.action_space_type == "AddEdgeDiscreteNoSelfLoops":
+    models["q_network"] = DQN_QNetwork_AddEdgeDiscreteNoSelfLoops(
+        n,
+        node_feat_dim=node_features_dim,
+        gnn_hidden_dim=GNN_HIDDEN_DIM,
+        head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
+        observation_space=env.observation_space,
+        action_space=env.action_space,
+        device=device,
+    )
 else:
     print(f"Q network for {raw_env.action_space_type} is not implemented.")
     quit()
@@ -100,6 +111,22 @@ cfg = DQN_CFG()
 cfg.experiment.directory = "runs"
 cfg.experiment.experiment_name = model_name
 cfg.learning_rate = 1e-4
+cfg.batch_size = 1
+cfg.target_update_interval = 500
+cfg.update_interval = 4
+cfg.random_timesteps = 5000
+cfg.learning_starts = 1000
+
+## TODO: we cannot use epsilon greedy because stupid gymnasium doesn't sample random actions
+## see gymnasium/utils/seeding.py
+
+# def epsilon_schedule(timestep, timesteps):
+#     start = 1.0
+#     end = 0.05
+#     decay_steps = min(50000, timesteps)
+#     eps = start - (start - end) * min(1.0, timestep / decay_steps)
+#     return eps
+# cfg.exploration_scheduler = epsilon_schedule
 
 os.makedirs("./models", exist_ok=True)
 os.makedirs("./models/complete", exist_ok=True)

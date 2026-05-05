@@ -14,13 +14,13 @@ from skrl.resources.preprocessors.torch import RunningStandardScaler
 from policy import *
 
 ######################################
-TOTAL_TIMESTEPS = int(2e5)
+TOTAL_TIMESTEPS = int(5e5)
 NR_ENVS = 1
 MEM_SIZE = 2048
 
 GNN_HIDDEN_DIM = 32
-ACTOR_HEAD_HIDDEN_DIM = 128
-CRITIC_HEAD_HIDDEN_DIM = 128
+ACTOR_HEAD_HIDDEN_DIM = 32
+CRITIC_HEAD_HIDDEN_DIM = 32
 
 DEVICE = "cuda"
 ######################################
@@ -96,17 +96,15 @@ elif raw_env.action_space_type == "AddRemoveEdgeDiscreteNoSelfLoops":
         device=device,
     )
 elif raw_env.action_space_type == "AddRemoveEdgeMultiDiscrete":
-    print(f"for action {raw_env.action_space_type} the actor is not fully implemented yet")
-    quit()
-    # models["policy"] = PPO_ActorModel_AddRemoveEdgeMultiDiscrete(
-    #     n,
-    #     node_feat_dim=node_features_dim,
-    #     gnn_hidden_dim=GNN_HIDDEN_DIM,
-    #     head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
-    #     observation_space=env.observation_space,
-    #     action_space=env.action_space,
-    #     device=device,
-    # )
+    models["policy"] = PPO_ActorModel_AddRemoveEdgeMultiDiscrete(
+        n,
+        node_feat_dim=node_features_dim,
+        gnn_hidden_dim=GNN_HIDDEN_DIM,
+        head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
+        observation_space=env.observation_space,
+        action_space=env.action_space,
+        device=device,
+    )
 else:
     print(f"Actor for action {raw_env.action_space_type} is not implemented.")
     quit()

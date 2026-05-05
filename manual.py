@@ -40,9 +40,11 @@ def redraw(raw_env):
     vis.draw_viser(netw)
 
     info_str = f"""
-    {netw.get_edge_list()}\n
-    {netw.eigenvalues()}\n
-    {netw.is_IBR()}
+    edges: {netw.get_edge_list()}\n
+    eigs: {netw.eigenvalues()}\n
+    eigs sum: {np.sum(netw.eigenvalues())}\n
+    IBR: {netw.is_IBR()}\n
+    MBR: {netw.is_MBR()[0]}
     """
 
     vis.draw_info(info_str)

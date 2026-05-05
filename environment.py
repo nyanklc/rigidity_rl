@@ -13,6 +13,7 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.vec_env import VecNormalize
 from skrl.utils.tensorboard import SummaryWriter
+import torch
 
 from visualizer import Visualizer
 from scenario import load_scenario, random_scenario
@@ -43,6 +44,10 @@ def define_action_space(type: str, env: "Environment"):
         # edge enumeration
         ec = n**2
         action_space = spaces.Discrete(ec)
+    elif type == "AddEdgeDiscreteNoSelfLoops":
+        # edge enumeration
+        ec = n**2
+        action_space = spaces.Discrete(ec - n + 1)
     elif type == "AddEdgeDiscreteNoSkipNoSelfLoops":
         # edge enumeration
         ec = n**2
@@ -89,7 +94,7 @@ def action_AddRemoveEdgeMultiDiscrete(action, env: "Environment", reward, action
 
         if i_idx != j_idx:
             env.network.add_edge(i_idx, j_idx)
-            reward -= 1 # measurement effort
+            # reward -= 1 # measurement effort
     # remove
     elif action[0] == 1:
         i_idx = action[1]
@@ -105,11 +110,13 @@ def action_AddRemoveEdgeMultiDiscrete(action, env: "Environment", reward, action
 
         if i_idx != j_idx:
             env.network.remove_edge(i_idx, j_idx)
-            reward += 10 # measurement effort
+            # reward += 10 # measurement effort
     # skip
     elif action[0] == 2:
         action_info += "skip"
         pass
+
+    print(action_info)
 
     return reward, action_info
 
@@ -208,6 +215,38 @@ def action_AddEdgeDiscreteNoSkip(action, env: "Environment", reward, action_info
 
     return reward, action_info
 
+def action_AddEdgeDiscreteNoSelfLoops(
+    action, env: "Environment", reward, action_info
+):
+    action_info += f"(action={action}) "
+
+    n = len(env.network.agents)
+
+    # skip
+    if action == n**2 - n:
+        action_info += "skip"
+        pass
+    # add
+    else:
+        i_idx = action // (n - 1)
+        j_idx = action % (n - 1)
+        if j_idx >= i_idx:
+            j_idx += 1
+
+        action_info += f"add {i_idx}-{j_idx}"
+        if i_idx == j_idx:
+            action_info += " (self loop)"
+
+        if env.network.edge_exists(i_idx, j_idx):
+            # reward -= 20 # unnecessary action
+            action_info += " (existed)"
+
+        env.network.add_edge(i_idx, j_idx)
+        reward -= 1  # measurement effort
+
+    print(action_info)
+
+    return reward, action_info
 
 def action_AddEdgeDiscreteNoSkipNoSelfLoops(
     action, env: "Environment", reward, action_info
@@ -263,7 +302,11 @@ def action_AddRemoveEdgeDiscreteNoSelfLoops(
             action_info += " (existed)"
         else:
             env.network.add_edge(i_idx, j_idx)
-            reward -= 1 # measurement effort
+            # TODO: i don't know if this is good
+            if env.network.is_IBR():
+                reward -= 1 # measurement effort
+            else:
+                reward += 1 # need for rigidity
     else:
         # remove
         i_idx = (action - ((action_space_len - 1) // 2)) // (n - 1)
@@ -360,6 +403,7 @@ class Environment(gym.Env):
         max_steps=1e4,
         truncate_enable=True,
         truncate_max_steps=1e4,
+        truncate_penalty_value=100,
         only_randomize_edges=False,
         filepath=None,
     ):
@@ -380,6 +424,7 @@ class Environment(gym.Env):
         self.arg_max_steps = max_steps
         self.arg_truncate_enable = truncate_enable
         self.arg_truncate_max_steps = truncate_max_steps
+        self.arg_truncate_penalty_value = truncate_penalty_value
         self.arg_only_randomize_edges = only_randomize_edges
         self.arg_filepath = filepath
         ###############################
@@ -410,6 +455,7 @@ class Environment(gym.Env):
 
         self.truncate_enable = truncate_enable
         self.truncate_max_steps = truncate_max_steps
+        self.truncate_penalty_value = truncate_penalty_value
 
         self.only_randomize_edges = only_randomize_edges
 
@@ -441,11 +487,13 @@ class Environment(gym.Env):
         REWARD_TYPE = config["reward_type"]
         TERMINATION_CONDITION_TYPE = config["termination_condition_type"]
         ACTION_REWARDS_ENABLE = config["action_rewards_enable"]
+        TIME_PENALTY_VALUE = config["time_penalty_value"]
         INCREMENTAL_REWARDS_ENABLE = config["incremental_rewards_enable"]
         TRACK_DATA_ENABLE = config["track_data_enable"]
         MAX_STEPS = config["max_steps"]
         TRUNCATE_ENABLE = config["truncate_enable"]
         TRUNCATE_MAX_STEPS = config["truncate_max_steps"]
+        TRUNCATE_PENALTY_VALUE = config["truncate_penalty_value"]
         ONLY_RANDOMIZE_EDGES = config["only_randomize_edges"]
         scenario_name = config["scenario"]
         scenario_path = (
@@ -462,11 +510,13 @@ class Environment(gym.Env):
             reward_type=REWARD_TYPE,
             termination_condition_type=TERMINATION_CONDITION_TYPE,
             action_rewards_enable=ACTION_REWARDS_ENABLE,
+            time_penalty_value=TIME_PENALTY_VALUE,
             incremental_rewards_enable=INCREMENTAL_REWARDS_ENABLE,
             track_data_enable=TRACK_DATA_ENABLE,
             max_steps=MAX_STEPS,
             truncate_enable=TRUNCATE_ENABLE,
             truncate_max_steps=TRUNCATE_MAX_STEPS,
+            truncate_penalty_value=TRUNCATE_PENALTY_VALUE,
             only_randomize_edges=ONLY_RANDOMIZE_EDGES,
             filepath=scenario_path,
         )
@@ -475,6 +525,7 @@ class Environment(gym.Env):
     def step(self, action):
         reward = 0.0
         reward -= self.time_penalty_value # time taken
+        time_penalty_reward = reward
         n = len(self.network.agents)
 
         action_info = ""
@@ -491,6 +542,8 @@ class Environment(gym.Env):
             action_return = action_AddEdgeDiscrete(action, self, reward, action_info)
         elif self.action_space_type == "AddEdgeDiscreteNoSkip":
             action_return = action_AddEdgeDiscreteNoSkip(action, self, reward, action_info)
+        elif self.action_space_type == "AddEdgeDiscreteNoSelfLoops":
+            action_return = action_AddEdgeDiscreteNoSelfLoops(action, self, reward, action_info)
         elif self.action_space_type == "AddEdgeDiscreteNoSkipNoSelfLoops":
             action_return = action_AddEdgeDiscreteNoSkipNoSelfLoops(
                 action, self, reward, action_info
@@ -508,7 +561,7 @@ class Environment(gym.Env):
         else:
             _, action_info = action_return
 
-        action_reward = reward
+        action_reward = reward - time_penalty_reward
 
         # obs
         obs = self._get_obs()
@@ -541,7 +594,7 @@ class Environment(gym.Env):
                 reward -= 10
         elif self.reward_type == "MinRigidAndMinEigenvalue":
             punish = 10
-            if not is_IBR:
+            if not is_MBR:
                 reward -= punish
             else:
                 eigs = self.network.eigenvalues()
@@ -553,6 +606,20 @@ class Environment(gym.Env):
             nonzero = eigs[eigs > 0.0]
             min_eig = nonzero[0] if len(nonzero) else 0
             reward += min_eig
+        elif self.reward_type == "Eigenvalues":
+            eigs = self.network.eigenvalues()
+            nonzero = eigs[eigs > 0.0]
+            min_eig = nonzero[0] if len(nonzero) else 0
+            second_min_eig = nonzero[1] if len(nonzero)>=2 else 0
+            reward += 1e4 * (min_eig + second_min_eig)
+        elif self.reward_type == "EdgeCount":
+            edge_count = self.network.edges.sum()
+            reward -= edge_count
+        elif self.reward_type == "LogMinEigenvalue":
+            eigs = self.network.eigenvalues()
+            nonzero = eigs[eigs > 0.0]
+            min_eig = nonzero[0] if len(nonzero) else 0
+            reward += np.log10(min_eig) if np.abs(min_eig) > 10e-10 else 0.0
         elif self.reward_type == "None" or None:
             pass
 
@@ -588,6 +655,7 @@ class Environment(gym.Env):
 
         if self.truncate_enable:
             if self.step_counter >= self.truncate_max_steps:
+                reward -= self.truncate_penalty_value
                 truncated = True
 
         termination_reward = reward - state_reward - action_reward
@@ -650,7 +718,8 @@ class Environment(gym.Env):
                 self.writer.add_scalar(tag="Environment/ Reward termination", value=self.info["reward (termination)"], timestep=self.writer_counter)
                 self.writer.add_scalar(tag="Environment/ Min eig", value=self.info["min eigenvalue"], timestep=self.writer_counter)
                 self.writer.add_scalar(tag="Environment/ Second min eig", value=self.info["second min eigenvalue"], timestep=self.writer_counter)
-                self.writer.add_scalar(tag="Environment/ Action", value=self.info["action (raw)"], timestep=self.writer_counter)
+                if type(self.info["action (raw)"]) not in [list, np.ndarray, torch.Tensor]:
+                    self.writer.add_scalar(tag="Environment/ Action", value=self.info["action (raw)"], timestep=self.writer_counter)
         else:
             self.writer.add_scalar(tag=tag, value=value, timestep=self.writer_counter)
 
@@ -714,16 +783,17 @@ if __name__ == "__main__":
     # ACTION_TYPE = "AddRemoveEdgeDiscrete"
     # ACTION_TYPE = "AddEdgeDiscrete"
     # ACTION_TYPE = "AddEdgeDiscreteNoSkip"
+    # ACTION_TYPE = "AddEdgeDiscreteNoSelfLoops"
     # ACTION_TYPE = "AddEdgeDiscreteNoSkipNoSelfLoops"
     ACTION_TYPE = "AddRemoveEdgeDiscreteNoSelfLoops"
 
-    ACTION_REWARDS_ENABLE = True
-    # ACTION_REWARDS_ENABLE = False
+    # ACTION_REWARDS_ENABLE = True
+    ACTION_REWARDS_ENABLE = False
 
     TIME_PENALTY_VALUE = 1.0
 
-    INCREMENTAL_REWARDS_ENABLE = False
-    # INCREMENTAL_REWARDS_ENABLE = True
+    # INCREMENTAL_REWARDS_ENABLE = False
+    INCREMENTAL_REWARDS_ENABLE = True
 
     TRACK_DATA_ENABLE = True
     # TRACK_DATA_ENABLE = False
@@ -738,7 +808,10 @@ if __name__ == "__main__":
     # REWARD_TYPE = "RigidAndMinRigid"
     # REWARD_TYPE = "MinRigid"
     # REWARD_TYPE = "MinRigidAndMinEigenvalue"
-    REWARD_TYPE = "MinEigenvalue"
+    # REWARD_TYPE = "MinEigenvalue"
+    # REWARD_TYPE = "Eigenvalues"
+    # REWARD_TYPE = "EdgeCount"
+    REWARD_TYPE = "LogMinEigenvalue"
     # REWARD_TYPE = "None"
 
     # TERMINATION_CONDITION_TYPE = "MaxSteps"
@@ -748,9 +821,10 @@ if __name__ == "__main__":
     # TERMINATION_CONDITION_TYPE = "Bandit"
 
 
-    MAX_STEPS = 1000
+    MAX_STEPS = 100
     TRUNCATE_ENABLE = False
     TRUNCATE_MAX_STEPS = 100
+    TRUNCATE_PENALTY_VALUE = 100
     ONLY_RANDOMIZE_EDGES = True
     #############################################
 
@@ -823,6 +897,7 @@ if __name__ == "__main__":
         "max_steps": MAX_STEPS,
         "truncate_enable": TRUNCATE_ENABLE,
         "truncate_max_steps": TRUNCATE_MAX_STEPS,
+        "truncate_penalty_value": TRUNCATE_PENALTY_VALUE,
         "only_randomize_edges": ONLY_RANDOMIZE_EDGES,
         "scenario": scenario_name,
     }
