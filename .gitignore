@@ -6,3 +6,5 @@ tboard_logs/
 *.zip
 junk/
 runs/
+.idea/
+.spyproject/

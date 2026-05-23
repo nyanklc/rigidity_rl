@@ -8,7 +8,7 @@ import torch
 from datetime import datetime
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
-from skrl.agents.torch.dqn import DQN, DQN_CFG
+from skrl.agents.torch.ddqn import DDQN, DDQN_CFG
 from skrl.trainers.torch import SequentialTrainer, SequentialTrainerCfg
 from skrl.resources.preprocessors.torch import RunningStandardScaler
 import skrl
@@ -56,7 +56,7 @@ with open(filepath, "r") as f:
 
 model_name = (
     model_name_prefix
-    + f"_action{raw_env.action_space_type}_obs{raw_env.obs_space_type}_{scenario_name if scenario_name is not None else n_domains}"
+    + f"_action{raw_env.action_space_type}_obs{raw_env.obs_space_type}_reward{raw_env.reward_type}_term{raw_env.termination_condition_type}_{scenario_name if scenario_name is not None else n_domains}"
 )
 
 device = DEVICE
@@ -70,46 +70,8 @@ node_features_dim = raw_env.observation_space["node_features"].shape[1]
 
 models = {}
 # q network
-if raw_env.action_space_type == "AddRemoveEdgeDiscreteNoSelfLoops":
-    # models["q_network"] = ActorModel_AddRemoveEdgeDiscreteNoSelfLoops_FC(
-    #     n,
-    #     node_feat_dim=node_features_dim,
-    #     gnn_hidden_dim=GNN_HIDDEN_DIM,
-    #     head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
-    #     observation_space=env.observation_space,
-    #     action_space=env.action_space,
-    #     device=device,
-    # )
-    models["q_network"] = DQN_QNetwork_AddRemoveEdgeDiscreteNoSelfLoops(
-        n,
-        node_feat_dim=node_features_dim,
-        gnn_hidden_dim=GNN_HIDDEN_DIM,
-        head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
-        observation_space=env.observation_space,
-        action_space=env.action_space,
-        device=device,
-    )
-elif raw_env.action_space_type == "AddEdgeDiscreteNoSelfLoops":
-    models["q_network"] = DQN_QNetwork_AddEdgeDiscreteNoSelfLoops(
-        n,
-        node_feat_dim=node_features_dim,
-        gnn_hidden_dim=GNN_HIDDEN_DIM,
-        head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
-        observation_space=env.observation_space,
-        action_space=env.action_space,
-        device=device,
-    )
-elif raw_env.action_space_type == "SelectNodesSequentially":
-    # models["q_network"] = DQN_QNetwork_SelectNodesSequentially(
-    #     n,
-    #     node_feat_dim=node_features_dim,
-    #     gnn_hidden_dim=GNN_HIDDEN_DIM,
-    #     head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
-    #     observation_space=env.observation_space,
-    #     action_space=env.action_space,
-    #     device=device,
-    # )
-    models["q_network"] = DQN_QNetwork_GC_MDP(
+if raw_env.action_space_type == "SelectNodesSequentially":
+    models["q_network"] = DDQN_QNetwork_SelectNodesSequentially(
         n,
         node_feat_dim=node_features_dim,
         gnn_hidden_dim=GNN_HIDDEN_DIM,
@@ -129,7 +91,7 @@ models["target_q_network"] = copy.deepcopy(models["q_network"])
 # TODO: env.num_envs??
 memory = RandomMemory(memory_size=MEM_SIZE, num_envs=NR_ENVS, device=device)
 
-cfg = DQN_CFG()
+cfg = DDQN_CFG()
 cfg.experiment.directory = "runs"
 cfg.experiment.experiment_name = model_name
 cfg.learning_rate = 1e-4
@@ -154,13 +116,13 @@ cfg.exploration_scheduler = epsilon_schedule
 
 os.makedirs("./models", exist_ok=True)
 os.makedirs("./models/complete", exist_ok=True)
-os.makedirs("./models/complete/DQN", exist_ok=True)
+os.makedirs("./models/complete/DDQN", exist_ok=True)
 os.makedirs("./models/experiment", exist_ok=True)
 
 torch.set_printoptions(threshold=10000)
 
 
-agent = DQN(
+agent = DDQN(
     models=models,
     memory=memory,
     cfg=cfg,
@@ -182,7 +144,7 @@ print("##########################################")
 print(f"Training on {device}...")
 trainer.train()
 
-agent.save(f"./models/complete/DQN/{model_name}.pt")
+agent.save(f"./models/complete/DDQN/{model_name}.pt")
 
 print(f"Completed.")
 print(f"Model saved: models/complete/{model_name}.pt")

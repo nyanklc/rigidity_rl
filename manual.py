@@ -37,6 +37,7 @@ slider_j = vis.server.gui.add_slider("j", min=0, max=len(netw.agents)-1, step=1,
 
 
 def redraw(raw_env):
+    vis.reset()
     vis.draw_viser(netw)
 
     info_str = f"""

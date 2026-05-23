@@ -14,9 +14,9 @@ from skrl.resources.preprocessors.torch import RunningStandardScaler
 from policy import *
 
 ######################################
-TOTAL_TIMESTEPS = int(5e5)
+TOTAL_TIMESTEPS = int(1e6)
 NR_ENVS = 1
-MEM_SIZE = 2048
+MEM_SIZE = 2048 * 4
 
 GNN_HIDDEN_DIM = 32
 ACTOR_HEAD_HIDDEN_DIM = 32
@@ -53,7 +53,7 @@ with open(filepath, "r") as f:
 
 model_name = (
     model_name_prefix
-    + f"_action{raw_env.action_space_type}_obs{raw_env.obs_space_type}_reward{raw_env.reward_type}_term{raw_env.termination_condition_type}_{scenario_name if scenario_name is not None else n_domains}"
+    + f"_action{raw_env.action_space_type}_obs{raw_env.obs_space_type}_{scenario_name if scenario_name is not None else n_domains}"
 )
 
 device = DEVICE
@@ -105,21 +105,53 @@ elif raw_env.action_space_type == "AddRemoveEdgeMultiDiscrete":
         action_space=env.action_space,
         device=device,
     )
+elif raw_env.action_space_type == "SelectNodesSequentially":
+    models["policy"] = PPO_ActorModel_SelectNodesSequentially(
+        n,
+        node_feat_dim=node_features_dim,
+        gnn_hidden_dim=GNN_HIDDEN_DIM,
+        head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
+        observation_space=env.observation_space,
+        action_space=env.action_space,
+        device=device,
+    )
+elif raw_env.action_space_type == "DecideOnEdge":
+    models["policy"] = PPO_ActorModel_DecideOnEdge(
+        n,
+        node_feat_dim=node_features_dim,
+        gnn_hidden_dim=GNN_HIDDEN_DIM,
+        head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
+        observation_space=env.observation_space,
+        action_space=env.action_space,
+        device=device,
+    )
 else:
     print(f"Actor for action {raw_env.action_space_type} is not implemented.")
     quit()
 
 # critic
-models["value"] = PPO_CriticModel(
-    n,
-    node_feat_dim=node_features_dim,
-    gnn_hidden_dim=GNN_HIDDEN_DIM,
-    head_hidden_dim=CRITIC_HEAD_HIDDEN_DIM,
+if raw_env.obs_space_type == "DictNodeFeaturesAndAdjAndSelection":
+    models["value"] = PPO_CriticModel_Selection(
+        n,
+        node_feat_dim=node_features_dim,
+        gnn_hidden_dim=GNN_HIDDEN_DIM,
+        head_hidden_dim=CRITIC_HEAD_HIDDEN_DIM,
 
-    observation_space=env.observation_space,
-    action_space=env.action_space,
-    device=device,
-)
+        observation_space=env.observation_space,
+        action_space=env.action_space,
+        device=device,
+    )
+else:
+    models["value"] = PPO_CriticModel(
+        n,
+        node_feat_dim=node_features_dim,
+        gnn_hidden_dim=GNN_HIDDEN_DIM,
+        head_hidden_dim=CRITIC_HEAD_HIDDEN_DIM,
+
+        observation_space=env.observation_space,
+        action_space=env.action_space,
+        device=device,
+    )
 
 # for rollouts
 # TODO: env.num_envs??

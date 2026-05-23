@@ -32,11 +32,21 @@ class Agent:
         else:
             self.rotation_axis = None
 
+    """ TODO: we manually clip the velocities here but i'm not sure if the gradient based controller should
+    inherently handle this, since the domain information is in the bearing rigidity matrix. """
     def set_velocity(self, vel):
         self.velocity = vel
+        if self.domain in ["R^2", "R^2xS^1"]:
+            self.velocity[2] = 0.0
 
     def set_angular_velocity(self, ang_vel):
-        self.angular_velocity = ang_vel
+        if self.domain in ["R^2", "R^3"]:
+            self.angular_velocity = np.zeros(3)
+        elif self.domain == "R^2xS^1":
+            self.angular_velocity = np.zeros(3)
+            self.angular_velocity[2] = ang_vel[2]
+        else:
+            self.angular_velocity = ang_vel
 
     def get_node_features(self):
         # TODO: add the domain?
@@ -193,7 +203,7 @@ class Network:
 
         if (
             domain != "SE(3)"
-            and domain != "R^3xS^1"
+            # and domain != "R^3xS^1" # TODO: rotation axis is cumbersome to support (e.g. in velocity clipping)
             and domain != "R^2xS^1"
             and domain != "R^3"
             and domain != "R^2"
@@ -237,6 +247,28 @@ class Network:
             bearings[3*k:3*k+3] = self.agents[i].get_bearing(self.agents[j])
         return bearings
 
+    def get_bearings_explicit(self):
+        b = np.zeros(3 * ( len(self.agents)**2 ))
+        for k, (i, j) in enumerate(zip(np.nonzero(self.edges))):
+            b[3*i+j:3*i+j+3] = self.agents[i].get_bearing(self.agents[j])
+        return b
+
+    def get_node_features(self):
+        """ BIG TODO: the GNN is not invariant to rigid body configurations but only node permutations,
+            so using the pose as the sole node feature makes is really difficult for it to learn. """
+
+        n = len(self.agents)
+
+        # TODO: i don't think we can use this meaningfully
+        # agent_features = [agent.get_node_features() for agent in self.agents] # 6 each, pos+ori
+        node_level_features = NotImplemented
+        graph_level_features = NotImplemented
+        existing_bearing_features = self.get_bearings_explicit()
+        existing_bearing_features.reshape((n, -1))
+        distance_features = NotImplemented
+
+        return NotImplemented
+
     def print(self):
         print(f"NETWORK")
         for i, agent in enumerate(self.agents):
@@ -249,3 +281,21 @@ class Network:
         edge_list = self.get_edge_list()
         for i, j in edge_list:
             print(f"{i} -> {j}")
+
+    def __str__(self):
+        lines = []
+        lines.append("NETWORK")
+
+        for i, agent in enumerate(self.agents):
+            lines.append(
+                f"agent {i} in {agent.domain} with rotation axis {agent.rotation_axis}"
+            )
+            # Assuming agent.pose.print() also needs to be a string:
+            lines.append(str(agent.pose))
+
+        lines.append("edges:")
+        edge_list = self.get_edge_list()
+        for i, j in edge_list:
+            lines.append(f"{i} -> {j}")
+
+        return "\n".join(lines)

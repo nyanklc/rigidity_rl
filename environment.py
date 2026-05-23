@@ -56,6 +56,10 @@ def define_action_space(type: str, env: "Environment"):
         # edge enumeration
         ec = n**2
         action_space = spaces.Discrete(2*ec - 2*n + 1)
+    elif type == "SelectNodesSequentially":
+        action_space = spaces.Discrete(n)
+    elif type == "DecideOnEdge":
+        action_space = spaces.Discrete(3)
 
     return action_space
 
@@ -327,6 +331,63 @@ def action_AddRemoveEdgeDiscreteNoSelfLoops(
 
     return reward, action_info
 
+
+def action_SelectNodesSequentially(action, env: "Environment", reward, action_info):
+    action_info += f"(action={action}) "
+
+    n = len(env.network.agents)
+
+    reward -= np.sum(env.network.edges)
+
+    if action == n:
+        action_info += " skip"
+        return reward, action_info
+
+    # select first node
+    if not np.sum(env.selection):
+        env.selection[action] = 1
+        action_info += f"select node {action}"
+    # select second node
+    else:
+        i = np.argwhere(env.selection).squeeze(-1).squeeze(-1)
+        j = action
+
+        if env.network.edge_exists(i, j):
+            didnt_exist = not env.network.edge_exists(i, j)
+            env.network.remove_edge(i, j)
+            action_info += f"remove edge {i} -> {j}"
+            if didnt_exist:
+                action_info += " (didn't exist)"
+        else:
+            existed = env.network.edge_exists(i, j)
+            env.network.add_edge(i, j)
+            action_info += f"add edge {i} -> {j}"
+            if existed:
+                action_info += " (existed)"
+
+        # reset
+        env.selection = np.zeros(env.network.n)
+
+    return reward, action_info
+
+def action_DecideOnEdge(action, env: "Environment", reward, action_info):
+    action_info += f"(action={action}) proposal: {env.proposed_edge} "
+
+    if action == 0:
+        action_info += f"add "
+        env.network.add_edge(env.proposed_edge[0], env.proposed_edge[1])
+    elif action == 1:
+        action_info += f"remove "
+        env.network.remove_edge(int(env.proposed_edge[0]), int(env.proposed_edge[1]))
+    elif action == 2:
+        action_info += f"skip "
+    else:
+        print(f"shouldn't happen: action_DecideOnEdge")
+        quit()
+
+    return reward, action_info
+
+
 def obs(type: str, env: "Environment", define_type=False):
     obs_space = None
 
@@ -379,6 +440,48 @@ def obs(type: str, env: "Environment", define_type=False):
                 "node_features": spaces.Box(-np.inf, np.inf, (n, node_features.shape[1])), # N agents, 10 features
                 "adj": spaces.Box(0, 1, (n, n))
             })
+    elif type == "DictNodeFeaturesAndAdjAndSelection":
+        node_features = np.asarray(
+            [agent.get_node_features() for agent in network.agents]
+        )
+        adj = network.edges.astype(np.float32)
+        obs = {
+            "node_features": node_features,
+            "adj": adj,
+            "selection": env.selection,
+        }
+        if define_type:
+            obs_space = spaces.Dict(
+                {
+                    "node_features": spaces.Box(
+                        -np.inf, np.inf, (n, node_features.shape[1])
+                    ),  # N agents, 10 features
+                    "adj": spaces.Box(0, 1, (n, n)),
+                    "selection": spaces.Box(0, 1, [n], dtype=int),
+                }
+            )
+    elif type == "DictNodeFeaturesAndAdjAndEdgeProposal":
+        env.edge_proposal = np.array([np.random.randint(0, env.network.n),
+                                      np.random.randint(0, env.network.n)])
+        node_features = np.asarray(
+            [agent.get_node_features() for agent in network.agents]
+        )
+        adj = network.edges.astype(np.float32)
+        obs = {
+            "node_features": node_features,
+            "adj": adj,
+            "proposed_edge": env.edge_proposal,
+        }
+        if define_type:
+            obs_space = spaces.Dict(
+                {
+                    "node_features": spaces.Box(
+                        -np.inf, np.inf, (n, node_features.shape[1])
+                    ),  # N agents, 10 features
+                    "adj": spaces.Box(0, 1, (n, n)),
+                    "proposed_edge": spaces.Box(0, n, [2]),
+                }
+            )
 
     return obs, obs_space
 
@@ -409,26 +512,6 @@ class Environment(gym.Env):
     ):
         print("initializing environment")
 
-        ###############################
-        # to use in reset because i'm lazy
-        self.arg_n = n
-        self.arg_domains = domains
-        self.arg_action_space_type = action_space_type
-        self.arg_obs_space_type = obs_space_type
-        self.arg_reward_type = reward_type
-        self.arg_termination_condition_type = termination_condition_type
-        self.arg_action_rewards_enable = action_rewards_enable
-        self.arg_time_penalty_value = time_penalty_value
-        self.arg_track_data_enable = track_data_enable
-        self.arg_incremental_rewards_enable = incremental_rewards_enable
-        self.arg_max_steps = max_steps
-        self.arg_truncate_enable = truncate_enable
-        self.arg_truncate_max_steps = truncate_max_steps
-        self.arg_truncate_penalty_value = truncate_penalty_value
-        self.arg_only_randomize_edges = only_randomize_edges
-        self.arg_filepath = filepath
-        ###############################
-
         self.action_space_type = action_space_type
         self.obs_space_type = obs_space_type
         self.reward_type = reward_type
@@ -444,6 +527,9 @@ class Environment(gym.Env):
         self.m = int(self.network.edges.sum())
 
         self.brm = self.network.extended_bearing_rigidity_matrix()
+
+        self.selection = np.zeros(self.n)
+        self.proposed_edge = np.zeros(2)
 
         _, self.observation_space = obs(obs_space_type, self, define_type=True)
         self.action_space = define_action_space(action_space_type, self)
@@ -552,6 +638,14 @@ class Environment(gym.Env):
             action_return = action_AddRemoveEdgeDiscreteNoSelfLoops(
                 action, self, reward, action_info
             )
+        elif self.action_space_type == "SelectNodesSequentially":
+            action_return = action_SelectNodesSequentially(
+                action, self, reward, action_info
+            )
+        elif self.action_space_type == "DecideOnEdge":
+            action_return = action_DecideOnEdge(
+                action, self, reward, action_info
+            )
         else:
             print(f"faulty action space definition?")
             quit()
@@ -570,9 +664,7 @@ class Environment(gym.Env):
         is_MBR, is_IBR = self.network.is_MBR()
         if self.reward_type == "Rigid":
             if is_IBR:
-                reward += 10
-            else:
-                reward -= 10
+                reward += 100
         elif self.reward_type == "RigidAndMinEigenvalue":
             punish = 10
             if not is_IBR:
@@ -587,6 +679,19 @@ class Environment(gym.Env):
                 reward += 10
             if is_MBR:
                 reward += 10
+        elif self.reward_type == "RigidAndLogMinEigenvalueAndEdges":
+            bonus = 100
+            if is_IBR:
+                reward += bonus
+
+            eigs = self.network.eigenvalues()
+            nonzero = eigs[eigs > 0.0]
+            min_eig = nonzero[0] if len(nonzero) else 0
+            if min_eig != 0.0:
+                reward += np.log10(min_eig * 1e5)
+
+            reward -= np.sum(self.network.edges)
+
         elif self.reward_type == "MinRigid":
             if is_MBR:
                 reward += 10
@@ -620,6 +725,10 @@ class Environment(gym.Env):
             nonzero = eigs[eigs > 0.0]
             min_eig = nonzero[0] if len(nonzero) else 0
             reward += np.log10(min_eig) if np.abs(min_eig) > 10e-10 else 0.0
+        elif self.reward_type == "RigidityMatrixRank":
+            brm = self.network.extended_bearing_rigidity_matrix()
+            if np.sum(brm):
+                reward += np.linalg.matrix_rank(brm)
         elif self.reward_type == "None" or None:
             pass
 
@@ -632,6 +741,12 @@ class Environment(gym.Env):
         terminated = False
         if self.termination_condition_type == "MaxSteps":
             if self.step_counter >= self.max_steps:
+                terminated = True
+        elif self.termination_condition_type == "MaxStepsRankBonus":
+            if self.step_counter >= self.max_steps:
+                brm = self.network.extended_bearing_rigidity_matrix()
+                if np.sum(brm):
+                    reward += np.linalg.matrix_rank(brm)
                 terminated = True
         elif self.termination_condition_type == "Rigid":
             if is_IBR:
@@ -727,10 +842,6 @@ class Environment(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
 
-        self.action_space_type = self.arg_action_space_type
-        self.obs_space_type = self.arg_obs_space_type
-        self.reward_type = self.arg_reward_type
-
         if self.filepath:
             self.network, self.goal_network = load_scenario(self.filepath)
         else:
@@ -740,9 +851,10 @@ class Environment(gym.Env):
             # depending on how we want to train, we may want to randomize only the
             # poses and remove all edges for instance (e.g. empty scenario with AllEdges actions).
 
+            n = self.network.n
+            domains = self.network.agents[0].domain # only homogeneous is supported
             if self.only_randomize_edges:
                 edge_set = set()
-                n = self.network.n
                 max_possible_edges = n**2 - n # no self loops
                 m = np.random.randint(0, max_possible_edges + 1)
                 while len(edge_set) < m:
@@ -755,16 +867,18 @@ class Environment(gym.Env):
                 else:
                     self.network.set_edges_indices(edges[:, 0], edges[:, 1])
             else:
-                self.network, self.goal_network = random_scenario(self.arg_n, self.arg_domains)
+                self.network, self.goal_network = random_scenario(n, domains)
 
         self.n = len(self.network.agents)
         self.m = int(self.network.edges.sum())
 
         self.brm = self.network.extended_bearing_rigidity_matrix()
 
+        self.selection = np.zeros(self.n)
+        self.proposed_edge = np.zeros(2)
+
         self.nr_max_edges = self.n**2
         self.step_counter = 0
-        self.max_steps = self.arg_max_steps
 
         self.last_reward = 0
 
@@ -785,47 +899,55 @@ if __name__ == "__main__":
     # ACTION_TYPE = "AddEdgeDiscreteNoSkip"
     # ACTION_TYPE = "AddEdgeDiscreteNoSelfLoops"
     # ACTION_TYPE = "AddEdgeDiscreteNoSkipNoSelfLoops"
-    ACTION_TYPE = "AddRemoveEdgeDiscreteNoSelfLoops"
+    # ACTION_TYPE = "AddRemoveEdgeDiscreteNoSelfLoops"
+    ACTION_TYPE = "SelectNodesSequentially"
+    # ACTION_TYPE = "DecideOnEdge"
 
     # ACTION_REWARDS_ENABLE = True
     ACTION_REWARDS_ENABLE = False
 
     TIME_PENALTY_VALUE = 1.0
 
-    # INCREMENTAL_REWARDS_ENABLE = False
-    INCREMENTAL_REWARDS_ENABLE = True
+    INCREMENTAL_REWARDS_ENABLE = False
+    # INCREMENTAL_REWARDS_ENABLE = True
 
-    TRACK_DATA_ENABLE = True
-    # TRACK_DATA_ENABLE = False
+    # TRACK_DATA_ENABLE = True
+    TRACK_DATA_ENABLE = False
 
     # OBS_TYPE = "Complete"
     # OBS_TYPE = "CompleteAndEigenvalues"
     # OBS_TYPE = "AdjFlatAndEigenvalues"
-    OBS_TYPE = "DictNodeFeaturesAndAdj"
+    # OBS_TYPE = "DictNodeFeaturesAndAdj"
+    OBS_TYPE = "DictNodeFeaturesAndAdjAndSelection"
+    # OBS_TYPE = "DictNodeFeaturesAndAdjAndEdgeProposal"
 
     # REWARD_TYPE = "Rigid"
     # REWARD_TYPE = "RigidAndMinEigenvalue"
     # REWARD_TYPE = "RigidAndMinRigid"
+    REWARD_TYPE = "RigidAndLogMinEigenvalueAndEdges"
     # REWARD_TYPE = "MinRigid"
     # REWARD_TYPE = "MinRigidAndMinEigenvalue"
     # REWARD_TYPE = "MinEigenvalue"
     # REWARD_TYPE = "Eigenvalues"
     # REWARD_TYPE = "EdgeCount"
-    REWARD_TYPE = "LogMinEigenvalue"
+    # REWARD_TYPE = "LogMinEigenvalue"
+    # REWARD_TYPE = "RigidityMatrixRank"
     # REWARD_TYPE = "None"
 
-    # TERMINATION_CONDITION_TYPE = "MaxSteps"
+    TERMINATION_CONDITION_TYPE = "MaxSteps"
+    # TERMINATION_CONDITION_TYPE = "MaxStepsRankBonus"
     # TERMINATION_CONDITION_TYPE = "Rigid"
     # TERMINATION_CONDITION_TYPE = "RigidMinEigBonus"
-    TERMINATION_CONDITION_TYPE = "MinimallyRigid"
+    # TERMINATION_CONDITION_TYPE = "MinimallyRigid"
     # TERMINATION_CONDITION_TYPE = "Bandit"
 
+    MAX_STEPS = 200
 
-    MAX_STEPS = 100
     TRUNCATE_ENABLE = False
-    TRUNCATE_MAX_STEPS = 100
-    TRUNCATE_PENALTY_VALUE = 100
-    ONLY_RANDOMIZE_EDGES = True
+    TRUNCATE_MAX_STEPS = 200
+    TRUNCATE_PENALTY_VALUE = 5
+
+    ONLY_RANDOMIZE_EDGES = False
     #############################################
 
     if len(sys.argv) < 3:

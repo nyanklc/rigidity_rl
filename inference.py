@@ -44,6 +44,13 @@ if MODEL_TYPE == "DQN":
     MEM_SIZE = 20000
     GNN_HIDDEN_DIM = 32
     QNETWORK_HEAD_HIDDEN_DIM = 128
+
+# DDQN
+if MODEL_TYPE == "DDQN":
+    NR_ENVS = 1
+    MEM_SIZE = 20000
+    GNN_HIDDEN_DIM = 32
+    QNETWORK_HEAD_HIDDEN_DIM = 128
 #############################################
 
 
@@ -76,6 +83,11 @@ if MODEL_TYPE == "DQN":
     modelpath = "./models/complete/DQN/" + model_name + ".pt"
     if not os.path.exists(modelpath):
         print(f"file models/complete/DQN/{model_name}.pt does not exist")
+        quit()
+if MODEL_TYPE == "DDQN":
+    modelpath = "./models/complete/DDQN/" + model_name + ".pt"
+    if not os.path.exists(modelpath):
+        print(f"file models/complete/DDQN/{model_name}.pt does not exist")
         quit()
 
 env_name = sys.argv[2]
@@ -132,21 +144,43 @@ if MODEL_TYPE == "PPO":
             action_space=env.action_space,
             device=device,
         )
+    elif raw_env.action_space_type == "SelectNodesSequentially":
+        models["policy"] = PPO_ActorModel_SelectNodesSequentially(
+            n,
+            node_feat_dim=node_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
     else:
         print(f"Actor for action {raw_env.action_space_type} is not implemented.")
         quit()
 
     # critic
-    models["value"] = PPO_CriticModel(
-        n,
-        node_feat_dim=node_features_dim,
-        gnn_hidden_dim=GNN_HIDDEN_DIM,
-        head_hidden_dim=CRITIC_HEAD_HIDDEN_DIM,
+    if raw_env.obs_space_type == "DictNodeFeaturesAndAdjAndSelection":
+        models["value"] = PPO_CriticModel_Selection(
+            n,
+            node_feat_dim=node_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=CRITIC_HEAD_HIDDEN_DIM,
 
-        observation_space=env.observation_space,
-        action_space=env.action_space,
-        device=device,
-    )
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
+    else:
+        models["value"] = PPO_CriticModel(
+            n,
+            node_feat_dim=node_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=CRITIC_HEAD_HIDDEN_DIM,
+
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
 
 
 # DQN
@@ -219,11 +253,13 @@ agent.load(modelpath)
 
 vis = Visualizer()
 button_step = vis.server.gui.add_button("step")
+step_command = vis.server.gui.add_command("step_command", hotkey="space")
 def wait_for_step():
     while not button_step.value:
         vis.server.flush()
         time.sleep(0.05)
     button_step.value = False
+step_command.on_trigger(lambda event: setattr(button_step, 'value', True))
 
 if raw_env.network.agents[0].domain not in ["R^2", "R^3"]:
     print("MBR is only for homogeneous R^d network.")
@@ -280,6 +316,7 @@ if BRUTE_FORCE_BEST:
 
         vis2 = Visualizer(port="6767")
         # vis2.wait_for_start()
+        vis2.reset()
         vis2.draw_viser(netw)
         vis2.draw_info(
             f"BEST POSSIBLE CONFIGURATION\n"
@@ -295,6 +332,7 @@ truncated = False
 step_idx = 1
 
 obs, _ = env.reset()
+vis.reset()
 vis.draw_viser(raw_env.network, node_color=(255, 0, 0), edge_color=(128, 0, 0), label_prefix="Env")
 raw_env.network.print()
 while not (done or truncated):
@@ -309,8 +347,11 @@ while not (done or truncated):
     reward_val = reward.item() if torch.is_tensor(reward) else reward
 
     # show info
+    vis.reset()
     vis.draw_viser(raw_env.network, node_color=(255, 0, 0), edge_color=(128, 0, 0), label_prefix="Env")
-    vis.draw_info("".join([f"{k}: {v}\n" for k, v in info.items()]))
+    info_str = "".join([f"{k}: {v}\n" for k, v in info.items()]) + "\n"
+    info_str += str(env.network)
+    vis.draw_info(info_str)
     vis.server.flush()
 
     step_idx += 1

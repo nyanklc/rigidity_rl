@@ -17,6 +17,9 @@ class Visualizer:
     def stop(self):
         self.server.stop()
 
+    def reset(self):
+        self.server.scene.reset()
+
     def wait_for_start(self):
         while not self.button_start.value:
             time.sleep(0.1)
@@ -36,8 +39,6 @@ class Visualizer:
         node_size=1,
         label_prefix="",
     ):
-        self.server.scene.reset()
-
         positions = np.array([agent.pose.position for agent in network.agents])
 
         # nodes

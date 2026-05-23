@@ -108,6 +108,7 @@ sim_time = 0.0
 accumulator = 0.0
 
 if VISUALIZE:
+    vis.reset()
     vis.draw_viser(
         goal_network,
         node_color=(0, 255, 0),
@@ -159,6 +160,7 @@ while True:
         if curr_time - last_render_time >= render_interval:
             last_render_time = curr_time
 
+            vis.reset()
             vis.draw_viser(goal_network, node_color=(0, 255, 0), edge_color=(0, 128, 0), label_prefix="Goal")
             vis.draw_viser(network, node_color=(255, 0, 0), edge_color=(128, 0, 0), label_prefix="Current")
 
@@ -166,6 +168,7 @@ while True:
                 f"velocities ({i}): {velocities[3*i:3*i+3]}-{velocities[3*len(network.agents)+3*i:3*len(network.agents)+3*i+3]}"
                 for i in range(len(network.agents))
             )
+            print(vels_info)
             vis.draw_info(
                 f"""sim time: {sim_time}\n
                 real time: {curr_time - start_wall_time}\n

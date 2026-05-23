@@ -44,6 +44,31 @@ class Pose:
             f"x: {self.position[0]}\ny: {self.position[1]}\nz: {self.position[2]}\nangles: {quaternion.as_euler_angles(self.orientation)}"
         )
 
+    def __str__(self):
+        return (
+            f"x: {self.position[0]}\n"
+            f"y: {self.position[1]}\n"
+            f"z: {self.position[2]}\n"
+            f"angles: {quaternion.as_euler_angles(self.orientation)}"
+        )
+
+# class RandomActionWrapper:
+#     def __init__(self, env, random_steps):
+#         self.env = env
+#         self.random_steps = random_steps
+#         self.t = 0
+
+#     def step(self, action):
+#         if self.t < self.random_steps:
+#             action = self.env.action_space.sample()
+#         self.t += 1
+#         return self.env.step(action)
+
+#     def reset(self, *args, **kwargs):
+#         return self.env.reset(*args, **kwargs)
+
+#     def __getattr__(self, name):
+#         return getattr(self.env, name)
 
 # ang vel in world frame
 def angular_velocity_to_quaternion(w, dt):
