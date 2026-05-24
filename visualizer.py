@@ -57,7 +57,8 @@ class Visualizer:
             )
 
         # edges
-        i_indices, j_indices = np.nonzero(network.edges)
+        el = network.get_edge_list()
+        i_indices, j_indices = el[:, 0], el[:, 1]
         for k, (i, j) in enumerate(zip(i_indices, j_indices)):
             edge_line_segment = np.array([[positions[i], positions[j]]])
             self.server.scene.add_line_segments(

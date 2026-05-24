@@ -6,7 +6,7 @@ import copy
 def old_extended_bearing_rigidity_matrix(network):
     positions = [agent.pose.position for agent in network.agents]
     rotations = [agent.pose.rotation_mat() for agent in network.agents]
-    edges = network.edges
+    edges = network.adj()
 
     n = len(positions)
     m = int(edges.sum())
@@ -77,7 +77,7 @@ def bearing_DOFs(agent_i, agent_j):
 def extended_bearing_rigidity_matrix(network):
     p = [agent.pose.position for agent in network.agents]
     R = [agent.pose.rotation_mat() for agent in network.agents]
-    edges = network.edges
+    edges = network.adj()
 
     n = len(p)
     m = int(edges.sum())
@@ -137,7 +137,7 @@ def old_is_IBR(network):
     return np.linalg.matrix_rank(brmat) == brmat.shape[1] - (6+1)
 
 def is_IBR(network):
-    if int(network.edges.sum()) == 0:
+    if int(network.adj().sum()) == 0:
         return False
 
     # rigidity matrix
@@ -146,7 +146,7 @@ def is_IBR(network):
     # rigidity matrix of the fully connected graph
     network_K = copy.copy(network)
     n = len(network_K.agents)
-    network_K.edges = np.ones((n, n))
+    network_K.set_edges(np.ones((n, n)))
     brmat_K = extended_bearing_rigidity_matrix(network_K)
 
     # print(f"IBR check: {np.linalg.matrix_rank(brmat)} =? {np.linalg.matrix_rank(brmat_K)}")
@@ -165,7 +165,7 @@ def is_MBR(network):
 
     n = len(network.agents)
     d = 2 if network.agents[0].domain in ["R^2", "R^2xS^1"] else 3
-    m = int(network.edges.sum())
+    m = int(network.adj().sum())
 
     if d < 2 or n < 3:
         return False, isIBR

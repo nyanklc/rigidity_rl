@@ -337,7 +337,7 @@ def action_SelectNodesSequentially(action, env: "Environment", reward, action_in
 
     n = len(env.network.agents)
 
-    reward -= np.sum(env.network.edges)
+    reward -= np.sum(env.network.adj())
 
     if action == n:
         action_info += " skip"
@@ -396,7 +396,7 @@ def obs(type: str, env: "Environment", define_type=False):
 
     obs = None
     if type == "Complete":
-        A = env.network.edges.astype(np.float32)
+        A = env.network.adj().astype(np.float32)
         positions = np.array(
             [agent.pose.position for agent in network.agents]
         ).flatten()
@@ -408,7 +408,7 @@ def obs(type: str, env: "Environment", define_type=False):
             obs_n = obs.shape[0]
             obs_space = spaces.Box(-np.inf, np.inf, (obs_n,))
     elif type == "CompleteAndEigenvalues":
-        A = env.network.edges.astype(np.float32)
+        A = env.network.adj().astype(np.float32)
         # can't just take the nonzero ones since dimension might change
         eigenvalues = env.network.eigenvalues()
         positions = np.array(
@@ -422,7 +422,7 @@ def obs(type: str, env: "Environment", define_type=False):
             obs_n = obs.shape[0]
             obs_space = spaces.Box(-np.inf, np.inf, (obs_n,))
     elif type == "AdjFlatAndEigenvalues":
-        A = env.network.edges.astype(np.float32)
+        A = env.network.adj().astype(np.float32)
         eigenvalues = env.network.eigenvalues()
         obs = np.hstack([A.flatten(), eigenvalues])
         if define_type:
@@ -430,7 +430,7 @@ def obs(type: str, env: "Environment", define_type=False):
             obs_space = spaces.Box(-np.inf, np.inf, (obs_n,))
     elif type == "DictNodeFeaturesAndAdj":
         node_features = np.asarray([agent.get_node_features() for agent in network.agents])
-        adj = network.edges.astype(np.float32)
+        adj = network.adj().astype(np.float32)
         obs = {
             "node_features": node_features,
             "adj": adj
@@ -444,7 +444,7 @@ def obs(type: str, env: "Environment", define_type=False):
         node_features = np.asarray(
             [agent.get_node_features() for agent in network.agents]
         )
-        adj = network.edges.astype(np.float32)
+        adj = network.adj().astype(np.float32)
         obs = {
             "node_features": node_features,
             "adj": adj,
@@ -466,7 +466,7 @@ def obs(type: str, env: "Environment", define_type=False):
         node_features = np.asarray(
             [agent.get_node_features() for agent in network.agents]
         )
-        adj = network.edges.astype(np.float32)
+        adj = network.adj().astype(np.float32)
         obs = {
             "node_features": node_features,
             "adj": adj,
@@ -524,7 +524,7 @@ class Environment(gym.Env):
             self.network, self.goal_network = random_scenario(n, domains)
 
         self.n = len(self.network.agents)
-        self.m = int(self.network.edges.sum())
+        self.m = int(self.network.adj().sum())
 
         self.brm = self.network.extended_bearing_rigidity_matrix()
 
@@ -535,7 +535,6 @@ class Environment(gym.Env):
         self.action_space = define_action_space(action_space_type, self)
         self._get_obs = lambda: obs(obs_space_type, self, False)[0]
 
-        self.nr_max_edges = self.n**2
         self.step_counter = 0
         self.max_steps = max_steps
 
@@ -690,7 +689,7 @@ class Environment(gym.Env):
             if min_eig != 0.0:
                 reward += np.log10(min_eig * 1e5)
 
-            reward -= np.sum(self.network.edges)
+            reward -= np.sum(self.network.adj())
 
         elif self.reward_type == "MinRigid":
             if is_MBR:
@@ -718,7 +717,7 @@ class Environment(gym.Env):
             second_min_eig = nonzero[1] if len(nonzero)>=2 else 0
             reward += 1e4 * (min_eig + second_min_eig)
         elif self.reward_type == "EdgeCount":
-            edge_count = self.network.edges.sum()
+            edge_count = self.network.adj().sum()
             reward -= edge_count
         elif self.reward_type == "LogMinEigenvalue":
             eigs = self.network.eigenvalues()
@@ -750,7 +749,6 @@ class Environment(gym.Env):
                 terminated = True
         elif self.termination_condition_type == "Rigid":
             if is_IBR:
-                # reward += self.network.nr_max_edges * 10
                 reward += 10
                 terminated = True
         elif self.termination_condition_type == "RigidMinEigBonus":
@@ -761,7 +759,6 @@ class Environment(gym.Env):
                 terminated = True
         elif self.termination_condition_type == "MinimallyRigid":
             if is_MBR:
-                # reward += self.network.nr_max_edges * 10
                 reward += 100
                 terminated = True
         elif self.termination_condition_type == "Bandit":
@@ -799,7 +796,7 @@ class Environment(gym.Env):
             "was rigid": self.was_IBR,
             "is min rigid": is_MBR,
             "was min rigid": self.was_MBR,
-            "nr edges": int(self.network.edges.sum()),
+            "nr edges": int(self.network.adj().sum()),
             "terminated": terminated,
             "truncated": truncated,
             "eigenvalues": eigs,
@@ -870,14 +867,13 @@ class Environment(gym.Env):
                 self.network, self.goal_network = random_scenario(n, domains)
 
         self.n = len(self.network.agents)
-        self.m = int(self.network.edges.sum())
+        self.m = int(self.network.adj().sum())
 
         self.brm = self.network.extended_bearing_rigidity_matrix()
 
         self.selection = np.zeros(self.n)
         self.proposed_edge = np.zeros(2)
 
-        self.nr_max_edges = self.n**2
         self.step_counter = 0
 
         self.last_reward = 0

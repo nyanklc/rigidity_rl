@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import viser
 from util import skew_symmetric
+import networkx as nx
 
 
 class Agent:
@@ -92,19 +93,21 @@ class Agent:
 class Network:
     def __init__(self, positions, orientations_euler, edges):
         self.n = len(positions)
-        self.edges = np.zeros((self.n, self.n), dtype=bool)
-        if edges is not None:
-            if edges.shape[1] == self.n: # adj matrix provided
-                self.edges = edges
-                np.fill_diagonal(self.edges, False) # ignore self-loops
-            else: # edge list provided
-                for k, (i, j) in enumerate(edges):
-                    if i != j:
-                        self.edges[i, j] = True
         self.agents: list[Agent] = []
         for i in range(len(positions)):
             self.agents.append(Agent(Pose(positions[i], orientations_euler[i])))
-        self.nr_max_edges = self.n**2
+
+        self.graph = nx.DiGraph()
+
+        if edges is not None:
+            # adj matrix provided
+            if isinstance(edges, np.ndarray) and edges.ndim == 2 and edges.shape[1] == self.n:
+                el = np.asarray(edges.nonzero()).transpose()
+            # edge list provided
+            else:
+                el = edges
+            for k, (i, j) in enumerate(el):
+                self.add_edge(i, j)
 
     def step(self, dt):
         for agent in self.agents:
@@ -115,6 +118,9 @@ class Network:
         for i in range(n):
             self.agents[i].set_velocity(u[3 * i : 3 * i + 3])
             self.agents[i].set_angular_velocity(u[3 * n + 3 * i : 3 * n + 3 * i + 3])
+
+    def adj(self):
+        return nx.to_numpy_array(self.graph, nodelist=range(self.n), dtype=np.float32)
 
     def translate_network(self, dp):
         for agent in self.agents:
@@ -160,40 +166,44 @@ class Network:
             agent.randomize_orientation()
 
     def set_edges(self, edges):
+        self.graph.clear_edges()
         if edges is not None:
-            self.edges = edges
+            if isinstance(edges, np.ndarray) and edges.ndim == 2 and edges.shape[1] == self.n:
+                i_idx, j_idx = np.nonzero(edges)
+                for i, j in zip(i_idx, j_idx):
+                    self.add_edge(int(i), int(j))
+            else:
+                for i, j in edges:
+                    self.add_edge(int(i), int(j))
 
     def set_edges_indices(self, i_indices, j_indices):
-        n = len(self.agents)
-        self.edges = np.zeros((n, n), dtype=bool)
-        m = len(i_indices)
-        if m == 0:
-            return
-        self.edges[i_indices, j_indices] = True
+        self.graph.clear_edges()
+        for i, j in zip(i_indices, j_indices):
+            self.add_edge(int(i), int(j))
 
     def set_edges_list(self, lst):
-        n = len(self.agents)
-        self.edges = np.zeros((n, n), dtype=bool)
-        m = len(lst)
-        if m == 0:
-            return
-
+        self.graph.clear_edges()
         for i, j in lst:
-            self.edges[i, j] = True
+            if i != j:
+                self.add_edge(int(i), int(j))
 
     def add_edge(self, i_idx, j_idx):
         if i_idx != j_idx:
-            self.edges[i_idx, j_idx] = True
+            self.graph.add_edge(int(i_idx), int(j_idx))
 
     def remove_edge(self, i_idx, j_idx):
-        self.edges[i_idx, j_idx] = False
+        if self.edge_exists(i_idx, j_idx):
+            self.graph.remove_edge(int(i_idx), int(j_idx))
 
     def edge_exists(self, i_idx, j_idx):
-        return self.edges[i_idx, j_idx]
+        return self.graph.has_edge(int(i_idx), int(j_idx))
 
     def get_edge_list(self):
-        lists = np.nonzero(self.edges)
-        return [(int(lists[0][i]), int(lists[1][i])) for i in range(len(lists[0]))]
+        if len(self.graph.edges) == 0:
+            print(f"ALO {self.graph.edges}")
+            return []
+        lists = self.adj().nonzero()
+        return np.asarray([(int(lists[0][i]), int(lists[1][i])) for i in range(len(lists[0]))])
 
     def set_agents_domain_homogeneous(self, domain: str, rotation_axis=None):
         # print(f"agents' domain: {domain}")
@@ -240,7 +250,8 @@ class Network:
         return eigenvalues
 
     def get_bearings(self):
-        i_indices, j_indices = np.nonzero(self.edges)
+        el = self.get_edge_list()
+        i_indices, j_indices = el[:, 0], el[:, 1]
         m = len(i_indices)
         bearings = np.zeros(3 * m)
         for k, (i, j) in enumerate(zip(i_indices, j_indices)):
@@ -249,7 +260,7 @@ class Network:
 
     def get_bearings_explicit(self):
         b = np.zeros(3 * ( len(self.agents)**2 ))
-        for k, (i, j) in enumerate(zip(np.nonzero(self.edges))):
+        for k, (i, j) in enumerate(zip(self.get_edge_list())):
             b[3*i+j:3*i+j+3] = self.agents[i].get_bearing(self.agents[j])
         return b
 

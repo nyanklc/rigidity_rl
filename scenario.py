@@ -52,7 +52,8 @@ def random_scenario(
     goal_network.randomize_positions(low, high)
     goal_network.randomize_orientations()
     # same edges
-    goal_network.set_edges(network.edges)
+    print(f"AMINA KOTAYAIM {network}")
+    goal_network.set_edges(network.get_edge_list())
 
     return network, goal_network
 
@@ -64,7 +65,7 @@ def save_scenario(filename, network, goal_network):
             quaternion.as_euler_angles(agent.pose.orientation).tolist()
             for agent in network.agents
         ],
-        "edges": network.edges.tolist(),
+        "edges": network.adj().tolist(),
         "domains": [agent.domain for agent in network.agents],
         "rotation_axes": [
             agent.rotation_axis.tolist() if agent.rotation_axis is not None else None
@@ -76,7 +77,7 @@ def save_scenario(filename, network, goal_network):
             quaternion.as_euler_angles(agent.pose.orientation).tolist()
             for agent in goal_network.agents
         ],
-        "goal_edges": goal_network.edges.tolist(),
+        "goal_edges": goal_network.adj().tolist(),
     }
 
     with open(filename, "w") as f:
