@@ -1,3 +1,5 @@
+from pyexpat import features
+
 import numpy as np
 from util import circle_polygon, move_polygon, Pose, invert_color
 import quaternion
@@ -6,6 +8,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import viser
 from util import skew_symmetric
+from enum import Enum
 
 
 class Agent:
@@ -248,26 +251,40 @@ class Network:
         return bearings
 
     def get_bearings_explicit(self):
-        b = np.zeros(3 * ( len(self.agents)**2 ))
-        for k, (i, j) in enumerate(zip(np.nonzero(self.edges))):
-            b[3*i+j:3*i+j+3] = self.agents[i].get_bearing(self.agents[j])
+        n = len(self.agents)
+        i_indices, j_indices = np.arange(n), np.arange(n)
+        b = np.zeros((n, n, 3))
+        for i in i_indices:
+            for j in j_indices:
+                if i != j and self.edges[i, j]:
+                    b[i, j] = self.agents[i].get_bearing(self.agents[j])
         return b
 
     def get_node_features(self):
-        """ BIG TODO: the GNN is not invariant to rigid body configurations but only node permutations,
-            so using the pose as the sole node feature makes is really difficult for it to learn. """
+        features = [agent.get_node_features() for agent in self.agents] # 6 each, pos+ori
+        return features
 
-        n = len(self.agents)
+    # :P
+    def get_node_features_equivariant(self):
+        agent_domain_feature = {
+            "R^2": np.array([0, 0, 0]),
+            "R^2xS^1": np.array([0, 0, 1]),
+            "R^3": np.array([0, 1, 0]),
+            "R^3xS^1": np.array([0, 1, 1]),
+            "SE(3)": np.array([1, 0, 0]),
+        }
+        feats = np.asarray([agent_domain_feature[agent.domain] for agent in self.agents])
+        orientations = np.asarray([agent.pose.euler_angles() for agent in self.agents])
+        return np.concat([feats, orientations], axis=-1)
 
-        # TODO: i don't think we can use this meaningfully
-        # agent_features = [agent.get_node_features() for agent in self.agents] # 6 each, pos+ori
-        node_level_features = NotImplemented
-        graph_level_features = NotImplemented
+    def get_coords_equivariant(self):
+        # features = np.asarray([agent.get_node_features() for agent in self.agents]) # 6 each, pos+ori
+        features = np.asarray([agent.pose.position for agent in self.agents])
+        return features
+
+    def get_edge_features_equivariant(self):
         existing_bearing_features = self.get_bearings_explicit()
-        existing_bearing_features.reshape((n, -1))
-        distance_features = NotImplemented
-
-        return NotImplemented
+        return existing_bearing_features
 
     def print(self):
         print(f"NETWORK")

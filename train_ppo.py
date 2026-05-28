@@ -12,6 +12,7 @@ from skrl.agents.torch.ppo import PPO, PPO_CFG
 from skrl.trainers.torch import SequentialTrainer, SequentialTrainerCfg
 from skrl.resources.preprocessors.torch import RunningStandardScaler
 from policy import *
+from policy_equivariant import *
 
 ######################################
 TOTAL_TIMESTEPS = int(1e6)
@@ -106,15 +107,26 @@ elif raw_env.action_space_type == "AddRemoveEdgeMultiDiscrete":
         device=device,
     )
 elif raw_env.action_space_type == "SelectNodesSequentially":
-    models["policy"] = PPO_ActorModel_SelectNodesSequentially(
-        n,
-        node_feat_dim=node_features_dim,
-        gnn_hidden_dim=GNN_HIDDEN_DIM,
-        head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
-        observation_space=env.observation_space,
-        action_space=env.action_space,
-        device=device,
-    )
+    if raw_env.obs_space_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
+        models["policy"] = PPO_Equivariant_ActorModel_SelectNodesSequentially(
+            n,
+            node_feat_dim=node_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
+    else:
+        models["policy"] = PPO_ActorModel_SelectNodesSequentially(
+            n,
+            node_feat_dim=node_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
 elif raw_env.action_space_type == "DecideOnEdge":
     models["policy"] = PPO_ActorModel_DecideOnEdge(
         n,
@@ -132,6 +144,17 @@ else:
 # critic
 if raw_env.obs_space_type == "DictNodeFeaturesAndAdjAndSelection":
     models["value"] = PPO_CriticModel_Selection(
+        n,
+        node_feat_dim=node_features_dim,
+        gnn_hidden_dim=GNN_HIDDEN_DIM,
+        head_hidden_dim=CRITIC_HEAD_HIDDEN_DIM,
+
+        observation_space=env.observation_space,
+        action_space=env.action_space,
+        device=device,
+    )
+elif raw_env.obs_space_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
+    models["value"] = PPO_Equivariant_CriticModel_Selection(
         n,
         node_feat_dim=node_features_dim,
         gnn_hidden_dim=GNN_HIDDEN_DIM,

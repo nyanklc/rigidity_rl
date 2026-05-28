@@ -712,14 +712,16 @@ class PPO_CriticModel_Selection(DeterministicMixin, Model):
         # current graph pass
         h = self.gnn(node_features, full_edge_index)
 
-        # add the selection info
-        h = torch.cat([h, selection.unsqueeze(-1)], dim=-1)
+        # concat selected node's features
+        selected = (h * selection.unsqueeze(-1)).sum(dim=1) # zeros if not selected
+        selected_repeated = selected.unsqueeze(1).expand(-1, self.n, -1)
+        new_embeddings = torch.cat([h, selected_repeated], dim=-1)
 
         # graph embedding
-        batch_mapping = torch.arange(batch_size, device=h.device).repeat_interleave(
+        batch_mapping = torch.arange(batch_size, device=new_embeddings.device).repeat_interleave(
             self.n
         )
-        graph_latent = global_mean_pool(h.reshape(-1, h.shape[-1]), batch_mapping)
+        graph_latent = global_mean_pool(new_embeddings.reshape(-1, new_embeddings.shape[-1]), batch_mapping)
 
         value = self.head(graph_latent)
 

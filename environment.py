@@ -429,7 +429,7 @@ def obs(type: str, env: "Environment", define_type=False):
             obs_n = obs.shape[0]
             obs_space = spaces.Box(-np.inf, np.inf, (obs_n,))
     elif type == "DictNodeFeaturesAndAdj":
-        node_features = np.asarray([agent.get_node_features() for agent in network.agents])
+        node_features = network.get_node_features()
         adj = network.edges.astype(np.float32)
         obs = {
             "node_features": node_features,
@@ -441,9 +441,7 @@ def obs(type: str, env: "Environment", define_type=False):
                 "adj": spaces.Box(0, 1, (n, n))
             })
     elif type == "DictNodeFeaturesAndAdjAndSelection":
-        node_features = np.asarray(
-            [agent.get_node_features() for agent in network.agents]
-        )
+        node_features = network.get_node_features()
         adj = network.edges.astype(np.float32)
         obs = {
             "node_features": node_features,
@@ -463,9 +461,7 @@ def obs(type: str, env: "Environment", define_type=False):
     elif type == "DictNodeFeaturesAndAdjAndEdgeProposal":
         env.edge_proposal = np.array([np.random.randint(0, env.network.n),
                                       np.random.randint(0, env.network.n)])
-        node_features = np.asarray(
-            [agent.get_node_features() for agent in network.agents]
-        )
+        node_features = network.get_node_features()
         adj = network.edges.astype(np.float32)
         obs = {
             "node_features": node_features,
@@ -480,6 +476,35 @@ def obs(type: str, env: "Environment", define_type=False):
                     ),  # N agents, 10 features
                     "adj": spaces.Box(0, 1, (n, n)),
                     "proposed_edge": spaces.Box(0, n, [2]),
+                }
+            )
+    elif type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
+        node_features = network.get_node_features_equivariant()
+        coord_features = network.get_coords_equivariant()
+        edge_features = network.get_edge_features_equivariant()
+
+        adj = network.edges.astype(np.float32)
+        obs = {
+            "node_features": node_features,
+            "coord_features": coord_features,
+            "edge_features": edge_features,
+            "adj": adj,
+            "selection": env.selection,
+        }
+        if define_type:
+            obs_space = spaces.Dict(
+                {
+                    "node_features": spaces.Box(
+                        -np.inf, np.inf, node_features.shape
+                    ),  # N agents
+                    "coord_features": spaces.Box(
+                        -np.inf, np.inf, coord_features.shape
+                    ),
+                    "edge_features": spaces.Box(
+                        -np.inf, np.inf, edge_features.shape
+                    ),
+                    "adj": spaces.Box(0, 1, adj.shape),
+                    "selection": spaces.Box(0, 1, env.selection.shape, dtype=int),
                 }
             )
 
@@ -764,6 +789,16 @@ class Environment(gym.Env):
                 # reward += self.network.nr_max_edges * 10
                 reward += 100
                 terminated = True
+        elif self.termination_condition_type == "RigidMinEigAndEdgesBonus":
+            if not is_IBR:
+                reward -= 10
+            else:
+                eigs = self.network.eigenvalues()
+                nonzero = eigs[eigs > 0.0]
+                min_eig = nonzero[0] if len(nonzero) else 0
+                if min_eig != 0.0:
+                    reward += np.log10(min_eig * 1e5)
+                reward -= np.sum(self.network.edges)
         elif self.termination_condition_type == "Bandit":
             if self.step_counter >= 1:
                 terminated = True
@@ -903,28 +938,29 @@ if __name__ == "__main__":
     ACTION_TYPE = "SelectNodesSequentially"
     # ACTION_TYPE = "DecideOnEdge"
 
-    # ACTION_REWARDS_ENABLE = True
-    ACTION_REWARDS_ENABLE = False
+    ACTION_REWARDS_ENABLE = True
+    # ACTION_REWARDS_ENABLE = False
 
     TIME_PENALTY_VALUE = 1.0
 
     INCREMENTAL_REWARDS_ENABLE = False
     # INCREMENTAL_REWARDS_ENABLE = True
 
-    # TRACK_DATA_ENABLE = True
-    TRACK_DATA_ENABLE = False
+    TRACK_DATA_ENABLE = True
+    # TRACK_DATA_ENABLE = False
 
     # OBS_TYPE = "Complete"
     # OBS_TYPE = "CompleteAndEigenvalues"
     # OBS_TYPE = "AdjFlatAndEigenvalues"
     # OBS_TYPE = "DictNodeFeaturesAndAdj"
-    OBS_TYPE = "DictNodeFeaturesAndAdjAndSelection"
+    # OBS_TYPE = "DictNodeFeaturesAndAdjAndSelection"
     # OBS_TYPE = "DictNodeFeaturesAndAdjAndEdgeProposal"
+    OBS_TYPE = "DictEquivariantNodeFeaturesAndAdjAndSelection"
 
     # REWARD_TYPE = "Rigid"
     # REWARD_TYPE = "RigidAndMinEigenvalue"
     # REWARD_TYPE = "RigidAndMinRigid"
-    REWARD_TYPE = "RigidAndLogMinEigenvalueAndEdges"
+    # REWARD_TYPE = "RigidAndLogMinEigenvalueAndEdges"
     # REWARD_TYPE = "MinRigid"
     # REWARD_TYPE = "MinRigidAndMinEigenvalue"
     # REWARD_TYPE = "MinEigenvalue"
@@ -932,18 +968,19 @@ if __name__ == "__main__":
     # REWARD_TYPE = "EdgeCount"
     # REWARD_TYPE = "LogMinEigenvalue"
     # REWARD_TYPE = "RigidityMatrixRank"
-    # REWARD_TYPE = "None"
+    REWARD_TYPE = "None"
 
-    TERMINATION_CONDITION_TYPE = "MaxSteps"
+    # TERMINATION_CONDITION_TYPE = "MaxSteps"
     # TERMINATION_CONDITION_TYPE = "MaxStepsRankBonus"
     # TERMINATION_CONDITION_TYPE = "Rigid"
     # TERMINATION_CONDITION_TYPE = "RigidMinEigBonus"
     # TERMINATION_CONDITION_TYPE = "MinimallyRigid"
+    TERMINATION_CONDITION_TYPE = "RigidMinEigAndEdgesBonus"
     # TERMINATION_CONDITION_TYPE = "Bandit"
 
     MAX_STEPS = 200
 
-    TRUNCATE_ENABLE = False
+    TRUNCATE_ENABLE = True
     TRUNCATE_MAX_STEPS = 200
     TRUNCATE_PENALTY_VALUE = 5
 
