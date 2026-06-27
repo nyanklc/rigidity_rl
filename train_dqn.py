@@ -26,7 +26,7 @@ EGREEDY_STEPS = 200000
 GNN_HIDDEN_DIM = 32
 QNETWORK_HEAD_HIDDEN_DIM = 32
 
-DEVICE = "cuda"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 ##################
 
 if len(sys.argv) < 3:
@@ -100,16 +100,7 @@ elif raw_env.action_space_type == "AddEdgeDiscreteNoSelfLoops":
         device=device,
     )
 elif raw_env.action_space_type == "SelectNodesSequentially":
-    # models["q_network"] = DQN_QNetwork_SelectNodesSequentially(
-    #     n,
-    #     node_feat_dim=node_features_dim,
-    #     gnn_hidden_dim=GNN_HIDDEN_DIM,
-    #     head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
-    #     observation_space=env.observation_space,
-    #     action_space=env.action_space,
-    #     device=device,
-    # )
-    models["q_network"] = DQN_QNetwork_GC_MDP(
+    models["q_network"] = DQN_QNetwork_SelectNodesSequentially(
         n,
         node_feat_dim=node_features_dim,
         gnn_hidden_dim=GNN_HIDDEN_DIM,

@@ -1,29 +1,25 @@
 from environment import Environment
 import os
 import sys
-from datetime import datetime
-from stable_baselines3.common.callbacks import BaseCallback
 import json
 import torch
-from datetime import datetime
+import gymnasium as gym
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
 from skrl.agents.torch.ppo import PPO, PPO_CFG
 from skrl.trainers.torch import SequentialTrainer, SequentialTrainerCfg
-from skrl.resources.preprocessors.torch import RunningStandardScaler
 from policy import *
-from policy_equivariant import *
 
 ######################################
 TOTAL_TIMESTEPS = int(1e6)
-NR_ENVS = 1
-MEM_SIZE = 2048 * 4
+NR_ENVS = 4 # 1
+MEM_SIZE = 64 # 2048 * 4
 
 GNN_HIDDEN_DIM = 32
 ACTOR_HEAD_HIDDEN_DIM = 32
 CRITIC_HEAD_HIDDEN_DIM = 32
 
-DEVICE = "cuda"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 ######################################
 
 
@@ -39,35 +35,42 @@ if not os.path.exists(filepath):
     print(f"file environments/{filename}.json does not exist")
     quit()
 
-raw_env = Environment()
-raw_env.load(filepath)
-
-n = len(raw_env.network.agents)
-domains_str = raw_env.network.agents[0].domain if n > 0 else "domain"
-domains_str = domains_str.replace("^", "").replace("(", "").replace(")", "")
-n_domains = f"n{n}_{domains_str}"
-
-# yeah i can't be bothered
 with open(filepath, "r") as f:
     config = json.load(f)
-    scenario_name = config["scenario"]
+    scenario_name = config.get("scenario")
+    action_type = config.get("action_type")
+    obs_type = config.get("obs_type")
+    n = config.get("n")
+    domains_str = config.get("domains", "domain").replace("^", "").replace("(", "").replace(")", "")
+    n_domains = f"n{n}_{domains_str}"
 
 model_name = (
     model_name_prefix
-    + f"_action{raw_env.action_space_type}_obs{raw_env.obs_space_type}_{scenario_name if scenario_name is not None else n_domains}"
+    + f"_action{action_type}_obs{obs_type}_{scenario_name if scenario_name is not None else n_domains}"
 )
 
 device = DEVICE
 
-raw_env.device = device
-raw_env.set_writer(model_name) # initializes summary writer for env
+def make_env(i):
+    e = Environment()
+    e.load(filepath)
+    # Give each env its own writer string, or none to prevent spam
+    writer_name = model_name if i == 0 else f"{model_name}-{i}"
+    e.set_writer(writer_name)
+    e.device = device
+    return e
+
+# Gym Vector Envs expect a list of callables, so we use a lambda
+raw_env = gym.vector.SyncVectorEnv([lambda idx=i: make_env(idx) for i in range(NR_ENVS)])
 env = wrap_env(raw_env)
 
-node_features_dim = raw_env.observation_space["node_features"].shape[1]
+# Use single_observation_space since raw_env is now batched
+node_features_dim = raw_env.single_observation_space["node_features"].shape[1]
+edge_features_dim = raw_env.single_observation_space["edge_features"].shape[-1]
 
 models = {}
 # actor
-if raw_env.action_space_type == "AddEdgeDiscreteNoSkipNoSelfLoops":
+if action_type == "AddEdgeDiscreteNoSkipNoSelfLoops":
     models["policy"] = PPO_ActorModel_AddEdgeDiscreteNoSkipNoSelfLoops(
         n,
         node_feat_dim=node_features_dim,
@@ -77,7 +80,7 @@ if raw_env.action_space_type == "AddEdgeDiscreteNoSkipNoSelfLoops":
         action_space=env.action_space,
         device=device,
     )
-elif raw_env.action_space_type == "AddRemoveEdgeDiscreteNoSelfLoops":
+elif action_type == "AddRemoveEdgeDiscreteNoSelfLoops":
     # models["policy"] = PPO_ActorModel_AddRemoveEdgeDiscreteNoSelfLoops_FC(
     #     n,
     #     node_feat_dim=node_features_dim,
@@ -96,7 +99,7 @@ elif raw_env.action_space_type == "AddRemoveEdgeDiscreteNoSelfLoops":
         action_space=env.action_space,
         device=device,
     )
-elif raw_env.action_space_type == "AddRemoveEdgeMultiDiscrete":
+elif action_type == "AddRemoveEdgeMultiDiscrete":
     models["policy"] = PPO_ActorModel_AddRemoveEdgeMultiDiscrete(
         n,
         node_feat_dim=node_features_dim,
@@ -106,11 +109,22 @@ elif raw_env.action_space_type == "AddRemoveEdgeMultiDiscrete":
         action_space=env.action_space,
         device=device,
     )
-elif raw_env.action_space_type == "SelectNodesSequentially":
-    if raw_env.obs_space_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
-        models["policy"] = PPO_Equivariant_ActorModel_SelectNodesSequentially(
+elif action_type == "SelectNodesSequentially":
+    if obs_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
+        models["policy"] = PPO_ActorModel_Equivariant_SelectNodesSequentially(
             n,
             node_feat_dim=node_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
+    elif obs_type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
+        models["policy"] = PPO_ActorModel_GINE_SelectNodesSequentially(
+            n,
+            node_feat_dim=node_features_dim,
+            edge_feat_dim=edge_features_dim,
             gnn_hidden_dim=GNN_HIDDEN_DIM,
             head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
             observation_space=env.observation_space,
@@ -127,7 +141,7 @@ elif raw_env.action_space_type == "SelectNodesSequentially":
             action_space=env.action_space,
             device=device,
         )
-elif raw_env.action_space_type == "DecideOnEdge":
+elif action_type == "DecideOnEdge":
     models["policy"] = PPO_ActorModel_DecideOnEdge(
         n,
         node_feat_dim=node_features_dim,
@@ -138,11 +152,11 @@ elif raw_env.action_space_type == "DecideOnEdge":
         device=device,
     )
 else:
-    print(f"Actor for action {raw_env.action_space_type} is not implemented.")
+    print(f"Actor for action {action_type} is not implemented.")
     quit()
 
 # critic
-if raw_env.obs_space_type == "DictNodeFeaturesAndAdjAndSelection":
+if obs_type == "DictNodeFeaturesAndAdjAndSelection":
     models["value"] = PPO_CriticModel_Selection(
         n,
         node_feat_dim=node_features_dim,
@@ -153,8 +167,8 @@ if raw_env.obs_space_type == "DictNodeFeaturesAndAdjAndSelection":
         action_space=env.action_space,
         device=device,
     )
-elif raw_env.obs_space_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
-    models["value"] = PPO_Equivariant_CriticModel_Selection(
+elif obs_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
+    models["value"] = PPO_CriticModel_Equivariant_Selection(
         n,
         node_feat_dim=node_features_dim,
         gnn_hidden_dim=GNN_HIDDEN_DIM,
@@ -164,8 +178,20 @@ elif raw_env.obs_space_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
         action_space=env.action_space,
         device=device,
     )
+elif obs_type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
+    models["value"] = PPO_CriticModel_GINE_Selection(
+        n,
+        node_feat_dim=node_features_dim,
+        edge_feat_dim=edge_features_dim,
+        gnn_hidden_dim=GNN_HIDDEN_DIM,
+        head_hidden_dim=CRITIC_HEAD_HIDDEN_DIM,
+
+        observation_space=env.observation_space,
+        action_space=env.action_space,
+        device=device,
+    )
 else:
-    models["value"] = PPO_CriticModel(
+    models["value"] = PPO_CriticModel_Default(
         n,
         node_feat_dim=node_features_dim,
         gnn_hidden_dim=GNN_HIDDEN_DIM,
@@ -178,7 +204,7 @@ else:
 
 # for rollouts
 # TODO: env.num_envs??
-memory = RandomMemory(memory_size=MEM_SIZE, num_envs=NR_ENVS, device=device)
+memory = RandomMemory(memory_size=MEM_SIZE, num_envs=env.num_envs, device=device)
 
 cfg = PPO_CFG()
 cfg.rollouts = MEM_SIZE # to ensure we don't get garbage data from memory
@@ -211,7 +237,7 @@ trainer = SequentialTrainer(cfg=trainer_cfg, env=env, agents=agent)
 
 print("##########################################")
 print(f"obs space: {trainer.env.observation_space}")
-print(f"action space: {trainer.env.observation_space}")
+print(f"action space: {trainer.env.action_space}")
 print("##########################################")
 
 print(f"Training on {device}...")

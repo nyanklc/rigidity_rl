@@ -8,7 +8,7 @@ from datetime import datetime
 import os
 import sys
 from network import Network
-from rigidity import is_IBR
+from rigidity import is_IBR, rigidity_eigenvalue
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.vec_env import VecNormalize
@@ -57,7 +57,7 @@ def define_action_space(type: str, env: "Environment"):
         ec = n**2
         action_space = spaces.Discrete(2*ec - 2*n + 1)
     elif type == "SelectNodesSequentially":
-        action_space = spaces.Discrete(n)
+        action_space = spaces.Discrete(n+1)
     elif type == "DecideOnEdge":
         action_space = spaces.Discrete(3)
 
@@ -286,11 +286,12 @@ def action_AddRemoveEdgeDiscreteNoSelfLoops(
     ec = n**2
     action_space_len = 2*ec - 2*n + 1
 
-    if action == action_space_len - 1:
-        # skip
-        action_info += "skip"
-        pass
-    elif action < (action_space_len - 1) // 2:
+    # if action == action_space_len - 1:
+    #     # skip
+    #     action_info += "skip"
+    #     pass
+    # el
+    if action < (action_space_len - 1) // 2:
         # add
         i_idx = action // (n - 1)
         j_idx = action % (n - 1)
@@ -366,7 +367,7 @@ def action_SelectNodesSequentially(action, env: "Environment", reward, action_in
                 action_info += " (existed)"
 
         # reset
-        env.selection = np.zeros(env.network.n)
+        env.selection = np.zeros(env.network.n, dtype=np.int64)
 
     return reward, action_info
 
@@ -429,7 +430,7 @@ def obs(type: str, env: "Environment", define_type=False):
             obs_n = obs.shape[0]
             obs_space = spaces.Box(-np.inf, np.inf, (obs_n,))
     elif type == "DictNodeFeaturesAndAdj":
-        node_features = network.get_node_features()
+        node_features = np.concat([network.get_domain_features(), network.get_simplified_bearing_features().reshape(network.n, -1)], -1)
         adj = network.edges.astype(np.float32)
         obs = {
             "node_features": node_features,
@@ -437,11 +438,11 @@ def obs(type: str, env: "Environment", define_type=False):
         }
         if define_type:
             obs_space = spaces.Dict({
-                "node_features": spaces.Box(-np.inf, np.inf, (n, node_features.shape[1])), # N agents, 10 features
+                "node_features": spaces.Box(-np.inf, np.inf, node_features.shape), # N agents, 10 features
                 "adj": spaces.Box(0, 1, (n, n))
             })
     elif type == "DictNodeFeaturesAndAdjAndSelection":
-        node_features = network.get_node_features()
+        node_features = np.concat([network.get_domain_features(), network.get_simplified_bearing_features().reshape(network.n, -1)], -1)
         adj = network.edges.astype(np.float32)
         obs = {
             "node_features": node_features,
@@ -452,7 +453,7 @@ def obs(type: str, env: "Environment", define_type=False):
             obs_space = spaces.Dict(
                 {
                     "node_features": spaces.Box(
-                        -np.inf, np.inf, (n, node_features.shape[1])
+                        -np.inf, np.inf, node_features.shape
                     ),  # N agents, 10 features
                     "adj": spaces.Box(0, 1, (n, n)),
                     "selection": spaces.Box(0, 1, [n], dtype=int),
@@ -461,7 +462,7 @@ def obs(type: str, env: "Environment", define_type=False):
     elif type == "DictNodeFeaturesAndAdjAndEdgeProposal":
         env.edge_proposal = np.array([np.random.randint(0, env.network.n),
                                       np.random.randint(0, env.network.n)])
-        node_features = network.get_node_features()
+        node_features = np.concat([network.get_domain_features(), network.get_bearing_features().reshape(network.n, -1)], -1)
         adj = network.edges.astype(np.float32)
         obs = {
             "node_features": node_features,
@@ -472,16 +473,16 @@ def obs(type: str, env: "Environment", define_type=False):
             obs_space = spaces.Dict(
                 {
                     "node_features": spaces.Box(
-                        -np.inf, np.inf, (n, node_features.shape[1])
+                        -np.inf, np.inf, node_features.shape
                     ),  # N agents, 10 features
                     "adj": spaces.Box(0, 1, (n, n)),
                     "proposed_edge": spaces.Box(0, n, [2]),
                 }
             )
     elif type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
-        node_features = network.get_node_features_equivariant()
-        coord_features = network.get_coords_equivariant()
-        edge_features = network.get_edge_features_equivariant()
+        node_features = np.concat([network.get_domain_features(), network.get_orientation_features()], axis=-1)
+        coord_features = network.get_position_features()
+        edge_features = network.get_bearing_features()
 
         adj = network.edges.astype(np.float32)
         obs = {
@@ -505,6 +506,47 @@ def obs(type: str, env: "Environment", define_type=False):
                     ),
                     "adj": spaces.Box(0, 1, adj.shape),
                     "selection": spaces.Box(0, 1, env.selection.shape, dtype=int),
+                }
+            )
+    elif type == "DictBearingNodeFeaturesAndAdjAndSelection":
+        node_features = network.get_bearing_features().reshape((network.n, -1))
+        adj = network.edges.astype(np.float32)
+        obs = {
+            "node_features": node_features,
+            "adj": adj,
+            "selection": env.selection,
+        }
+        if define_type:
+            obs_space = spaces.Dict(
+                {
+                    "node_features": spaces.Box(
+                        -np.inf, np.inf, node_features.shape
+                    ),  # N agents, 10 features
+                    "adj": spaces.Box(0, 1, (n, n)),
+                    "selection": spaces.Box(0, 1, [n], dtype=int),
+                }
+            )
+    elif type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
+        node_features = network.get_domain_features()
+        edge_features = network.get_bearing_features()
+        adj = network.edges.astype(np.float32)
+        obs = {
+            "node_features": node_features,
+            "edge_features": edge_features,
+            "adj": adj,
+            "selection": env.selection,
+        }
+        if define_type:
+            obs_space = spaces.Dict(
+                {
+                    "node_features": spaces.Box(
+                        -np.inf, np.inf, node_features.shape
+                    ),
+                    "edge_features": spaces.Box(
+                        -np.inf, np.inf, edge_features.shape
+                    ),
+                    "adj": spaces.Box(0, 1, (n, n)),
+                    "selection": spaces.Box(0, 1, [n], dtype=int),
                 }
             )
 
@@ -553,7 +595,7 @@ class Environment(gym.Env):
 
         self.brm = self.network.extended_bearing_rigidity_matrix()
 
-        self.selection = np.zeros(self.n)
+        self.selection = np.zeros(self.n, dtype=np.int64)
         self.proposed_edge = np.zeros(2)
 
         _, self.observation_space = obs(obs_space_type, self, define_type=True)
@@ -633,6 +675,8 @@ class Environment(gym.Env):
         )
 
     # -----------------------------------
+    # TODO: we need to reduce the number of calls to BRM, I think it is the
+    # bottleneck when it comes to training speed
     def step(self, action):
         reward = 0.0
         reward -= self.time_penalty_value # time taken
@@ -685,6 +729,9 @@ class Environment(gym.Env):
         # obs
         obs = self._get_obs()
 
+        # BRM
+        brm = self.network.extended_bearing_rigidity_matrix()
+
         # reward based on state
         is_MBR, is_IBR = self.network.is_MBR()
         if self.reward_type == "Rigid":
@@ -695,9 +742,7 @@ class Environment(gym.Env):
             if not is_IBR:
                 reward -= punish
             else:
-                eigs = self.network.eigenvalues()
-                nonzero = eigs[eigs > 0.0]
-                min_eig = nonzero[0] if len(nonzero) else 0
+                min_eig = rigidity_eigenvalue(self.network)
                 reward += min_eig
         elif self.reward_type == "RigidAndMinRigid":
             if is_IBR:
@@ -709,9 +754,7 @@ class Environment(gym.Env):
             if is_IBR:
                 reward += bonus
 
-            eigs = self.network.eigenvalues()
-            nonzero = eigs[eigs > 0.0]
-            min_eig = nonzero[0] if len(nonzero) else 0
+            min_eig = rigidity_eigenvalue(self.network)
             if min_eig != 0.0:
                 reward += np.log10(min_eig * 1e5)
 
@@ -727,33 +770,44 @@ class Environment(gym.Env):
             if not is_MBR:
                 reward -= punish
             else:
-                eigs = self.network.eigenvalues()
-                nonzero = eigs[eigs > 0.0]
-                min_eig = nonzero[0] if len(nonzero) else 0
+                min_eig = rigidity_eigenvalue(self.network)
                 reward += min_eig
         elif self.reward_type == "MinEigenvalue":
-            eigs = self.network.eigenvalues()
-            nonzero = eigs[eigs > 0.0]
-            min_eig = nonzero[0] if len(nonzero) else 0
+            min_eig = rigidity_eigenvalue(self.network)
             reward += min_eig
         elif self.reward_type == "Eigenvalues":
             eigs = self.network.eigenvalues()
-            nonzero = eigs[eigs > 0.0]
-            min_eig = nonzero[0] if len(nonzero) else 0
-            second_min_eig = nonzero[1] if len(nonzero)>=2 else 0
-            reward += 1e4 * (min_eig + second_min_eig)
+            reward += 1e4 * np.sum(eigs)
         elif self.reward_type == "EdgeCount":
             edge_count = self.network.edges.sum()
             reward -= edge_count
         elif self.reward_type == "LogMinEigenvalue":
-            eigs = self.network.eigenvalues()
-            nonzero = eigs[eigs > 0.0]
-            min_eig = nonzero[0] if len(nonzero) else 0
+            min_eig = rigidity_eigenvalue(self.network)
             reward += np.log10(min_eig) if np.abs(min_eig) > 10e-10 else 0.0
         elif self.reward_type == "RigidityMatrixRank":
-            brm = self.network.extended_bearing_rigidity_matrix()
             if np.sum(brm):
                 reward += np.linalg.matrix_rank(brm)
+        elif self.reward_type == "RigidityMatrixRankAndEdges":
+            if np.sum(brm):
+                reward += np.linalg.matrix_rank(brm)
+            reward -= np.sum(self.network.edges)
+        elif self.reward_type == "Weighted":
+            # TODO: tune hyperparameters somehow
+            w_rank = 20
+            w_ibr = 0 # 100
+            w_eig = 0 # 5
+            w_eig1 = 0 # 1e5
+            w_edge = 5
+
+            r_rank = w_rank * np.linalg.matrix_rank(brm)
+            r_ibr = w_ibr * np.float32(is_IBR)
+            r_eig = w_eig * np.float32(is_IBR) * np.log1p(w_eig1 * rigidity_eigenvalue(self.network))
+            r_edge = -w_edge * np.sum(self.network.edges)
+
+            reward += r_rank + r_ibr + r_eig + r_edge
+            # print(f"\nr_rank: {r_rank}: {w_rank}*...\nr_ibr: {r_ibr}: {w_ibr}*...\nr_eig: {r_eig}: {w_eig}*...\nr_edge: {r_edge}: {w_edge}*...")
+            # print(f"\ntotal: {reward}")
+
         elif self.reward_type == "None" or None:
             pass
 
@@ -769,7 +823,6 @@ class Environment(gym.Env):
                 terminated = True
         elif self.termination_condition_type == "MaxStepsRankBonus":
             if self.step_counter >= self.max_steps:
-                brm = self.network.extended_bearing_rigidity_matrix()
                 if np.sum(brm):
                     reward += np.linalg.matrix_rank(brm)
                 terminated = True
@@ -780,9 +833,7 @@ class Environment(gym.Env):
                 terminated = True
         elif self.termination_condition_type == "RigidMinEigBonus":
             if is_IBR:
-                eigs = self.network.eigenvalues
-                nonzero_eigs = eigs[eigs != 0.0]
-                reward += min(nonzero_eigs) # TODO: the value of this is pretty small
+                min_eig = rigidity_eigenvalue(self.network) # TODO: the value of this is pretty small
                 terminated = True
         elif self.termination_condition_type == "MinimallyRigid":
             if is_MBR:
@@ -793,9 +844,7 @@ class Environment(gym.Env):
             if not is_IBR:
                 reward -= 10
             else:
-                eigs = self.network.eigenvalues()
-                nonzero = eigs[eigs > 0.0]
-                min_eig = nonzero[0] if len(nonzero) else 0
+                min_eig = rigidity_eigenvalue(self.network)
                 if min_eig != 0.0:
                     reward += np.log10(min_eig * 1e5)
                 reward -= np.sum(self.network.edges)
@@ -818,8 +867,7 @@ class Environment(gym.Env):
 
         # debug
         eigs = self.network.eigenvalues()
-        nonzero = eigs[eigs != 0.0]
-        min_eig = nonzero[0] if len(nonzero) else 0
+        min_eig = rigidity_eigenvalue(self.network)
         info = {
             "step": f"{self.step_counter}",
             "action (raw)": action,
@@ -838,9 +886,7 @@ class Environment(gym.Env):
             "terminated": terminated,
             "truncated": truncated,
             "eigenvalues": eigs,
-            "nonzero_eigenvalues": nonzero,
             "min eigenvalue": min_eig,
-            "second min eigenvalue": nonzero[1] if len(nonzero) >= 2 else 0.0,
         }
         # print(info)
         self.info = info
@@ -867,7 +913,6 @@ class Environment(gym.Env):
                 self.writer.add_scalar(tag="Environment/ Reward state", value=self.info["reward (state)"], timestep=self.writer_counter)
                 self.writer.add_scalar(tag="Environment/ Reward termination", value=self.info["reward (termination)"], timestep=self.writer_counter)
                 self.writer.add_scalar(tag="Environment/ Min eig", value=self.info["min eigenvalue"], timestep=self.writer_counter)
-                self.writer.add_scalar(tag="Environment/ Second min eig", value=self.info["second min eigenvalue"], timestep=self.writer_counter)
                 if type(self.info["action (raw)"]) not in [list, np.ndarray, torch.Tensor]:
                     self.writer.add_scalar(tag="Environment/ Action", value=self.info["action (raw)"], timestep=self.writer_counter)
         else:
@@ -909,7 +954,7 @@ class Environment(gym.Env):
 
         self.brm = self.network.extended_bearing_rigidity_matrix()
 
-        self.selection = np.zeros(self.n)
+        self.selection = np.zeros(self.n, dtype=np.int64)
         self.proposed_edge = np.zeros(2)
 
         self.nr_max_edges = self.n**2
@@ -938,13 +983,13 @@ if __name__ == "__main__":
     ACTION_TYPE = "SelectNodesSequentially"
     # ACTION_TYPE = "DecideOnEdge"
 
-    ACTION_REWARDS_ENABLE = True
-    # ACTION_REWARDS_ENABLE = False
+    # ACTION_REWARDS_ENABLE = True
+    ACTION_REWARDS_ENABLE = False
 
-    TIME_PENALTY_VALUE = 1.0
+    TIME_PENALTY_VALUE = 0.0
 
-    INCREMENTAL_REWARDS_ENABLE = False
-    # INCREMENTAL_REWARDS_ENABLE = True
+    # INCREMENTAL_REWARDS_ENABLE = False
+    INCREMENTAL_REWARDS_ENABLE = True
 
     TRACK_DATA_ENABLE = True
     # TRACK_DATA_ENABLE = False
@@ -955,7 +1000,9 @@ if __name__ == "__main__":
     # OBS_TYPE = "DictNodeFeaturesAndAdj"
     # OBS_TYPE = "DictNodeFeaturesAndAdjAndSelection"
     # OBS_TYPE = "DictNodeFeaturesAndAdjAndEdgeProposal"
-    OBS_TYPE = "DictEquivariantNodeFeaturesAndAdjAndSelection"
+    # OBS_TYPE = "DictEquivariantNodeFeaturesAndAdjAndSelection"
+    # OBS_TYPE = "DictBearingNodeFeaturesAndAdjAndSelection"
+    OBS_TYPE = "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection"
 
     # REWARD_TYPE = "Rigid"
     # REWARD_TYPE = "RigidAndMinEigenvalue"
@@ -968,21 +1015,23 @@ if __name__ == "__main__":
     # REWARD_TYPE = "EdgeCount"
     # REWARD_TYPE = "LogMinEigenvalue"
     # REWARD_TYPE = "RigidityMatrixRank"
-    REWARD_TYPE = "None"
+    # REWARD_TYPE = "RigidityMatrixRankAndEdges"
+    REWARD_TYPE = "Weighted"
+    # REWARD_TYPE = "None"
 
     # TERMINATION_CONDITION_TYPE = "MaxSteps"
     # TERMINATION_CONDITION_TYPE = "MaxStepsRankBonus"
     # TERMINATION_CONDITION_TYPE = "Rigid"
     # TERMINATION_CONDITION_TYPE = "RigidMinEigBonus"
-    # TERMINATION_CONDITION_TYPE = "MinimallyRigid"
-    TERMINATION_CONDITION_TYPE = "RigidMinEigAndEdgesBonus"
+    TERMINATION_CONDITION_TYPE = "MinimallyRigid"
+    # TERMINATION_CONDITION_TYPE = "RigidMinEigAndEdgesBonus"
     # TERMINATION_CONDITION_TYPE = "Bandit"
 
-    MAX_STEPS = 200
+    MAX_STEPS = 50
 
     TRUNCATE_ENABLE = True
-    TRUNCATE_MAX_STEPS = 200
-    TRUNCATE_PENALTY_VALUE = 5
+    TRUNCATE_MAX_STEPS = 50
+    TRUNCATE_PENALTY_VALUE = 50
 
     ONLY_RANDOMIZE_EDGES = False
     #############################################

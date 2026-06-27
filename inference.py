@@ -21,6 +21,7 @@ from skrl.agents.torch.dqn import DQN, DQN_CFG
 from skrl.trainers.torch import SequentialTrainer, SequentialTrainerCfg
 from skrl.resources.preprocessors.torch import RunningStandardScaler
 from policy import *
+import torch
 
 
 #############################################
@@ -33,7 +34,7 @@ BRUTE_FORCE_BEST = True
 # PPO
 if MODEL_TYPE == "PPO":
     NR_ENVS = 1
-    MEM_SIZE = 2048
+    MEM_SIZE = 2048 * 4
     GNN_HIDDEN_DIM = 32
     ACTOR_HEAD_HIDDEN_DIM = 32
     CRITIC_HEAD_HIDDEN_DIM = 32
@@ -108,6 +109,7 @@ env.reset()
 
 n = len(raw_env.network.agents)
 node_features_dim = raw_env.observation_space["node_features"].shape[1]
+edge_features_dim = raw_env.observation_space["edge_features"].shape[-1]
 ################################################################################
 
 
@@ -145,15 +147,37 @@ if MODEL_TYPE == "PPO":
             device=device,
         )
     elif raw_env.action_space_type == "SelectNodesSequentially":
-        models["policy"] = PPO_ActorModel_SelectNodesSequentially(
-            n,
-            node_feat_dim=node_features_dim,
-            gnn_hidden_dim=GNN_HIDDEN_DIM,
-            head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
-            observation_space=env.observation_space,
-            action_space=env.action_space,
-            device=device,
-        )
+        if raw_env.obs_space_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
+            models["policy"] = PPO_ActorModel_Equivariant_SelectNodesSequentially(
+                n,
+                node_feat_dim=node_features_dim,
+                gnn_hidden_dim=GNN_HIDDEN_DIM,
+                head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
+                observation_space=env.observation_space,
+                action_space=env.action_space,
+                device=device,
+            )
+        elif raw_env.obs_space_type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
+            models["policy"] = PPO_ActorModel_GINE_SelectNodesSequentially(
+                n,
+                node_feat_dim=node_features_dim,
+                edge_feat_dim=edge_features_dim,
+                gnn_hidden_dim=GNN_HIDDEN_DIM,
+                head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
+                observation_space=env.observation_space,
+                action_space=env.action_space,
+                device=device,
+            )
+        else:
+            models["policy"] = PPO_ActorModel_SelectNodesSequentially(
+                n,
+                node_feat_dim=node_features_dim,
+                gnn_hidden_dim=GNN_HIDDEN_DIM,
+                head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
+                observation_space=env.observation_space,
+                action_space=env.action_space,
+                device=device,
+            )
     else:
         print(f"Actor for action {raw_env.action_space_type} is not implemented.")
         quit()
@@ -170,8 +194,31 @@ if MODEL_TYPE == "PPO":
             action_space=env.action_space,
             device=device,
         )
+    elif raw_env.obs_space_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
+        models["value"] = PPO_CriticModel_Equivariant_Selection(
+            n,
+            node_feat_dim=node_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=CRITIC_HEAD_HIDDEN_DIM,
+
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
+    elif raw_env.obs_space_type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
+        models["value"] = PPO_CriticModel_GINE_Selection(
+            n,
+            node_feat_dim=node_features_dim,
+            edge_feat_dim=edge_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=CRITIC_HEAD_HIDDEN_DIM,
+
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
     else:
-        models["value"] = PPO_CriticModel(
+        models["value"] = PPO_CriticModel_Default(
             n,
             node_feat_dim=node_features_dim,
             gnn_hidden_dim=GNN_HIDDEN_DIM,

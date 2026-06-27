@@ -9,6 +9,7 @@ from mpl_toolkits.mplot3d import Axes3D
 import viser
 from util import skew_symmetric
 from enum import Enum
+import copy
 
 
 class Agent:
@@ -218,11 +219,9 @@ class Network:
             agent.set_domain(domain, rotation_axis)
 
     def extended_bearing_rigidity_matrix(self):
-        # return rigidity.old_extended_bearing_rigidity_matrix(self)
         return rigidity.extended_bearing_rigidity_matrix(self)
 
     def is_IBR(self):
-        # return rigidity.old_is_IBR(self)
         return rigidity.is_IBR(self)
 
     # also returns is IBR
@@ -242,6 +241,7 @@ class Network:
         eigenvalues.sort()
         return eigenvalues
 
+    # 3M
     def get_bearings(self):
         i_indices, j_indices = np.nonzero(self.edges)
         m = len(i_indices)
@@ -250,6 +250,7 @@ class Network:
             bearings[3*k:3*k+3] = self.agents[i].get_bearing(self.agents[j])
         return bearings
 
+    # N, N, 3
     def get_bearings_explicit(self):
         n = len(self.agents)
         i_indices, j_indices = np.arange(n), np.arange(n)
@@ -260,31 +261,53 @@ class Network:
                     b[i, j] = self.agents[i].get_bearing(self.agents[j])
         return b
 
-    def get_node_features(self):
+    def get_pose_features(self):
         features = [agent.get_node_features() for agent in self.agents] # 6 each, pos+ori
         return features
 
-    # :P
-    def get_node_features_equivariant(self):
+    # N, 3
+    def get_domain_features(self):
         agent_domain_feature = {
-            "R^2": np.array([0, 0, 0]),
-            "R^2xS^1": np.array([0, 0, 1]),
-            "R^3": np.array([0, 1, 0]),
-            "R^3xS^1": np.array([0, 1, 1]),
-            "SE(3)": np.array([1, 0, 0]),
+            "R^2":     np.array([0, 0, 0, 0, 1]),
+            "R^2xS^1": np.array([0, 0, 0, 1, 0]),
+            "R^3":     np.array([0, 0, 1, 0, 0]),
+            "R^3xS^1": np.array([0, 1, 0, 0, 0]),
+            "SE(3)":   np.array([1, 0, 0, 0, 0]),
         }
         feats = np.asarray([agent_domain_feature[agent.domain] for agent in self.agents])
-        orientations = np.asarray([agent.pose.euler_angles() for agent in self.agents])
-        return np.concat([feats, orientations], axis=-1)
+        return feats
 
-    def get_coords_equivariant(self):
+    # N, 3
+    def get_orientation_features(self):
+        orientations = np.asarray([agent.pose.euler_angles() for agent in self.agents])
+        return orientations
+
+    # N, 3
+    def get_position_features(self):
         # features = np.asarray([agent.get_node_features() for agent in self.agents]) # 6 each, pos+ori
         features = np.asarray([agent.pose.position for agent in self.agents])
         return features
 
-    def get_edge_features_equivariant(self):
+    # N, N, 3
+    def get_bearing_features(self):
         existing_bearing_features = self.get_bearings_explicit()
         return existing_bearing_features
+
+    # N, N, 3
+    def get_simplified_bearing_features(self):
+        existing_bearing_features = self.get_bearings_explicit()
+        return np.sign(existing_bearing_features)
+
+    # M, 3
+    def get_edge_bearing_features(self):
+        existing_bearing_features = self.get_bearings_explicit() # N, N, 3
+        return existing_bearing_features[self.edges]
+
+    def fully_connected(self):
+        network_K = copy.copy(self)
+        n = len(network_K.agents)
+        network_K.edges = np.ones((n, n))
+        return network_K
 
     def print(self):
         print(f"NETWORK")

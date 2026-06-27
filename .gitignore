@@ -6,5 +6,8 @@ tboard_logs/
 *.zip
 junk/
 runs/
+runs_old/
+runs_old_old/
 .idea/
 .spyproject/
+.vscode/
