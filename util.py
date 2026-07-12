@@ -187,3 +187,7 @@ def batched_adj_to_edge_index(adj_batch):
         edges += i * n
         edge_indices.append(edges)
     return torch.cat(edge_indices, dim=1)
+
+def discretize_array(vec):
+    bins = np.linspace(0, 1, 0.05)
+    return np.digitize(vec, bins)

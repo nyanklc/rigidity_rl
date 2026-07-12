@@ -1,30 +1,28 @@
 from environment import Environment
 import os
 import sys
-from datetime import datetime
-from stable_baselines3.common.callbacks import BaseCallback
 import json
 import torch
+import numpy as np
+import copy
+import gymnasium as gym
 from datetime import datetime
+import skrl
+
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
 from skrl.agents.torch.dqn import DQN, DQN_CFG
 from skrl.trainers.torch import SequentialTrainer, SequentialTrainerCfg
-from skrl.resources.preprocessors.torch import RunningStandardScaler
-import skrl
 from policy import *
-import copy
-import numpy as np
-# from util import RandomActionWrapper
 
 ######################################
-TOTAL_TIMESTEPS = int(6e5)
+TOTAL_TIMESTEPS = int(3e5)
 NR_ENVS = 1
 MEM_SIZE = 20000
-EGREEDY_STEPS = 200000
+EGREEDY_STEPS = 100000
 
-GNN_HIDDEN_DIM = 32
-QNETWORK_HEAD_HIDDEN_DIM = 32
+GNN_HIDDEN_DIM = 128
+QNETWORK_HEAD_HIDDEN_DIM = 256
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 ##################
@@ -34,62 +32,78 @@ if len(sys.argv) < 3:
     quit()
 
 model_name_prefix = sys.argv[2]
-
 filename = sys.argv[1]
 filepath = "./environments/" + filename + ".json"
+
 if not os.path.exists(filepath):
     print(f"file environments/{filename}.json does not exist")
     quit()
 
-raw_env = Environment()
-raw_env.load(filepath)
-
-n = len(raw_env.network.agents)
-domains_str = raw_env.network.agents[0].domain if n > 0 else "domain"
-domains_str = domains_str.replace("^", "").replace("(", "").replace(")", "")
-n_domains = f"n{n}_{domains_str}"
-
-# yeah i can't be bothered
 with open(filepath, "r") as f:
     config = json.load(f)
-    scenario_name = config["scenario"]
+    scenario_name = config.get("scenario")
+    action_type = config.get("action_type")
+    obs_type = config.get("obs_type")
+    n = config.get("n")
+    domains_str = config.get("domains", "domain").replace("^", "").replace("(", "").replace(")", "")
+    n_domains = f"n{n}_{domains_str}"
 
 model_name = (
     model_name_prefix
-    + f"_action{raw_env.action_space_type}_obs{raw_env.obs_space_type}_{scenario_name if scenario_name is not None else n_domains}"
+    + f"_action{action_type}_obs{obs_type}_{scenario_name if scenario_name is not None else n_domains}"
 )
 
-device = DEVICE
+def make_env(i):
+    e = Environment()
+    e.load(filepath)
+    writer_name = model_name if i == 0 else f"{model_name}-{i}"
+    e.set_writer(writer_name)
+    e.device = DEVICE
+    return e
 
-raw_env.device = device
-raw_env.set_writer(model_name) # initializes summary writer for env
-# raw_env.action_space.seed(42) # doesn't work
+# FIX: Replaced AsyncVectorEnv with SyncVectorEnv to eliminate RNG duplication
+raw_env = gym.vector.SyncVectorEnv([lambda idx=i: make_env(idx) for i in range(NR_ENVS)])
 env = wrap_env(raw_env)
 
-node_features_dim = raw_env.observation_space["node_features"].shape[1]
+node_features_dim = raw_env.single_observation_space["node_features"].shape[1]
+edge_features_dim = raw_env.single_observation_space["edge_features"].shape[-1]
 
 models = {}
-# q network
-if raw_env.action_space_type == "AddRemoveEdgeDiscreteNoSelfLoops":
-    # models["q_network"] = ActorModel_AddRemoveEdgeDiscreteNoSelfLoops_FC(
-    #     n,
-    #     node_feat_dim=node_features_dim,
-    #     gnn_hidden_dim=GNN_HIDDEN_DIM,
-    #     head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
-    #     observation_space=env.observation_space,
-    #     action_space=env.action_space,
-    #     device=device,
-    # )
-    models["q_network"] = DQN_QNetwork_AddRemoveEdgeDiscreteNoSelfLoops(
-        n,
-        node_feat_dim=node_features_dim,
-        gnn_hidden_dim=GNN_HIDDEN_DIM,
-        head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
-        observation_space=env.observation_space,
-        action_space=env.action_space,
-        device=device,
-    )
-elif raw_env.action_space_type == "AddEdgeDiscreteNoSelfLoops":
+
+if action_type == "AddRemoveEdgeDiscreteNoSelfLoops":
+    if obs_type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
+        models["q_network"] = DQN_QNetwork_GINE_AddRemoveEdgeDiscreteNoSelfLoops(
+            n,
+            node_feat_dim=node_features_dim,
+            edge_feat_dim=edge_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=DEVICE,
+        )
+    elif obs_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
+        models["q_network"] = DQN_QNetwork_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(
+            n,
+            node_feat_dim=node_features_dim,
+            edge_feat_dim=edge_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=DEVICE,
+        )
+    else:
+        models["q_network"] = DQN_QNetwork_AddRemoveEdgeDiscreteNoSelfLoops(
+            n,
+            node_feat_dim=node_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=DEVICE,
+        )
+elif action_type == "AddEdgeDiscreteNoSelfLoops":
     models["q_network"] = DQN_QNetwork_AddEdgeDiscreteNoSelfLoops(
         n,
         node_feat_dim=node_features_dim,
@@ -97,46 +111,91 @@ elif raw_env.action_space_type == "AddEdgeDiscreteNoSelfLoops":
         head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
         observation_space=env.observation_space,
         action_space=env.action_space,
-        device=device,
+        device=DEVICE,
     )
-elif raw_env.action_space_type == "SelectNodesSequentially":
-    models["q_network"] = DQN_QNetwork_SelectNodesSequentially(
-        n,
-        node_feat_dim=node_features_dim,
-        gnn_hidden_dim=GNN_HIDDEN_DIM,
-        head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
-        observation_space=env.observation_space,
-        action_space=env.action_space,
-        device=device,
-    )
+elif action_type == "SelectNodesSequentially":
+    if obs_type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
+        models["q_network"] = DQN_QNetwork_GINE_SelectNodesSequentially(
+            n,
+            node_feat_dim=node_features_dim,
+            edge_feat_dim=edge_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=DEVICE,
+        )
+    elif obs_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
+        models["q_network"] = DQN_QNetwork_Equivariant_SelectNodesSequentially(
+            n,
+            node_feat_dim=node_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            edge_feat_dim=edge_features_dim,
+            head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=DEVICE,
+        )
+    else:
+        models["q_network"] = DQN_QNetwork_SelectNodesSequentially(
+            n,
+            node_feat_dim=node_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=DEVICE,
+        )
+elif action_type == "AddEdgeDiscreteNoSkipNoSelfLoops":
+    if obs_type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
+        models["q_network"] = DQN_QNetwork_GINE_AddEdgeDiscreteNoSkipNoSelfLoops(
+                n,
+                node_feat_dim=node_features_dim,
+                edge_feat_dim=edge_features_dim,
+                gnn_hidden_dim=GNN_HIDDEN_DIM,
+                head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
+                observation_space=env.observation_space,
+                action_space=env.action_space,
+                device=DEVICE,
+            )
+    elif obs_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
+        models["q_network"] = DQN_QNetwork_Equivariant_AddEdgeDiscreteNoSkipNoSelfLoops(
+            n,
+            node_feat_dim=node_features_dim,
+            edge_feat_dim=edge_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=DEVICE,
+        )
+    else:
+        raise Exception(f"Not implemented {action_type} {obs_type}")
 else:
     print(f"Q network for {raw_env.action_space_type} is not implemented.")
     quit()
 
-# target
 models["target_q_network"] = copy.deepcopy(models["q_network"])
 
-# for rollouts
-# TODO: env.num_envs??
-memory = RandomMemory(memory_size=MEM_SIZE, num_envs=NR_ENVS, device=device)
+
+env.action_space.seed(int(datetime.now().timestamp()))
+env.observation_space.seed(int(datetime.now().timestamp()))
+# env.state_space.seed(int(datetime.now().timestamp()))
+
+memory = RandomMemory(memory_size=MEM_SIZE, num_envs=env.num_envs, device=DEVICE)
 
 cfg = DQN_CFG()
 cfg.experiment.directory = "runs"
 cfg.experiment.experiment_name = model_name
-cfg.learning_rate = 1e-4
-cfg.batch_size = 64
-cfg.target_update_interval = 500
-cfg.update_interval = 1
+cfg.batch_size = 128
+cfg.target_update_interval = 1000
+cfg.update_interval = 4
 cfg.learning_starts = MEM_SIZE + 1
-# cfg.random_timesteps = 200000
-# cfg.discount_factor = 0.5
-
-## TODO: we cannot use epsilon greedy because stupid gymnasium doesn't sample random actions
-## see gymnasium/utils/seeding.py
-## idk I added a custom change for now. gymnasium/vector/utils/space_utils.py:89
+cfg.discount_factor = 0.99
+cfg.random_timesteps = MEM_SIZE
 
 def epsilon_schedule(timestep, timesteps):
-    start = 1.0
+    start = 0.8
     end = 0.05
     decay_steps = min(EGREEDY_STEPS, timesteps)
     eps = start - (start - end) * min(1.0, timestep / decay_steps)
@@ -144,12 +203,7 @@ def epsilon_schedule(timestep, timesteps):
 cfg.exploration_scheduler = epsilon_schedule
 
 os.makedirs("./models", exist_ok=True)
-os.makedirs("./models/complete", exist_ok=True)
 os.makedirs("./models/complete/DQN", exist_ok=True)
-os.makedirs("./models/experiment", exist_ok=True)
-
-torch.set_printoptions(threshold=10000)
-
 
 agent = DQN(
     models=models,
@@ -157,20 +211,37 @@ agent = DQN(
     cfg=cfg,
     observation_space=env.observation_space,
     action_space=env.action_space,
-    device=device,
+    device=DEVICE,
 )
 
 trainer_cfg = SequentialTrainerCfg()
 trainer_cfg.timesteps = TOTAL_TIMESTEPS
-trainer_cfg.headless = True # we don't have env.render()
+trainer_cfg.headless = True
 trainer = SequentialTrainer(cfg=trainer_cfg, env=env, agents=agent)
 
+import dataclasses
+import pprint
 print("##########################################")
+print(" TRAINING ")
+print("="*40)
 print(f"obs space: {trainer.env.observation_space}")
-print(f"action space: {trainer.env.observation_space}")
+print(f"action space: {trainer.env.action_space}")
+print(f"model: {models["q_network"].__class__.__name__}")
+print(f"TOTAL_TIMESTEPS: {TOTAL_TIMESTEPS}")
+print(f"NR_ENVS: {NR_ENVS}")
+print(f"MEM_SIZE: {MEM_SIZE}")
+print(f"EGREEDY_STEPS: {EGREEDY_STEPS}")
+print(f"GNN_HIDDEN_DIM: {GNN_HIDDEN_DIM}")
+print(f"QNETWORK_HEAD_HIDDEN_DIM: {QNETWORK_HEAD_HIDDEN_DIM}")
+print("\n" + "="*40)
+print(" CONFIG ")
+print("="*40)
+pprint.pprint(dataclasses.asdict(cfg), width=80, sort_dicts=False)
+print("="*40 + "\n")
 print("##########################################")
 
-print(f"Training on {device}...")
+print(f"Training on {DEVICE}...")
+print(f"Logging: {model_name}")
 trainer.train()
 
 agent.save(f"./models/complete/DQN/{model_name}.pt")

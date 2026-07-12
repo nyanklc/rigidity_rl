@@ -13,6 +13,7 @@ def random_scenario(
     n,
     domains: str | list[str] = "SE(3)",
     pos_limits=([-100, -100, -100], [100, 100, 100]),
+    edge_count=None,
 ):
     low, high = np.array(pos_limits[0]), np.array(pos_limits[1])
     positions = np.zeros((n, 3))
@@ -30,6 +31,10 @@ def random_scenario(
     edge_set = set()
     max_possible_edges = n**2 - n # no self loops
     m = np.random.randint(0, max_possible_edges + 1)
+
+    if edge_count is not None:
+        m = edge_count
+
     while len(edge_set) < m:
         i, j = np.random.choice(n, size=2, replace=False)
         if ((i, j) not in edge_set):

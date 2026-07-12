@@ -1,4 +1,5 @@
 import torch
+from typing import Any
 import torch.nn as nn
 from skrl.models.torch import Model
 from skrl.models.torch import TabularMixin
@@ -36,6 +37,21 @@ class DQN_QNetwork_AddEdgeDiscreteNoSelfLoops(TabularMixin, Model):
         )
 
         self.skip_head = nn.Linear(gnn_hidden_dim, 1)
+
+    def random_act(self, inputs: dict[str, Any], *, role: str = "") -> tuple[torch.Tensor, dict[str, Any]]:
+        observations = unflatten_tensorized_space(self.observation_space, inputs["observations"])
+        adj = observations["adj"]
+        batch_size = adj.shape[0]
+        n = adj.shape[1]
+
+        add_mask = (adj == 0)
+        add_mask = add_mask[:, ~torch.eye(n, dtype=torch.bool, device=adj.device)].view(batch_size, -1)
+        
+        skip_mask = torch.ones((batch_size, 1), dtype=torch.bool, device=adj.device)
+        full_mask = torch.cat([add_mask, skip_mask], dim=1)
+        
+        actions = torch.multinomial(full_mask.float(), 1)
+        return actions, {}
 
     def compute(self, inputs, role):
         # TODO: for some reason untensorize_space doesn't work for us.

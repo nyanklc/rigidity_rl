@@ -52,12 +52,6 @@ class PPO_ActorModel_GINE_SelectNodesSequentially(CategoricalMixin, Model):
         adj = observations["adj"]
         selection = observations["selection"]
 
-        # print(f"here")
-        # print(f"node_features: {node_features}")
-        # print(f"edge_features: {edge_features}")
-        # print(f"adj: {adj}")
-        # print(f"selection: {selection}")
-
         batch_size = node_features.shape[0]
         n = node_features.shape[1]
 
@@ -74,14 +68,10 @@ class PPO_ActorModel_GINE_SelectNodesSequentially(CategoricalMixin, Model):
         full_edge_index = torch.cat(edge_index_list, dim=1).to(self.device)
         full_edge_attr = torch.cat(edge_attr_list, dim=0).to(self.device)
 
-        # print(f"hello here full_edge_index: {full_edge_index}, full_edge_attr: {full_edge_attr}")
-
         out_degrees = adj.sum(dim=-1, keepdim=True)
         node_features = torch.cat([node_features, out_degrees], dim=-1)
 
-        # print(f"before gnn call")
         h = self.gnn(node_features, full_edge_index, full_edge_attr)
-        # print(f"after gnn call")
 
         # concat selected node's features
         selected = (h * selection.unsqueeze(-1)).sum(dim=1) # zeros if not selected
@@ -94,15 +84,10 @@ class PPO_ActorModel_GINE_SelectNodesSequentially(CategoricalMixin, Model):
         logits = torch.cat([add_remove_logits, skip_logit], dim=-1)
 
         # mask out self loops
-        # print(f"q_values before: {q_values}")
         selected_mask = selection.bool().squeeze(-1)
         has_selected = selection.sum(dim=1) > 0
         has_selected = has_selected.unsqueeze(1).expand(-1, selected_mask.size(1))
         mask = selected_mask & has_selected   # (B, N)
         logits[:, :-1] = logits[:, :-1].masked_fill(mask, -1e9) # exclude the skip action
-        # print(f"selected_mask: {selected_mask}")
-        # print(f"has_selected: {has_selected}")
-        # print(f"mask: {mask}")
-        # print(f"q_values after: {q_values}")
 
         return logits, {}

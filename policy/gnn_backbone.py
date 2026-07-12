@@ -49,6 +49,12 @@ class GNNBackboneGINE(nn.Module):
         # print(f"inside gnn nodes: {nodes.shape}, edge_index: {edge_index.shape}, edges: {edges.shape}")
         # print(f"inside gnn x: {x.shape}, e: -")
 
+        # IMPORTANT: the GIN(E) message passing adds the inward edge features
+        # to the neighbor's features during message passing. however it makes
+        # more sense for us to use outward edge
+        # ("I have this bearing to this node")
+        edge_index = edge_index.flip(0)
+
         # TODO: relu??
         h = self.conv1(x, edge_index, edge_attr=edges)
         h = self.conv2(h, edge_index, edge_attr=edges)

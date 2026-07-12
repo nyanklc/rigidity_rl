@@ -12,12 +12,12 @@ from policy import *
 
 ######################################
 TOTAL_TIMESTEPS = int(1e6)
-NR_ENVS = 4 # 1
-MEM_SIZE = 64 # 2048 * 4
+NR_ENVS = 8 # 1
+MEM_SIZE = 1024 # 2048 * 4
 
-GNN_HIDDEN_DIM = 32
-ACTOR_HEAD_HIDDEN_DIM = 32
-CRITIC_HEAD_HIDDEN_DIM = 32
+GNN_HIDDEN_DIM = 128
+ACTOR_HEAD_HIDDEN_DIM = 128
+CRITIC_HEAD_HIDDEN_DIM = 128
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 ######################################
@@ -211,7 +211,15 @@ cfg.rollouts = MEM_SIZE # to ensure we don't get garbage data from memory
 cfg.experiment.directory = "runs"
 cfg.experiment.experiment_name = model_name
 # incentivize exploration more
-cfg.entropy_loss_scale = 0.1
+cfg.entropy_loss_scale = 0.01
+import dataclasses
+import pprint
+# Convert the dataclass to a dictionary and pretty-print it
+print("\n" + "="*40)
+print(" CONFIG ")
+print("="*40)
+pprint.pprint(dataclasses.asdict(cfg), width=80, sort_dicts=False)
+print("="*40 + "\n")
 
 os.makedirs("./models", exist_ok=True)
 os.makedirs("./models/complete", exist_ok=True)
@@ -238,9 +246,12 @@ trainer = SequentialTrainer(cfg=trainer_cfg, env=env, agents=agent)
 print("##########################################")
 print(f"obs space: {trainer.env.observation_space}")
 print(f"action space: {trainer.env.action_space}")
+print(f"actor: {models["policy"].__class__.__name__}")
+print(f"critic: {models["value"].__class__.__name__}")
 print("##########################################")
 
 print(f"Training on {device}...")
+print(f"Logging: {model_name}")
 trainer.train()
 
 agent.save(f"./models/complete/PPO/{model_name}.pt")

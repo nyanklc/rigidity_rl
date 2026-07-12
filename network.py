@@ -1,7 +1,7 @@
 from pyexpat import features
 
 import numpy as np
-from util import circle_polygon, move_polygon, Pose, invert_color
+from util import circle_polygon, move_polygon, Pose, invert_color, discretize_array
 import quaternion
 import rigidity
 import matplotlib.pyplot as plt
@@ -73,6 +73,13 @@ class Agent:
         else:
             bearing = p
         return bearing
+
+    # the azimuth and elevation of the bearing vector
+    def get_bearing_angles(self, other: "Agent"):
+        bearing = self.get_bearing(other)
+        theta = np.atan2(bearing[1], bearing[0])
+        phi = np.arccos(bearing[2])
+        return np.asarray([theta, phi])
 
     def randomize_position(self, low=[-100, -100, -100], high=[100, 100, 100]):
         if self.domain in ["R^2", "R^2xS^1"]:
@@ -221,16 +228,16 @@ class Network:
     def extended_bearing_rigidity_matrix(self):
         return rigidity.extended_bearing_rigidity_matrix(self)
 
-    def is_IBR(self):
-        return rigidity.is_IBR(self)
+    def is_IBR(self, rank_K=None):
+        return rigidity.is_IBR(self, rank_K=rank_K)
 
     # also returns is IBR
-    def is_MBR(self):
+    def is_MBR(self, rank_K=None):
         # for agent in self.agents:
         #     if agent.domain not in ["R^2", "R^3"]:
         #         raise Exception("Minimally Bearing Rigidity is not defined for domains other than R^d.")
 
-        return rigidity.is_MBR(self)
+        return rigidity.is_MBR(self, rank_K=rank_K)
 
     def eigenvalues(self, eps=1e-10):
         brm = self.extended_bearing_rigidity_matrix()
@@ -259,6 +266,17 @@ class Network:
             for j in j_indices:
                 if i != j and self.edges[i, j]:
                     b[i, j] = self.agents[i].get_bearing(self.agents[j])
+        return b
+
+    # N, N, 2
+    def get_bearing_angles_explicit(self):
+        n = len(self.agents)
+        i_indices, j_indices = np.arange(n), np.arange(n)
+        b = np.zeros((n, n, 2))
+        for i in i_indices:
+            for j in j_indices:
+                if i != j and self.edges[i, j]:
+                    b[i, j] = self.agents[i].get_bearing_angles(self.agents[j])
         return b
 
     def get_pose_features(self):
@@ -294,6 +312,21 @@ class Network:
         return existing_bearing_features
 
     # N, N, 3
+    def get_bearing_features_discrete(self):
+        existing_bearing_features = self.get_bearings_explicit()
+        return discretize_array(existing_bearing_features)
+
+    # N, N, 2
+    def get_bearing_angle_features(self):
+        existing_bearing_angle_features = self.get_bearing_angles_explicit()
+        return existing_bearing_angle_features
+
+    # N, N, 2
+    def get_bearing_angle_features_discrete(self):
+        existing_bearing_angle_features = self.get_bearing_angles_explicit()
+        return discretize_array(existing_bearing_angle_features)
+
+    # N, N, 3
     def get_simplified_bearing_features(self):
         existing_bearing_features = self.get_bearings_explicit()
         return np.sign(existing_bearing_features)
@@ -303,11 +336,121 @@ class Network:
         existing_bearing_features = self.get_bearings_explicit() # N, N, 3
         return existing_bearing_features[self.edges]
 
+    # N, 2
+    def get_degree_features(self):
+        # in-degree and out-degree
+        out_degree = np.sum(self.edges, axis=1)
+        in_degree = np.sum(self.edges, axis=0)
+        return np.column_stack((in_degree, out_degree))
+
+    # N, 1
+    def get_closeness_centrality_features(self):
+        n = self.n
+        dist = np.full((n, n), np.inf)
+        np.fill_diagonal(dist, 0)
+        dist[self.edges] = 1
+
+        for k in range(n):
+            for i in range(n):
+                for j in range(n):
+                    if dist[i, k] + dist[k, j] < dist[i, j]:
+                        dist[i, j] = dist[i, k] + dist[k, j]
+
+        closeness = np.zeros(n)
+        if n > 1:
+            for i in range(n):
+                valid_dists = dist[i, dist[i, :] < np.inf]
+                reachable = len(valid_dists) - 1
+                if reachable > 0:
+                    closeness[i] = (reachable / np.sum(valid_dists)) * (reachable / (n - 1))
+        return closeness[:, np.newaxis]
+
+    # N, 1
+    def get_eigenvector_centrality_features(self, max_iter=100, tol=1e-6):
+        n = self.n
+        x = np.ones(n) / n
+        A = self.edges.astype(float)
+
+        for _ in range(max_iter):
+            x_next = A.T @ x
+            norm = np.linalg.norm(x_next)
+            if norm == 0:
+                return x[:, np.newaxis]
+            x_next = x_next / norm
+            if np.linalg.norm(x_next - x) < tol:
+                return x_next[:, np.newaxis]
+            x = x_next
+        return x[:, np.newaxis]
+
+    def _brandes_betweenness(self):
+        n = self.n
+        node_betweenness = np.zeros(n)
+        edge_betweenness = np.zeros((n, n))
+
+        adj = {i: [] for i in range(n)}
+        for i in range(n):
+            for j in range(n):
+                if self.edges[i, j]:
+                    adj[i].append(j)
+
+        for s in range(n):
+            S = []
+            P = {w: [] for w in range(n)}
+            sigma = np.zeros(n)
+            sigma[s] = 1.0
+            d = np.full(n, -1.0)
+            d[s] = 0.0
+
+            Q = [s]
+            while Q:
+                v = Q.pop(0)
+                S.append(v)
+                for w in adj[v]:
+                    if d[w] < 0:
+                        Q.append(w)
+                        d[w] = d[v] + 1.0
+                    if d[w] == d[v] + 1.0:
+                        sigma[w] += sigma[v]
+                        P[w].append(v)
+
+            delta = np.zeros(n)
+            while S:
+                w = S.pop()
+                for v in P[w]:
+                    c = (sigma[v] / sigma[w]) * (1.0 + delta[w])
+                    edge_betweenness[v, w] += c
+                    delta[v] += c
+                if w != s:
+                    node_betweenness[w] += delta[w]
+
+        return node_betweenness, edge_betweenness
+
+    # N, 1
+    def get_node_betweenness_features(self):
+        nb, _ = self._brandes_betweenness()
+        return nb[:, np.newaxis]
+
+    # N, N, 1
+    def get_edge_betweenness_features(self):
+        _, eb = self._brandes_betweenness()
+        return eb[:, :, np.newaxis]
+
+    # N, N, 1
+    def get_edge_reciprocity_features(self):
+        reciprocal = (self.edges & self.edges.T).astype(float)
+        return reciprocal[:, :, np.newaxis]
+
+    # N, N, 1
+    def get_common_neighbors_features(self):
+        A = self.edges.astype(float)
+        common = A @ A
+        return common[:, :, np.newaxis]
+
     def fully_connected(self):
         network_K = copy.copy(self)
         n = len(network_K.agents)
         network_K.edges = np.ones((n, n))
-        return network_K
+        return network_K # TODO: return does copy?
 
     def print(self):
         print(f"NETWORK")

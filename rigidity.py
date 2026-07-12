@@ -98,31 +98,35 @@ def extended_bearing_rigidity_matrix(network):
 
     return B
 
-def is_IBR_explicit(brmat, brmat_K):
-    return np.linalg.matrix_rank(brmat) == np.linalg.matrix_rank(brmat_K)
+def is_IBR_explicit(brmat, brmat_K=None, rank_K=None):
+    if rank_K is None:
+        rank_K = np.linalg.matrix_rank(brmat_K)
+    return np.linalg.matrix_rank(brmat) == rank_K
 
-def is_IBR(network):
+def is_IBR(network, rank_K=None):
     if int(network.edges.sum()) == 0:
         return False
 
     # rigidity matrix
     brmat = extended_bearing_rigidity_matrix(network)
 
-    # rigidity matrix of the fully connected graph
-    network_K = network.fully_connected()
-    brmat_K = extended_bearing_rigidity_matrix(network_K)
+    if rank_K is None:
+        # rigidity matrix of the fully connected graph
+        network_K = network.fully_connected()
+        brmat_K = extended_bearing_rigidity_matrix(network_K)
+        rank_K = np.linalg.matrix_rank(brmat_K)
 
-    # print(f"IBR check: {np.linalg.matrix_rank(brmat)} =? {np.linalg.matrix_rank(brmat_K)}")
-    return is_IBR_explicit(brmat, brmat_K)
+    # print(f"IBR check: {np.linalg.matrix_rank(brmat)} =? {rank_K}")
+    return is_IBR_explicit(brmat, rank_K=rank_K)
 
-def rigidity_eigenvalue(network, eps=1e-10):
+def rigidity_eigenvalue(network, eps=1e-10, rank_K=None):
     eigs = network.eigenvalues()
 
-    network_K = network.fully_connected()
-    # TODO: we can/should get this from IBR check during training
-    brmat_K = extended_bearing_rigidity_matrix(network_K)
-
-    rank_K = np.linalg.matrix_rank(brmat_K)
+    if rank_K is None:
+        network_K = network.fully_connected()
+        # TODO: we can/should get this from IBR check during training
+        brmat_K = extended_bearing_rigidity_matrix(network_K)
+        rank_K = np.linalg.matrix_rank(brmat_K)
 
     n = len(network.agents)
     zero_count = 6*n - rank_K
@@ -134,8 +138,8 @@ def rigidity_eigenvalue(network, eps=1e-10):
 
 # M. H. Trinh, Q. Van Tran, and H.-S. Ahn, “Minimal and Redundant Bearing Rigidity: Conditions and Applications,” IEEE Transactions on Automatic Control, vol. 65, no. 10, pp. 4186–4200, Oct. 2020, doi: 10.1109/TAC.2019.2958563.
 # NOTE: ONLY FOR R^d
-def is_MBR(network):
-    isIBR = is_IBR(network)
+def is_MBR(network, rank_K=None):
+    isIBR = is_IBR(network, rank_K=rank_K)
 
     if len(network.agents) == 0:
         return False, isIBR

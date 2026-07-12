@@ -17,6 +17,12 @@ from .critic.GINE_Selection import *
 from .q_func.AddEdgeDiscreteNoSelfLoops import *
 from .q_func.AddRemoveEdgeDiscreteNoSelfLoops import *
 from .q_func.SelectNodesSequentially import *
+from .q_func.GINE_SelectNodesSequentially import *
+from .q_func.GINE_AddRemoveEdgeDiscreteNoSelfLoops import *
+from .q_func.GINE_AddEdgeDiscreteNoSkipNoSelfLoops import *
+from .q_func.Equivariant_SelectNodesSequentially import *
+from .q_func.Equivariant_AddRemoveEdgeDiscreteNoSelfLoops import *
+from .q_func.Equivariant_AddEdgeDiscreteNoSkipNoSelfLoops import *
 
 
 __all__ = [
@@ -39,4 +45,10 @@ __all__ = [
     "DQN_QNetwork_AddEdgeDiscreteNoSelfLoops",
     "DQN_QNetwork_AddRemoveEdgeDiscreteNoSelfLoops",
     "DQN_QNetwork_SelectNodesSequentially",
+    "DQN_QNetwork_GINE_SelectNodesSequentially",
+    "DQN_QNetwork_GINE_AddRemoveEdgeDiscreteNoSelfLoops",
+    "DQN_QNetwork_GINE_AddEdgeDiscreteNoSkipNoSelfLoops",
+    "DQN_QNetwork_Equivariant_SelectNodesSequentially",
+    "DQN_QNetwork_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops",
+    "DQN_QNetwork_Equivariant_AddEdgeDiscreteNoSkipNoSelfLoops",
 ]
