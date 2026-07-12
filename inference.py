@@ -25,8 +25,10 @@ import torch
 
 
 #############################################
-MODEL_TYPE = "PPO"
+MODEL_TYPE = "DQN"
 BRUTE_FORCE_BEST = True
+#############################################
+DEVICE = "cpu"
 #############################################
 
 # these should be the same as the training
@@ -43,15 +45,9 @@ if MODEL_TYPE == "PPO":
 if MODEL_TYPE == "DQN":
     NR_ENVS = 1
     MEM_SIZE = 20000
-    GNN_HIDDEN_DIM = 32
-    QNETWORK_HEAD_HIDDEN_DIM = 128
+    GNN_HIDDEN_DIM = 128
+    QNETWORK_HEAD_HIDDEN_DIM = 256
 
-# DDQN
-if MODEL_TYPE == "DDQN":
-    NR_ENVS = 1
-    MEM_SIZE = 20000
-    GNN_HIDDEN_DIM = 32
-    QNETWORK_HEAD_HIDDEN_DIM = 128
 #############################################
 
 
@@ -97,6 +93,15 @@ if not os.path.exists(filepath):
     print(f"file environments/{env_name}.json does not exist")
     quit()
 
+with open(filepath, "r") as f:
+    config = json.load(f)
+    scenario_name = config.get("scenario")
+    action_type = config.get("action_type")
+    obs_type = config.get("obs_type")
+    n = config.get("n")
+    domains_str = config.get("domains", "domain").replace("^", "").replace("(", "").replace(")", "")
+    n_domains = f"n{n}_{domains_str}"
+
 torch.set_printoptions(threshold=10000)
 
 device = "cpu"
@@ -117,7 +122,7 @@ edge_features_dim = raw_env.observation_space["edge_features"].shape[-1]
 if MODEL_TYPE == "PPO":
     models = {}
     # actor
-    if raw_env.action_space_type == "AddEdgeDiscreteNoSkipNoSelfLoops":
+    if action_type == "AddEdgeDiscreteNoSkipNoSelfLoops":
         models["policy"] = PPO_ActorModel_AddEdgeDiscreteNoSkipNoSelfLoops(
             n,
             node_feat_dim=node_features_dim,
@@ -127,7 +132,7 @@ if MODEL_TYPE == "PPO":
             action_space=env.action_space,
             device=device,
         )
-    elif raw_env.action_space_type == "AddRemoveEdgeDiscreteNoSelfLoops":
+    elif action_type == "AddRemoveEdgeDiscreteNoSelfLoops":
         # models["policy"] = PPO_ActorModel_AddRemoveEdgeDiscreteNoSelfLoops_FC(
         #     n,
         #     node_feat_dim=node_features_dim,
@@ -146,8 +151,18 @@ if MODEL_TYPE == "PPO":
             action_space=env.action_space,
             device=device,
         )
-    elif raw_env.action_space_type == "SelectNodesSequentially":
-        if raw_env.obs_space_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
+    elif action_type == "AddRemoveEdgeMultiDiscrete":
+        models["policy"] = PPO_ActorModel_AddRemoveEdgeMultiDiscrete(
+            n,
+            node_feat_dim=node_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
+    elif action_type == "SelectNodesSequentially":
+        if obs_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
             models["policy"] = PPO_ActorModel_Equivariant_SelectNodesSequentially(
                 n,
                 node_feat_dim=node_features_dim,
@@ -157,7 +172,7 @@ if MODEL_TYPE == "PPO":
                 action_space=env.action_space,
                 device=device,
             )
-        elif raw_env.obs_space_type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
+        elif obs_type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
             models["policy"] = PPO_ActorModel_GINE_SelectNodesSequentially(
                 n,
                 node_feat_dim=node_features_dim,
@@ -178,12 +193,22 @@ if MODEL_TYPE == "PPO":
                 action_space=env.action_space,
                 device=device,
             )
+    elif action_type == "DecideOnEdge":
+        models["policy"] = PPO_ActorModel_DecideOnEdge(
+            n,
+            node_feat_dim=node_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
     else:
-        print(f"Actor for action {raw_env.action_space_type} is not implemented.")
+        print(f"Actor for action {action_type} is not implemented.")
         quit()
 
     # critic
-    if raw_env.obs_space_type == "DictNodeFeaturesAndAdjAndSelection":
+    if obs_type == "DictNodeFeaturesAndAdjAndSelection":
         models["value"] = PPO_CriticModel_Selection(
             n,
             node_feat_dim=node_features_dim,
@@ -194,7 +219,7 @@ if MODEL_TYPE == "PPO":
             action_space=env.action_space,
             device=device,
         )
-    elif raw_env.obs_space_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
+    elif obs_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
         models["value"] = PPO_CriticModel_Equivariant_Selection(
             n,
             node_feat_dim=node_features_dim,
@@ -205,7 +230,7 @@ if MODEL_TYPE == "PPO":
             action_space=env.action_space,
             device=device,
         )
-    elif raw_env.obs_space_type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
+    elif obs_type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
         models["value"] = PPO_CriticModel_GINE_Selection(
             n,
             node_feat_dim=node_features_dim,
@@ -234,25 +259,107 @@ if MODEL_TYPE == "PPO":
 if MODEL_TYPE == "DQN":
     models = {}
     # q network
-    if raw_env.action_space_type == "AddRemoveEdgeDiscreteNoSelfLoops":
-        # models["q_network"] = ActorModel_AddRemoveEdgeDiscreteNoSelfLoops_FC(
-        #     n,
-        #     node_feat_dim=node_features_dim,
-        #     gnn_hidden_dim=GNN_HIDDEN_DIM,
-        #     head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
-        #     observation_space=env.observation_space,
-        #     action_space=env.action_space,
-        #     device=device,
-        # )
-        models["q_network"] = DQN_QNetwork_AddRemoveEdgeDiscreteNoSelfLoops(
+    if action_type == "AddRemoveEdgeDiscreteNoSelfLoops":
+        if obs_type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
+            models["q_network"] = DQN_QNetwork_GINE_AddRemoveEdgeDiscreteNoSelfLoops(
+                n,
+                node_feat_dim=node_features_dim,
+                edge_feat_dim=edge_features_dim,
+                gnn_hidden_dim=GNN_HIDDEN_DIM,
+                head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
+                observation_space=env.observation_space,
+                action_space=env.action_space,
+                device=DEVICE,
+            )
+        elif obs_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
+            models["q_network"] = DQN_QNetwork_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(
+                n,
+                node_feat_dim=node_features_dim,
+                edge_feat_dim=edge_features_dim,
+                gnn_hidden_dim=GNN_HIDDEN_DIM,
+                head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
+                observation_space=env.observation_space,
+                action_space=env.action_space,
+                device=DEVICE,
+            )
+        else:
+            models["q_network"] = DQN_QNetwork_AddRemoveEdgeDiscreteNoSelfLoops(
+                n,
+                node_feat_dim=node_features_dim,
+                gnn_hidden_dim=GNN_HIDDEN_DIM,
+                head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
+                observation_space=env.observation_space,
+                action_space=env.action_space,
+                device=DEVICE,
+            )
+    elif action_type == "AddEdgeDiscreteNoSelfLoops":
+        models["q_network"] = DQN_QNetwork_AddEdgeDiscreteNoSelfLoops(
             n,
             node_feat_dim=node_features_dim,
             gnn_hidden_dim=GNN_HIDDEN_DIM,
             head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
             observation_space=env.observation_space,
             action_space=env.action_space,
-            device=device,
+            device=DEVICE,
         )
+    elif action_type == "SelectNodesSequentially":
+        if obs_type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
+            models["q_network"] = DQN_QNetwork_GINE_SelectNodesSequentially(
+                n,
+                node_feat_dim=node_features_dim,
+                edge_feat_dim=edge_features_dim,
+                gnn_hidden_dim=GNN_HIDDEN_DIM,
+                head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
+                observation_space=env.observation_space,
+                action_space=env.action_space,
+                device=DEVICE,
+            )
+        elif obs_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
+            models["q_network"] = DQN_QNetwork_Equivariant_SelectNodesSequentially(
+                n,
+                node_feat_dim=node_features_dim,
+                gnn_hidden_dim=GNN_HIDDEN_DIM,
+                edge_feat_dim=edge_features_dim,
+                head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
+                observation_space=env.observation_space,
+                action_space=env.action_space,
+                device=DEVICE,
+            )
+        else:
+            models["q_network"] = DQN_QNetwork_SelectNodesSequentially(
+                n,
+                node_feat_dim=node_features_dim,
+                gnn_hidden_dim=GNN_HIDDEN_DIM,
+                head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
+                observation_space=env.observation_space,
+                action_space=env.action_space,
+                device=DEVICE,
+            )
+    elif action_type == "AddEdgeDiscreteNoSkipNoSelfLoops":
+        if obs_type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
+            models["q_network"] = DQN_QNetwork_GINE_AddEdgeDiscreteNoSkipNoSelfLoops(
+                    n,
+                    node_feat_dim=node_features_dim,
+                    edge_feat_dim=edge_features_dim,
+                    gnn_hidden_dim=GNN_HIDDEN_DIM,
+                    head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
+                    observation_space=env.observation_space,
+                    action_space=env.action_space,
+                    device=DEVICE,
+                )
+        elif obs_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
+            models["q_network"] = DQN_QNetwork_Equivariant_AddEdgeDiscreteNoSkipNoSelfLoops(
+                n,
+                node_feat_dim=node_features_dim,
+                edge_feat_dim=edge_features_dim,
+                gnn_hidden_dim=GNN_HIDDEN_DIM,
+                head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
+                observation_space=env.observation_space,
+                action_space=env.action_space,
+                device=DEVICE,
+            )
+        else:
+            raise Exception(f"Not implemented {action_type} {obs_type}")
     else:
         print(f"Q network for {raw_env.action_space_type} is not implemented.")
         quit()
@@ -262,14 +369,18 @@ if MODEL_TYPE == "DQN":
 
 
 ################################################################################
-memory = RandomMemory(memory_size=MEM_SIZE, num_envs=NR_ENVS, device=device)
+memory = RandomMemory(memory_size=MEM_SIZE, num_envs=NR_ENVS, device=DEVICE)
 
 if MODEL_TYPE == "DQN":
     cfg = DQN_CFG()
-    cfg.experiment.directory = "runs"
+    cfg.experiment.directory = "runs_inference"
     cfg.experiment.experiment_name = model_name
-    # cfg.learning_rate = 1e-4
+    cfg.batch_size = 128
+    cfg.target_update_interval = 1000
     cfg.update_interval = 4
+    cfg.learning_starts = MEM_SIZE + 1
+    cfg.discount_factor = 0.99
+    cfg.random_timesteps = MEM_SIZE
 
     agent = DQN(
         models=models,
@@ -277,7 +388,7 @@ if MODEL_TYPE == "DQN":
         cfg=cfg,
         observation_space=env.observation_space,
         action_space=env.action_space,
-        device=device,
+        device=DEVICE,
     )
 
 if MODEL_TYPE == "PPO":
@@ -285,6 +396,8 @@ if MODEL_TYPE == "PPO":
     cfg.rollouts = MEM_SIZE # to ensure we don't get garbage data from memory
     cfg.experiment.directory = "runs_inference"
     cfg.experiment.experiment_name = model_name
+    # incentivize exploration more
+    cfg.entropy_loss_scale = 0.01
 
     agent = PPO(
         models=models,

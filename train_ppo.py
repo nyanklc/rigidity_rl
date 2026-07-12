@@ -212,14 +212,6 @@ cfg.experiment.directory = "runs"
 cfg.experiment.experiment_name = model_name
 # incentivize exploration more
 cfg.entropy_loss_scale = 0.01
-import dataclasses
-import pprint
-# Convert the dataclass to a dictionary and pretty-print it
-print("\n" + "="*40)
-print(" CONFIG ")
-print("="*40)
-pprint.pprint(dataclasses.asdict(cfg), width=80, sort_dicts=False)
-print("="*40 + "\n")
 
 os.makedirs("./models", exist_ok=True)
 os.makedirs("./models/complete", exist_ok=True)
@@ -244,10 +236,23 @@ trainer_cfg.headless = True # we don't have env.render()
 trainer = SequentialTrainer(cfg=trainer_cfg, env=env, agents=agent)
 
 print("##########################################")
+print(" TRAINING ")
+print("="*40)
 print(f"obs space: {trainer.env.observation_space}")
 print(f"action space: {trainer.env.action_space}")
 print(f"actor: {models["policy"].__class__.__name__}")
 print(f"critic: {models["value"].__class__.__name__}")
+print(f"TOTAL_TIMESTEPS: {TOTAL_TIMESTEPS}")
+print(f"NR_ENVS: {NR_ENVS}")
+print(f"MEM_SIZE: {MEM_SIZE}")
+print(f"GNN_HIDDEN_DIM: {GNN_HIDDEN_DIM}")
+print(f"ACTOR_HEAD_HIDDEN_DIM: {ACTOR_HEAD_HIDDEN_DIM}")
+print(f"CRITIC_HEAD_HIDDEN_DIM: {CRITIC_HEAD_HIDDEN_DIM}")
+print("\n" + "="*40)
+print(" CONFIG ")
+print("="*40)
+pprint.pprint(dataclasses.asdict(cfg), width=80, sort_dicts=False)
+print("="*40 + "\n")
 print("##########################################")
 
 print(f"Training on {device}...")

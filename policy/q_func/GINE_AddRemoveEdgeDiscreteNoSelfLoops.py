@@ -50,13 +50,13 @@ class DQN_QNetwork_GINE_AddRemoveEdgeDiscreteNoSelfLoops(TabularMixin, Model):
 
         add_mask = (adj == 0)
         add_mask = add_mask[:, ~torch.eye(n, dtype=torch.bool, device=adj.device)].view(batch_size, -1)
-        
+
         remove_mask = (adj == 1)
         remove_mask = remove_mask[:, ~torch.eye(n, dtype=torch.bool, device=adj.device)].view(batch_size, -1)
 
         skip_mask = torch.ones((batch_size, 1), dtype=torch.bool, device=adj.device)
         full_mask = torch.cat([add_mask, remove_mask, skip_mask], dim=1)
-        
+
         actions = torch.multinomial(full_mask.float(), 1)
         return actions, {}
 
