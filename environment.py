@@ -16,7 +16,7 @@ from skrl.utils.tensorboard import SummaryWriter
 import torch
 
 from visualizer import Visualizer
-from scenario import load_scenario, random_scenario
+from scenario import load_scenario, random_scenario, randomize_scenario
 from control import GradientBasedController
 
 
@@ -610,6 +610,9 @@ class Environment(gym.Env):
 
         self.brm = self.network.extended_bearing_rigidity_matrix()
 
+        network_K = self.network.fully_connected()
+        self.rank_K = np.linalg.matrix_rank(network_K.extended_bearing_rigidity_matrix())
+
         self.selection = np.zeros(self.n, dtype=np.int64)
         self.proposed_edge = np.zeros(2)
 
@@ -690,8 +693,6 @@ class Environment(gym.Env):
         )
 
     # -----------------------------------
-    # TODO: we need to reduce the number of calls to BRM, I think it is the
-    # bottleneck when it comes to training speed
     def step(self, action):
         reward = 0.0
         reward -= self.time_penalty_value # time taken
@@ -815,8 +816,8 @@ class Environment(gym.Env):
             # The "Milestone" bonuses
             w_ibr = 5.0
 
-            w_eig = 0.0
-            w_eig1 = 0.0
+            w_eig = 5
+            w_eig1 = 1e5
 
             r_rank = w_rank * np.linalg.matrix_rank(brm)
             r_ibr = w_ibr * np.float32(is_IBR)
@@ -876,6 +877,13 @@ class Environment(gym.Env):
                 truncated = True
 
         termination_reward = reward - state_reward - action_reward
+
+        # we don't want to give any reward if it's just selecting the first node
+        if self.action_space_type == "SelectNodesSequentially":
+            if not np.sum(self.selection):
+                reward = self.last_reward
+            if not self.incremental_rewards_enable:
+                raise Exception("SelectNodesSequentially action type should only be used with incremental rewards.")
 
         # (incremental) reward
         last_reward_copy = self.last_reward
@@ -953,14 +961,12 @@ class Environment(gym.Env):
         super().reset(seed=seed)
 
         if self.filepath:
-            self.network, self.goal_network = load_scenario(self.filepath)
+            if self.only_randomize_edges:
+                raise Exception("only randomize edges with scenario not implemented yet")
+            else:
+                # TODO: no edges in addition actions
+                self.network, self.goal_network = randomize_scenario(self.filepath)
         else:
-            # TODO: with "Complete" observations, this doesn't make sense since the pos/orient stay the same
-            # just randomize the edges
-            # TODO: create flags to handle the network reset.
-            # depending on how we want to train, we may want to randomize only the
-            # poses and remove all edges for instance (e.g. empty scenario with AllEdges actions).
-
             n = self.network.n
             domains = self.network.agents[0].domain # only homogeneous is supported
             if self.only_randomize_edges:
@@ -1024,8 +1030,8 @@ if __name__ == "__main__":
     # ACTION_TYPE = "AddEdgeDiscreteNoSkip"
     # ACTION_TYPE = "AddEdgeDiscreteNoSelfLoops"
     # ACTION_TYPE = "AddEdgeDiscreteNoSkipNoSelfLoops"
-    ACTION_TYPE = "AddRemoveEdgeDiscreteNoSelfLoops"
-    # ACTION_TYPE = "SelectNodesSequentially"
+    # ACTION_TYPE = "AddRemoveEdgeDiscreteNoSelfLoops"
+    ACTION_TYPE = "SelectNodesSequentially"
     # ACTION_TYPE = "DecideOnEdge"
 
     # ACTION_REWARDS_ENABLE = True
@@ -1045,9 +1051,9 @@ if __name__ == "__main__":
     # OBS_TYPE = "DictNodeFeaturesAndAdj"
     # OBS_TYPE = "DictNodeFeaturesAndAdjAndSelection"
     # OBS_TYPE = "DictNodeFeaturesAndAdjAndEdgeProposal"
-    OBS_TYPE = "DictEquivariantNodeFeaturesAndAdjAndSelection"
+    OBS_TYPE = "DictEquivariantNodeFeaturesAndAdjAndSelection" ## Equivariant
     # OBS_TYPE = "DictBearingNodeFeaturesAndAdjAndSelection"
-    # OBS_TYPE = "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection"
+    # OBS_TYPE = "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection" ## GINE
 
     # REWARD_TYPE = "Rigid"
     # REWARD_TYPE = "RigidAndMinEigenvalue"

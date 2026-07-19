@@ -6,8 +6,9 @@ from skrl.utils.spaces.torch import unflatten_tensorized_space
 from policy.gnn_backbone import *
 
 
+
 # compatible with observation type "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection"
-class PPO_ActorModel_GINE_SelectNodesSequentially(CategoricalMixin, Model):
+class PPO_ActorModel_GINE_AddRemoveEdgeDiscreteNoSelfLoops(CategoricalMixin, Model):
     def __init__(
         self,
         n,
@@ -26,14 +27,13 @@ class PPO_ActorModel_GINE_SelectNodesSequentially(CategoricalMixin, Model):
 
         self.gnn = GNNBackboneGINE(
             node_feat_dim, edge_feat_dim, gnn_hidden_dim
-        )  # output dim = hidden dim
-        self.n = n
+        )  # output dim = gnn_hidden_dim
 
         # input cat[node features, selected node's features(zeros if no selected)]
         self.head = nn.Sequential(
-            nn.Linear(2 * gnn_hidden_dim, head_hidden_dim),
+            nn.Linear(2 * gnn_hidden_dim + 1, head_hidden_dim),
             nn.LeakyReLU(),
-            nn.Linear(head_hidden_dim, 1),
+            nn.Linear(head_hidden_dim, 2),
         )
 
         # input graph embedding
@@ -49,9 +49,10 @@ class PPO_ActorModel_GINE_SelectNodesSequentially(CategoricalMixin, Model):
         node_features = observations["node_features"]
         edge_features = observations["edge_features"]
         adj = observations["adj"]
-        selection = observations["selection"]
+        # selection = observations["selection"]
 
         batch_size = node_features.shape[0]
+
         n = node_features.shape[1]
 
         # batch
@@ -59,7 +60,7 @@ class PPO_ActorModel_GINE_SelectNodesSequentially(CategoricalMixin, Model):
         edge_attr_list = []
         for i in range(batch_size):
             src, dst = adj[i].nonzero(as_tuple=True)
-            edge_index = torch.stack([src, dst], dim=0) + i * self.n
+            edge_index = torch.stack([src, dst], dim=0) + i * n
             edge_index_list.append(edge_index)
             # we get all possible edges' features from the observation
             # but we only need existing edges'
@@ -68,22 +69,42 @@ class PPO_ActorModel_GINE_SelectNodesSequentially(CategoricalMixin, Model):
         full_edge_attr = torch.cat(edge_attr_list, dim=0).to(self.device)
 
         h = self.gnn(node_features, full_edge_index, full_edge_attr)
+        h_i = h.unsqueeze(2).expand(-1, -1, n, -1)
+        h_j = h.unsqueeze(1).expand(-1, n, -1, -1)
+        exists_flag = adj.unsqueeze(-1)
+        edge_embeddings = torch.cat([h_i, h_j, exists_flag], dim=-1) # (b, n, n, edge_feat)
 
-        # concat selected node's features
-        selected = (h * selection.unsqueeze(-1)).sum(dim=1) # zeros if not selected
-        selected_repeated = selected.unsqueeze(1).expand(-1, self.n, -1)
-        new_embeddings = torch.cat([h, selected_repeated], dim=-1)
-
-        # calculate node scores for selection
-        add_remove_logits = self.head(new_embeddings).squeeze(-1)
-        skip_logit = self.skip_head(torch.mean(h, dim=1))
-        logits = torch.cat([add_remove_logits, skip_logit], dim=-1)
+        edge_logits = self.head(edge_embeddings)  # (b, n, n, 2)
 
         # mask out self loops
-        selected_mask = selection.bool().squeeze(-1)
-        has_selected = selection.sum(dim=1) > 0
-        has_selected = has_selected.unsqueeze(1).expand(-1, selected_mask.size(1))
-        mask = selected_mask & has_selected   # (B, N)
-        logits[:, :-1] = logits[:, :-1].masked_fill(mask, -1e9) # exclude the skip action
+        mask = ~torch.eye(n, dtype=torch.bool, device=edge_logits.device)
+        mask = mask.unsqueeze(0).unsqueeze(-1)  # (1, N, N, 1)
+        edge_logits = edge_logits[mask.expand(batch_size, -1, -1, 2)]
+        edge_logits = edge_logits.view(batch_size, n*(n-1), 2)
+
+        add_logits = edge_logits[:, :, 0]      # (B, E)
+        remove_logits = edge_logits[:, :, 1]   # (B, E)
+        skip_logit = self.skip_head(torch.mean(h, dim=1))
+
+        logits = torch.cat([
+            add_logits,
+            remove_logits,
+            skip_logit
+        ], dim=1)   # (B, 2*ec - 2*n + 1)
+
+        # mask invalid ADD
+        add_mask = (adj == 0)  # only allow add where edge doesn't exist
+        add_mask = add_mask[:, ~torch.eye(n, dtype=torch.bool, device=adj.device)]
+        add_mask = add_mask.view(batch_size, -1)
+
+        # mask invalid REMOVE
+        remove_mask = (adj == 1)
+        remove_mask = remove_mask[:, ~torch.eye(n, dtype=torch.bool, device=adj.device)]
+        remove_mask = remove_mask.view(batch_size, -1)
+
+        # apply masks
+        E = (logits.shape[-1]-1)//2
+        logits[:, :E][~add_mask] = -1e9
+        logits[:, E:2*E][~remove_mask] = -1e9
 
         return logits, {}

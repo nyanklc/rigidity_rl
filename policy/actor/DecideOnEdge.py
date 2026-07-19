@@ -23,9 +23,8 @@ class PPO_ActorModel_DecideOnEdge(CategoricalMixin, Model):
         Model.__init__(self, observation_space=observation_space, action_space=action_space, device=device)
         CategoricalMixin.__init__(self)
 
-        # +1 since we'll add the degree as a node feature TODO: do this in environment?
         self.gnn = GNNBackboneGAT(
-            node_feat_dim + 1, gnn_hidden_dim
+            node_feat_dim, gnn_hidden_dim
         )  # output dim = hidden dim
         self.n = n
 
@@ -45,9 +44,6 @@ class PPO_ActorModel_DecideOnEdge(CategoricalMixin, Model):
         # print(f"node_features: {node_features}")
         # print(f"adj: {adj}")
         # print(f"selection: {selection}")
-
-        out_degrees = adj.sum(dim=-1, keepdim=True)
-        node_features = torch.cat([node_features, out_degrees], dim=-1)
 
         batch_size = node_features.shape[0]
 

@@ -17,12 +17,29 @@ from policy import *
 
 ######################################
 TOTAL_TIMESTEPS = int(3e5)
-NR_ENVS = 1
+NR_ENVS = 4
 MEM_SIZE = 20000
-EGREEDY_STEPS = 100000
+EGREEDY_STEPS = 150000
 
 GNN_HIDDEN_DIM = 128
-QNETWORK_HEAD_HIDDEN_DIM = 256
+QNETWORK_HEAD_HIDDEN_DIM = 128
+
+cfg = DQN_CFG()
+cfg.experiment.directory = "runs"
+cfg.batch_size = 128
+cfg.target_update_interval = 1000
+cfg.update_interval = 4
+cfg.learning_starts = MEM_SIZE + 1
+cfg.discount_factor = 0.99
+cfg.random_timesteps = MEM_SIZE
+
+def epsilon_schedule(timestep, timesteps):
+    start = 0.8
+    end = 0.05
+    decay_steps = min(EGREEDY_STEPS, timesteps)
+    eps = start - (start - end) * min(1.0, timestep / decay_steps)
+    return eps
+cfg.exploration_scheduler = epsilon_schedule
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 ##################
@@ -184,23 +201,7 @@ env.observation_space.seed(int(datetime.now().timestamp()))
 
 memory = RandomMemory(memory_size=MEM_SIZE, num_envs=env.num_envs, device=DEVICE)
 
-cfg = DQN_CFG()
-cfg.experiment.directory = "runs"
 cfg.experiment.experiment_name = model_name
-cfg.batch_size = 128
-cfg.target_update_interval = 1000
-cfg.update_interval = 4
-cfg.learning_starts = MEM_SIZE + 1
-cfg.discount_factor = 0.99
-cfg.random_timesteps = MEM_SIZE
-
-def epsilon_schedule(timestep, timesteps):
-    start = 0.8
-    end = 0.05
-    decay_steps = min(EGREEDY_STEPS, timesteps)
-    eps = start - (start - end) * min(1.0, timestep / decay_steps)
-    return eps
-cfg.exploration_scheduler = epsilon_schedule
 
 os.makedirs("./models", exist_ok=True)
 os.makedirs("./models/complete/DQN", exist_ok=True)

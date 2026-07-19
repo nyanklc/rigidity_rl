@@ -9,7 +9,7 @@ from policy.gnn_backbone import *
 
 
 # compatible with observation type "DictEquivariantNodeFeaturesAndAdjAndSelection"
-class PPO_CriticModel_Equivariant_Selection(DeterministicMixin, Model):
+class PPO_CriticModel_Equivariant(DeterministicMixin, Model):
     def __init__(
         self,
         n,
@@ -32,7 +32,7 @@ class PPO_CriticModel_Equivariant_Selection(DeterministicMixin, Model):
 
         # input cat[node features, selected node's features(zeros if no selected)]
         self.head = nn.Sequential(
-            nn.Linear(2 * node_feat_dim, head_hidden_dim),
+            nn.Linear(node_feat_dim, head_hidden_dim),
             nn.LeakyReLU(),
             nn.Linear(head_hidden_dim, 1),
         )
@@ -56,16 +56,9 @@ class PPO_CriticModel_Equivariant_Selection(DeterministicMixin, Model):
         h = self.gnn(feats=node_features, coors=coord_features, edges=edge_features,
                      adj_mat=adj)
 
-        # concat selected node's features
-        selected = (h * selection.unsqueeze(-1)).sum(dim=1)  # zeros if not selected
-        selected_repeated = selected.unsqueeze(1).expand(-1, n, -1)
-        new_embeddings = torch.cat([h, selected_repeated], dim=-1)
-
         # graph embedding
-        batch_mapping = torch.arange(batch_size, device=new_embeddings.device).repeat_interleave(
-            n
-        )
-        graph_latent = global_mean_pool(new_embeddings.reshape(-1, new_embeddings.shape[-1]), batch_mapping)
+        batch_mapping = torch.arange(batch_size, device=h.device).repeat_interleave(n)
+        graph_latent = global_mean_pool(h.reshape(-1, h.shape[-1]), batch_mapping)
 
         value = self.head(graph_latent)
 

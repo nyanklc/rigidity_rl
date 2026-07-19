@@ -28,7 +28,7 @@ class DQN_QNetwork_Equivariant_SelectNodesSequentially(TabularMixin, Model):
         TabularMixin.__init__(self)
 
         self.gnn = GNNBackboneEquivariant(
-            node_feat_dim, gnn_hidden_dim, edge_feat_dim
+            node_feat_dim,edge_feat_dim, gnn_hidden_dim
         )  # output dim = node_feat_dim
 
         # input cat[node features, selected node's features(zeros if no selected)]

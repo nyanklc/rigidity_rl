@@ -166,6 +166,25 @@ def is_MBR(network, rank_K=None):
 
     return m == m_required, isIBR
 
+# idk if this is reliable
+def is_MBR_general(network, rank_K=None):
+    raise Exception("MBR (general) doesn't quite work i think. Abort.")
+
+    isIBR = is_IBR(network, rank_K=rank_K)
+
+    if len(network.agents) < 2 or not isIBR:
+        return False, isIBR
+
+    edges_list = network.get_edge_list()
+    for edge in edges_list:
+        network.remove_edge(*edge)
+        still_rigid = is_IBR(network, rank_K=rank_K)
+        network.add_edge(*edge)
+        if still_rigid:
+            return False, True
+
+    return True, True
+
 # J. F. Presenza, L. J. Colombo, J. I. Giribet, and I. Mas, “Angle-based Localization and Rigidity Maintenance Control for Multi-Robot Networks,” Apr. 17, 2026, arXiv: arXiv:2604.11754. doi: 10.48550/arXiv.2604.11754.
 def isIAR(network):
     print(f"IAR not implemented.")

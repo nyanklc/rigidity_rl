@@ -53,7 +53,6 @@ class Agent:
             self.angular_velocity = ang_vel
 
     def get_node_features(self):
-        # TODO: add the domain?
         return np.hstack([self.pose.position, self.pose.euler_angles()])
 
     def get_footprint(self):
@@ -238,6 +237,9 @@ class Network:
         #         raise Exception("Minimally Bearing Rigidity is not defined for domains other than R^d.")
 
         return rigidity.is_MBR(self, rank_K=rank_K)
+
+    def is_MBR_general(self, rank_K=None):
+        return rigidity.is_MBR_general(self, rank_K=rank_K)
 
     def eigenvalues(self, eps=1e-10):
         brm = self.extended_bearing_rigidity_matrix()

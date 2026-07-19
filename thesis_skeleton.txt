@@ -1,0 +1,55 @@
+Title
+- Network Topology Optimization for Bearing Rigid Multi-Agent Systems via Deep Reinforcement Learning and Graph Neural Networks
+
+
+
+Introduction
+- Motivation and Purpose
+- Research Questions/Objectives
+
+Background
+- Preliminaries
+    - Graph Theory
+    - Multi-Agent Systems
+    - Neural Networks
+- (Bearing) Rigidity Theory
+    - Distance and Bearing Rigidity
+    - Definitions and Properties
+- Reinforcement Learning
+    - Markov Decision Processes and RL
+    - Value and Policy Based Methods
+    - Deep RL
+- Graph Neural Networks
+    - Message Passing Neural Networks
+
+Related Work
+- Bearing Rigidity Based Control
+    - Formation Control (Gradient Based)
+- Geometric Graph Representation Learning
+    - Equivariant GNN, SE(3) Invariance
+- Graph Reinforcement Learning
+    - Graph Construction via RL
+
+Methodology
+- Problem Formulation and Proposed Solution
+- Environment and Network Design
+    - State Space
+    - Network Design
+    - Action Space
+    - Reward Function
+- Training
+    - Generating Graphs
+    - Termination Conditions
+    - Action Masking
+    - Algorithms and Hyperparameters
+
+Experiments and Results
+- Evaluation Across Diverse Configurations
+- Case Study
+    - Node Addition
+- Analysis and Comments
+    - Properties of Resultant Graphs/Topologies
+
+Conclusion and Future Work
+- Contributions
+- Improvements and Use Cases

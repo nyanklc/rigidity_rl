@@ -13,6 +13,7 @@ class PPO_ActorModel_Equivariant_SelectNodesSequentially(CategoricalMixin, Model
         self,
         n,
         node_feat_dim,
+        edge_feat_dim,
         gnn_hidden_dim,
         head_hidden_dim,
 
@@ -27,19 +28,20 @@ class PPO_ActorModel_Equivariant_SelectNodesSequentially(CategoricalMixin, Model
         # +1 since we'll add the degree as a node feature
         node_feat_dim = node_feat_dim + 1
         self.gnn = GNNBackboneEquivariant(
-            node_feat_dim, gnn_hidden_dim, observation_space["edge_features"].shape[-1]
-        )  # output dim = hidden dim
-        self.n = n
+            node_feat_dim, edge_feat_dim, gnn_hidden_dim
+        )  # output dim = node_feat_dim
 
         # input cat[node features, selected node's features(zeros if no selected)]
         self.head = nn.Sequential(
             nn.Linear(2 * node_feat_dim, head_hidden_dim),
+            nn.LeakyReLU(),
             nn.Linear(head_hidden_dim, 1),
         )
 
         # input graph embedding
         self.skip_head = nn.Sequential(
             nn.Linear(node_feat_dim, head_hidden_dim),
+            nn.LeakyReLU(),
             nn.Linear(head_hidden_dim, 1),
         )
 
@@ -67,7 +69,7 @@ class PPO_ActorModel_Equivariant_SelectNodesSequentially(CategoricalMixin, Model
 
         # concat selected node's features
         selected = (h * selection.unsqueeze(-1)).sum(dim=1) # zeros if not selected
-        selected_repeated = selected.unsqueeze(1).expand(-1, self.n, -1)
+        selected_repeated = selected.unsqueeze(1).expand(-1, n, -1)
         new_embeddings = torch.cat([h, selected_repeated], dim=-1)
 
         # calculate node scores for selection

@@ -11,13 +11,19 @@ from skrl.trainers.torch import SequentialTrainer, SequentialTrainerCfg
 from policy import *
 
 ######################################
-TOTAL_TIMESTEPS = int(1e6)
-NR_ENVS = 8 # 1
-MEM_SIZE = 1024 # 2048 * 4
+TOTAL_TIMESTEPS = int(5e5)
+NR_ENVS = 1
+MEM_SIZE = 4092 * 2
 
 GNN_HIDDEN_DIM = 128
 ACTOR_HEAD_HIDDEN_DIM = 128
 CRITIC_HEAD_HIDDEN_DIM = 128
+
+cfg = PPO_CFG()
+cfg.rollouts = MEM_SIZE # to ensure we don't get garbage data from memory
+cfg.experiment.directory = "runs"
+# incentivize exploration more
+cfg.entropy_loss_scale = 0.01
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 ######################################
@@ -81,39 +87,43 @@ if action_type == "AddEdgeDiscreteNoSkipNoSelfLoops":
         device=device,
     )
 elif action_type == "AddRemoveEdgeDiscreteNoSelfLoops":
-    # models["policy"] = PPO_ActorModel_AddRemoveEdgeDiscreteNoSelfLoops_FC(
-    #     n,
-    #     node_feat_dim=node_features_dim,
-    #     gnn_hidden_dim=GNN_HIDDEN_DIM,
-    #     head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
-    #     observation_space=env.observation_space,
-    #     action_space=env.action_space,
-    #     device=device,
-    # )
-    models["policy"] = PPO_ActorModel_AddRemoveEdgeDiscreteNoSelfLoops(
-        n,
-        node_feat_dim=node_features_dim,
-        gnn_hidden_dim=GNN_HIDDEN_DIM,
-        head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
-        observation_space=env.observation_space,
-        action_space=env.action_space,
-        device=device,
-    )
-elif action_type == "AddRemoveEdgeMultiDiscrete":
-    models["policy"] = PPO_ActorModel_AddRemoveEdgeMultiDiscrete(
-        n,
-        node_feat_dim=node_features_dim,
-        gnn_hidden_dim=GNN_HIDDEN_DIM,
-        head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
-        observation_space=env.observation_space,
-        action_space=env.action_space,
-        device=device,
-    )
+    if obs_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
+        models["policy"] = PPO_ActorModel_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(
+            n,
+            node_feat_dim=node_features_dim,
+            edge_feat_dim=edge_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
+    elif obs_type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
+        models["policy"] = PPO_ActorModel_GINE_AddRemoveEdgeDiscreteNoSelfLoops(
+            n,
+            node_feat_dim=node_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
+    else:
+        models["policy"] = PPO_ActorModel_AddRemoveEdgeDiscreteNoSelfLoops(
+            n,
+            node_feat_dim=node_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
 elif action_type == "SelectNodesSequentially":
     if obs_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
         models["policy"] = PPO_ActorModel_Equivariant_SelectNodesSequentially(
             n,
             node_feat_dim=node_features_dim,
+            edge_feat_dim=edge_features_dim,
             gnn_hidden_dim=GNN_HIDDEN_DIM,
             head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
             observation_space=env.observation_space,
@@ -157,39 +167,78 @@ else:
 
 # critic
 if obs_type == "DictNodeFeaturesAndAdjAndSelection":
-    models["value"] = PPO_CriticModel_Selection(
-        n,
-        node_feat_dim=node_features_dim,
-        gnn_hidden_dim=GNN_HIDDEN_DIM,
-        head_hidden_dim=CRITIC_HEAD_HIDDEN_DIM,
+    if action_type == "SelectNodesSequentially":
+        models["value"] = PPO_CriticModel_Selection(
+            n,
+            node_feat_dim=node_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=CRITIC_HEAD_HIDDEN_DIM,
 
-        observation_space=env.observation_space,
-        action_space=env.action_space,
-        device=device,
-    )
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
+    else:
+        models["value"] = PPO_CriticModel_Default(
+            n,
+            node_feat_dim=node_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=CRITIC_HEAD_HIDDEN_DIM,
+
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
 elif obs_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
-    models["value"] = PPO_CriticModel_Equivariant_Selection(
-        n,
-        node_feat_dim=node_features_dim,
-        gnn_hidden_dim=GNN_HIDDEN_DIM,
-        head_hidden_dim=CRITIC_HEAD_HIDDEN_DIM,
+    if action_type == "SelectNodesSequentially":
+        models["value"] = PPO_CriticModel_Equivariant_Selection(
+            n,
+            node_feat_dim=node_features_dim,
+            edge_feat_dim=edge_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=CRITIC_HEAD_HIDDEN_DIM,
 
-        observation_space=env.observation_space,
-        action_space=env.action_space,
-        device=device,
-    )
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
+    else:
+        models["value"] = PPO_CriticModel_Equivariant(
+            n,
+            node_feat_dim=node_features_dim,
+            edge_feat_dim=edge_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=CRITIC_HEAD_HIDDEN_DIM,
+
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
 elif obs_type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
-    models["value"] = PPO_CriticModel_GINE_Selection(
-        n,
-        node_feat_dim=node_features_dim,
-        edge_feat_dim=edge_features_dim,
-        gnn_hidden_dim=GNN_HIDDEN_DIM,
-        head_hidden_dim=CRITIC_HEAD_HIDDEN_DIM,
+    if action_type == "SelectNodesSequentially":
+        models["value"] = PPO_CriticModel_GINE_Selection(
+            n,
+            node_feat_dim=node_features_dim,
+            edge_feat_dim=edge_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=CRITIC_HEAD_HIDDEN_DIM,
 
-        observation_space=env.observation_space,
-        action_space=env.action_space,
-        device=device,
-    )
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
+    else:
+        models["value"] = PPO_CriticModel_GINE(
+            n,
+            node_feat_dim=node_features_dim,
+            edge_feat_dim=edge_features_dim,
+            gnn_hidden_dim=GNN_HIDDEN_DIM,
+            head_hidden_dim=CRITIC_HEAD_HIDDEN_DIM,
+
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
 else:
     models["value"] = PPO_CriticModel_Default(
         n,
@@ -206,12 +255,7 @@ else:
 # TODO: env.num_envs??
 memory = RandomMemory(memory_size=MEM_SIZE, num_envs=env.num_envs, device=device)
 
-cfg = PPO_CFG()
-cfg.rollouts = MEM_SIZE # to ensure we don't get garbage data from memory
-cfg.experiment.directory = "runs"
 cfg.experiment.experiment_name = model_name
-# incentivize exploration more
-cfg.entropy_loss_scale = 0.01
 
 os.makedirs("./models", exist_ok=True)
 os.makedirs("./models/complete", exist_ok=True)
@@ -235,6 +279,8 @@ trainer_cfg.timesteps = TOTAL_TIMESTEPS
 trainer_cfg.headless = True # we don't have env.render()
 trainer = SequentialTrainer(cfg=trainer_cfg, env=env, agents=agent)
 
+import dataclasses
+import pprint
 print("##########################################")
 print(" TRAINING ")
 print("="*40)

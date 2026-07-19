@@ -2,6 +2,7 @@ from stable_baselines3.common.env_util import make_vec_env
 import copy
 import numpy as np
 from environment import Environment
+from rigidity import rigidity_eigenvalue
 import sys
 import os
 import time
@@ -45,7 +46,7 @@ if MODEL_TYPE == "PPO":
 if MODEL_TYPE == "DQN":
     NR_ENVS = 1
     MEM_SIZE = 20000
-    GNN_HIDDEN_DIM = 128
+    GNN_HIDDEN_DIM = 256
     QNETWORK_HEAD_HIDDEN_DIM = 256
 
 #############################################
@@ -421,9 +422,12 @@ def wait_for_step():
     button_step.value = False
 step_command.on_trigger(lambda event: setattr(button_step, 'value', True))
 
-if raw_env.network.agents[0].domain not in ["R^2", "R^3"]:
-    print("MBR is only for homogeneous R^d network.")
-    BRUTE_FORCE_BEST = False
+homogeneous_domain = raw_env.network.agents[0].domain
+for ag in raw_env.network.agents:
+    if (ag.domain not in ["R^2", "R^3"]) or (ag.domain != homogeneous_domain):
+        print("MBR is only for homogeneous R^d network.")
+        BRUTE_FORCE_BEST = False
+    homogeneous_domain = ag.domain
 if raw_env.network.n >= 6:
     print("Brute force with more than 5 nodes is not a good idea.")
     BRUTE_FORCE_BEST = False
@@ -451,21 +455,20 @@ if BRUTE_FORCE_BEST:
         netw.set_edges_list(edgs)
 
         is_MBR, is_IBR = netw.is_MBR()
+
+        print(f"hey MBR: {is_MBR} - {is_IBR}")
+
         if not is_MBR:
             continue
 
         if not is_IBR:
             continue
 
-        brm = netw.extended_bearing_rigidity_matrix()
-        information_mat = brm.T @ brm
-        eigenvalues = np.linalg.eigvalsh(information_mat)
-
-        min_eig = eigenvalues.min()
+        min_eig = rigidity_eigenvalue(netw)
 
         if min_eig > best_min_eig:
             best_min_eig = min_eig
-            best_eigs = eigenvalues
+            best_eigs = netw.eigenvalues()
             best_edges = edgs
 
     if best_edges is not None:

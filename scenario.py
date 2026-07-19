@@ -23,6 +23,11 @@ def random_scenario(
     if isinstance(domains, str):
         network.set_agents_domain_homogeneous(domains)
     else:
+        # Important: We do not want the model to memorize domain specific
+        # weights, so we shuffle the nodes' roles
+        # The GNN should handle this actually but idk
+        np.random.shuffle(domains)
+
         for agent, domain in zip(network.agents, domains):
             agent.set_domain(domain)
     network.randomize_positions(low, high)
@@ -115,6 +120,11 @@ def load_scenario(filename):
 
     return network, goal_network
 
+
+# just to keep the domains
+def randomize_scenario(scenario_filename):
+    net, _ = load_scenario(scenario_filename)
+    return random_scenario(net.n, domains=[agent.domain for agent in net.agents])
 
 ####################################################
 ####################################################

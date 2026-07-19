@@ -35,7 +35,7 @@ class Visualizer:
         self,
         network: Network,
         node_color=(0, 255, 0),
-        edge_color=(0, 128, 0),
+        edge_color=(0, 128, 128),
         node_size=1,
         label_prefix="",
     ):
@@ -60,10 +60,14 @@ class Visualizer:
         i_indices, j_indices = np.nonzero(network.edges)
         for k, (i, j) in enumerate(zip(i_indices, j_indices)):
             edge_line_segment = np.array([[positions[i], positions[j]]])
-            self.server.scene.add_line_segments(
+
+            self.server.scene.add_arrows(
                 name=f"/edge_{label_prefix}{k}:({i}, {j})",
                 points=edge_line_segment,
                 colors=np.array(edge_color),
+                shaft_radius=0.1,
+                head_radius=1.5,
+                head_length=3,
             )
 
         # orientations

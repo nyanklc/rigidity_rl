@@ -63,7 +63,7 @@ class GNNBackboneGINE(nn.Module):
 
 
 class GNNBackboneEquivariant(nn.Module):
-    def __init__(self, node_feat_dim, hidden_dim, edge_dim):
+    def __init__(self, node_feat_dim, edge_dim, hidden_dim):
         super().__init__()
         self.conv1 = EGNN(dim=node_feat_dim, m_dim=hidden_dim, edge_dim=edge_dim)
         self.conv2 = EGNN(dim=node_feat_dim, m_dim=hidden_dim, edge_dim=edge_dim)

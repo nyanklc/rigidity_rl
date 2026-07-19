@@ -23,13 +23,12 @@ class PPO_ActorModel_AddEdgeDiscreteNoSkipNoSelfLoops(CategoricalMixin, Model):
         Model.__init__(self, observation_space=observation_space, action_space=action_space, device=device)
         CategoricalMixin.__init__(self)
 
-        # +1 since we'll add the degree as a node feature
         self.gnn = GNNBackboneGAT(
-            node_feat_dim + 1, gnn_hidden_dim
+            node_feat_dim, gnn_hidden_dim
         )  # output dim = hidden dim
-        self.n = n
+        n = n
 
-        adj_fc = torch.ones((self.n, self.n)) - torch.eye(self.n)
+        adj_fc = torch.ones((n, n)) - torch.eye(n)
         self.fc_edge_index = adj_fc.nonzero().t().contiguous()
 
         # +1 since we'll add the adj information on the edge embeddings
@@ -56,24 +55,21 @@ class PPO_ActorModel_AddEdgeDiscreteNoSkipNoSelfLoops(CategoricalMixin, Model):
 
         batch_fc_edges = []
         for i in range(batch_size):
-            batch_fc_edges.append(self.fc_edge_index + (i * self.n))
+            batch_fc_edges.append(self.fc_edge_index + (i * n))
         full_fc_edge_index = torch.cat(batch_fc_edges, dim=1).to(self.device)
-
-        out_degrees = adj.sum(dim=-1, keepdim=True)
-        node_features = torch.cat([node_features, out_degrees], dim=-1)
 
         # fully connected pass
         h = self.gnn(node_features, full_fc_edge_index)
-        h_i = h.unsqueeze(2).expand(-1, -1, self.n, -1)
-        h_j = h.unsqueeze(1).expand(-1, self.n, -1, -1)
+        h_i = h.unsqueeze(2).expand(-1, -1, n, -1)
+        h_j = h.unsqueeze(1).expand(-1, n, -1, -1)
         exists_flag = adj.unsqueeze(-1)
         edge_embeddings = torch.cat([h_i, h_j, exists_flag], dim=-1) # (b, n, n, edge_feat)
 
         logits = self.head(edge_embeddings).squeeze(-1).reshape(batch_size, -1) # (b, n*n)
 
         # exclude self loops
-        logits = logits.view(batch_size, self.n, self.n)
-        mask = ~torch.eye(self.n, dtype=torch.bool, device=logits.device)  # (n, n)
+        logits = logits.view(batch_size, n, n)
+        mask = ~torch.eye(n, dtype=torch.bool, device=logits.device)  # (n, n)
         logits = logits[:, mask]  # (b, n*n - n)
 
         return logits, {}

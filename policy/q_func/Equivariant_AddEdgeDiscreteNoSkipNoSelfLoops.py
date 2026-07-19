@@ -27,7 +27,7 @@ class DQN_QNetwork_Equivariant_AddEdgeDiscreteNoSkipNoSelfLoops(TabularMixin, Mo
         TabularMixin.__init__(self)
 
         self.gnn = GNNBackboneEquivariant(
-            node_feat_dim, gnn_hidden_dim, edge_feat_dim
+            node_feat_dim, edge_feat_dim, gnn_hidden_dim
         )  # output dim = node_feat_dim
 
         self.head = nn.Sequential(
@@ -44,7 +44,7 @@ class DQN_QNetwork_Equivariant_AddEdgeDiscreteNoSkipNoSelfLoops(TabularMixin, Mo
 
         add_mask = (adj == 0)
         add_mask = add_mask[:, ~torch.eye(n, dtype=torch.bool, device=adj.device)].view(batch_size, -1)
-        
+
         actions = torch.multinomial(add_mask.float(), 1)
         return actions, {}
 

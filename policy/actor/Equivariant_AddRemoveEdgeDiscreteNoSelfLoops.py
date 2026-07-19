@@ -1,15 +1,14 @@
-from typing import Any
 import torch
 import torch.nn as nn
 from skrl.models.torch import Model
-from skrl.models.torch import TabularMixin
+from skrl.models.torch import CategoricalMixin
 from skrl.utils.spaces.torch import unflatten_tensorized_space
 from policy.gnn_backbone import *
 
 
 
 # compatible with observation type "DictEquivariantNodeFeaturesAndAdjAndSelection"
-class DQN_QNetwork_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(TabularMixin, Model):
+class PPO_ActorModel_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(CategoricalMixin, Model):
     def __init__(
         self,
         n,
@@ -24,16 +23,17 @@ class DQN_QNetwork_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(TabularMixin, Mo
     ):
         # Model.__init__(self, observation_space, action_space, device)
         Model.__init__(self, observation_space=observation_space, action_space=action_space, device=device)
-        TabularMixin.__init__(self)
+        CategoricalMixin.__init__(self)
 
         self.gnn = GNNBackboneEquivariant(
             node_feat_dim, edge_feat_dim, gnn_hidden_dim
         )  # output dim = node_feat_dim
 
+        # input cat[node features, selected node's features(zeros if no selected)]
         self.head = nn.Sequential(
             nn.Linear(2 * node_feat_dim + 1, head_hidden_dim),
             nn.LeakyReLU(),
-            nn.Linear(head_hidden_dim, 2),  # two logits ("add", "remove")
+            nn.Linear(head_hidden_dim, 2),
         )
 
         # input graph embedding
@@ -42,24 +42,6 @@ class DQN_QNetwork_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(TabularMixin, Mo
             nn.LeakyReLU(),
             nn.Linear(head_hidden_dim, 1),
         )
-
-    def random_act(self, inputs: dict[str, Any], *, role: str = "") -> tuple[torch.Tensor, dict[str, Any]]:
-        observations = unflatten_tensorized_space(self.observation_space, inputs["observations"])
-        adj = observations["adj"]
-        batch_size = adj.shape[0]
-        n = adj.shape[1]
-
-        add_mask = (adj == 0)
-        add_mask = add_mask[:, ~torch.eye(n, dtype=torch.bool, device=adj.device)].view(batch_size, -1)
-
-        remove_mask = (adj == 1)
-        remove_mask = remove_mask[:, ~torch.eye(n, dtype=torch.bool, device=adj.device)].view(batch_size, -1)
-
-        skip_mask = torch.ones((batch_size, 1), dtype=torch.bool, device=adj.device)
-        full_mask = torch.cat([add_mask, remove_mask, skip_mask], dim=1)
-
-        actions = torch.multinomial(full_mask.float(), 1)
-        return actions, {}
 
     def compute(self, inputs, role):
         observations = unflatten_tensorized_space(self.observation_space, inputs["observations"])
@@ -93,7 +75,7 @@ class DQN_QNetwork_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(TabularMixin, Mo
         remove_logits = edge_logits[:, :, 1]   # (B, E)
         skip_logit = self.skip_head(torch.mean(h, dim=1))
 
-        q_values = torch.cat([
+        logits = torch.cat([
             add_logits,
             remove_logits,
             skip_logit
@@ -110,8 +92,8 @@ class DQN_QNetwork_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(TabularMixin, Mo
         remove_mask = remove_mask.view(batch_size, -1)
 
         # apply masks
-        E = (q_values.shape[-1]-1)//2
-        q_values[:, :E][~add_mask] = -1e9
-        q_values[:, E:2*E][~remove_mask] = -1e9
+        E = (logits.shape[-1]-1)//2
+        logits[:, :E][~add_mask] = -1e9
+        logits[:, E:2*E][~remove_mask] = -1e9
 
-        return q_values, {}
+        return logits, {}

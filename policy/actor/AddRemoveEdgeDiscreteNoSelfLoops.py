@@ -23,9 +23,8 @@ class PPO_ActorModel_AddRemoveEdgeDiscreteNoSelfLoops(CategoricalMixin, Model):
         Model.__init__(self, observation_space=observation_space, action_space=action_space, device=device)
         CategoricalMixin.__init__(self)
 
-        # +1 since we'll add the degree as a node feature
         self.gnn = GNNBackboneGAT(
-            node_feat_dim + 1, gnn_hidden_dim
+            node_feat_dim, gnn_hidden_dim
         )  # output dim = hidden dim
         self.n = n
 
@@ -55,9 +54,6 @@ class PPO_ActorModel_AddRemoveEdgeDiscreteNoSelfLoops(CategoricalMixin, Model):
             env_edges = env_edges + (i * self.n)
             batch_edges.append(env_edges)
         full_edge_index = torch.cat(batch_edges, dim=1).to(self.device)
-
-        out_degrees = adj.sum(dim=-1, keepdim=True)
-        node_features = torch.cat([node_features, out_degrees], dim=-1)
 
         # use current adj
         h = self.gnn(node_features, full_edge_index)

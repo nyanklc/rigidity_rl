@@ -8,7 +8,7 @@ from policy.gnn_backbone import *
 
 
 
-class PPO_CriticModel_GINE_Selection(DeterministicMixin, Model):
+class PPO_CriticModel_GINE(DeterministicMixin, Model):
     def __init__(
         self,
         n,
@@ -28,9 +28,12 @@ class PPO_CriticModel_GINE_Selection(DeterministicMixin, Model):
         self.gnn = GNNBackboneGINE(
             node_feat_dim, edge_feat_dim, gnn_hidden_dim
         )  # output dim = hidden dim
-        # +1 for selection "bit"
+
+        # input cat[node features, selected node's features(zeros if no selected)]
         self.head = nn.Sequential(
-            nn.Linear(2*gnn_hidden_dim, head_hidden_dim), nn.LeakyReLU(), nn.Linear(head_hidden_dim, 1)
+            nn.Linear(2 * node_feat_dim, head_hidden_dim),
+            nn.LeakyReLU(),
+            nn.Linear(head_hidden_dim, 1),
         )
 
     def compute(self, inputs, role):
@@ -39,8 +42,8 @@ class PPO_CriticModel_GINE_Selection(DeterministicMixin, Model):
         node_features = observations["node_features"]
         edge_features = observations["edge_features"]
         adj = observations["adj"]
-        selection = observations["selection"]
 
+        n = node_features.shape[1]
         batch_size = node_features.shape[0]
 
         # batch
@@ -49,7 +52,7 @@ class PPO_CriticModel_GINE_Selection(DeterministicMixin, Model):
         for i in range(batch_size):
             src, dst = adj[i].nonzero(as_tuple=True)
 
-            edge_index = torch.stack([src, dst], dim=0) + i * self.n
+            edge_index = torch.stack([src, dst], dim=0) + i * n
             edge_index_list.append(edge_index)
 
             edge_attr_list.append(edge_features[i][src, dst])
@@ -59,16 +62,11 @@ class PPO_CriticModel_GINE_Selection(DeterministicMixin, Model):
         # current graph pass
         h = self.gnn(node_features, full_edge_index, full_edge_attr)
 
-        # concat selected node's features
-        selected = (h * selection.unsqueeze(-1)).sum(dim=1) # zeros if not selected
-        selected_repeated = selected.unsqueeze(1).expand(-1, self.n, -1)
-        new_embeddings = torch.cat([h, selected_repeated], dim=-1)
-
         # graph embedding
-        batch_mapping = torch.arange(batch_size, device=new_embeddings.device).repeat_interleave(
-            self.n
+        batch_mapping = torch.arange(batch_size, device=h.device).repeat_interleave(
+            n
         )
-        graph_latent = global_mean_pool(new_embeddings.reshape(-1, new_embeddings.shape[-1]), batch_mapping)
+        graph_latent = global_mean_pool(h.reshape(-1, h.shape[-1]), batch_mapping)
 
         # print(f"hey h: {h.shape}, new: {new_embeddings.shape}, latent: {graph_latent.shape}")
         value = self.head(graph_latent)
