@@ -8,6 +8,7 @@ import copy
 import os
 
 
+# Basically Directed Erdős-Rényi Model G(n, m)
 # TODO: collinearity check
 def random_scenario(
     n,
@@ -25,8 +26,9 @@ def random_scenario(
     else:
         # Important: We do not want the model to memorize domain specific
         # weights, so we shuffle the nodes' roles
-        # The GNN should handle this actually but idk
-        np.random.shuffle(domains)
+
+        # The GNN should handle this (permutation invariance) actually
+        # np.random.shuffle(domains)
 
         for agent, domain in zip(network.agents, domains):
             agent.set_domain(domain)
@@ -42,6 +44,7 @@ def random_scenario(
 
     while len(edge_set) < m:
         i, j = np.random.choice(n, size=2, replace=False)
+        # TODO: surely there is a better way
         if ((i, j) not in edge_set):
             edge_set.add((i, j))
     edges = np.array(list(edge_set))
@@ -50,19 +53,23 @@ def random_scenario(
     else:
         network.set_edges_indices(edges[:, 0], edges[:, 1])
 
-    orientations_euler = np.random.uniform(0, 2 * np.pi, size=(n, 3))
-    goal_network = Network(
-        positions, orientations_euler, edges=np.zeros((0, 2), dtype=int)
-    )
-    if isinstance(domains, str):
-        goal_network.set_agents_domain_homogeneous(domains)
-    else:
-        for agent, domain in zip(goal_network.agents, domains):
-            agent.set_domain(domain)
-    goal_network.randomize_positions(low, high)
-    goal_network.randomize_orientations()
-    # same edges
-    goal_network.set_edges(network.edges)
+
+    # orientations_euler = np.random.uniform(0, 2 * np.pi, size=(n, 3))
+    # goal_network = Network(
+    #     positions, orientations_euler, edges=np.zeros((0, 2), dtype=int)
+    # )
+    # if isinstance(domains, str):
+    #     goal_network.set_agents_domain_homogeneous(domains)
+    # else:
+    #     for agent, domain in zip(goal_network.agents, domains):
+    #         agent.set_domain(domain)
+    # goal_network.randomize_positions(low, high)
+    # goal_network.randomize_orientations()
+    # # same edges
+    # goal_network.set_edges(network.edges)
+
+
+    goal_network = None
 
     return network, goal_network
 

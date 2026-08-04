@@ -191,3 +191,16 @@ def batched_adj_to_edge_index(adj_batch):
 def discretize_array(vec):
     bins = np.linspace(0, 1, 0.05)
     return np.digitize(vec, bins)
+
+def sample_gaussian(mean, variance, n, size=1):
+    std_dev = np.sqrt(variance)
+    max_edges = n**2 - n
+
+    # Generate continuous samples from the Gaussian
+    samples = np.random.normal(loc=mean, scale=std_dev, size=size)
+
+    # Clip the values to the valid boundary [0, n**2 - n]
+    clipped_samples = np.clip(samples, 0, max_edges)
+
+    # Round to the nearest integer and cast to integer type
+    return np.round(clipped_samples).astype(int)

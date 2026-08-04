@@ -29,9 +29,8 @@ class PPO_CriticModel_GINE(DeterministicMixin, Model):
             node_feat_dim, edge_feat_dim, gnn_hidden_dim
         )  # output dim = hidden dim
 
-        # input cat[node features, selected node's features(zeros if no selected)]
         self.head = nn.Sequential(
-            nn.Linear(2 * node_feat_dim, head_hidden_dim),
+            nn.Linear(gnn_hidden_dim, head_hidden_dim),
             nn.LeakyReLU(),
             nn.Linear(head_hidden_dim, 1),
         )

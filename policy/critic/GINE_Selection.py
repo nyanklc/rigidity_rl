@@ -42,6 +42,7 @@ class PPO_CriticModel_GINE_Selection(DeterministicMixin, Model):
         selection = observations["selection"]
 
         batch_size = node_features.shape[0]
+        n = node_features.shape[1]
 
         # batch
         edge_index_list = []
@@ -49,7 +50,7 @@ class PPO_CriticModel_GINE_Selection(DeterministicMixin, Model):
         for i in range(batch_size):
             src, dst = adj[i].nonzero(as_tuple=True)
 
-            edge_index = torch.stack([src, dst], dim=0) + i * self.n
+            edge_index = torch.stack([src, dst], dim=0) + i * n
             edge_index_list.append(edge_index)
 
             edge_attr_list.append(edge_features[i][src, dst])
@@ -61,12 +62,12 @@ class PPO_CriticModel_GINE_Selection(DeterministicMixin, Model):
 
         # concat selected node's features
         selected = (h * selection.unsqueeze(-1)).sum(dim=1) # zeros if not selected
-        selected_repeated = selected.unsqueeze(1).expand(-1, self.n, -1)
+        selected_repeated = selected.unsqueeze(1).expand(-1, n, -1)
         new_embeddings = torch.cat([h, selected_repeated], dim=-1)
 
         # graph embedding
         batch_mapping = torch.arange(batch_size, device=new_embeddings.device).repeat_interleave(
-            self.n
+            n
         )
         graph_latent = global_mean_pool(new_embeddings.reshape(-1, new_embeddings.shape[-1]), batch_mapping)
 

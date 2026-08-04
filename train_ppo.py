@@ -3,6 +3,8 @@ import os
 import sys
 import json
 import torch
+import inspect
+from datetime import datetime
 import gymnasium as gym
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
@@ -11,11 +13,11 @@ from skrl.trainers.torch import SequentialTrainer, SequentialTrainerCfg
 from policy import *
 
 ######################################
-TOTAL_TIMESTEPS = int(5e5)
+TOTAL_TIMESTEPS = int(6e5)
 NR_ENVS = 1
-MEM_SIZE = 4092 * 2
+MEM_SIZE = 4096
 
-GNN_HIDDEN_DIM = 128
+GNN_HIDDEN_DIM = 64
 ACTOR_HEAD_HIDDEN_DIM = 128
 CRITIC_HEAD_HIDDEN_DIM = 128
 
@@ -30,10 +32,10 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 if len(sys.argv) < 3:
-    print(f"usage: python3 train.py [environment_name] [model_name]")
+    print(f"usage: python3 train.py [environment_name] [model_name]\nuse 'prefix=...' for the model name to append action/obs type")
     quit()
 
-model_name_prefix = sys.argv[2]
+model_name = sys.argv[2]
 
 filename = sys.argv[1]
 filepath = "./environments/" + filename + ".json"
@@ -50,10 +52,27 @@ with open(filepath, "r") as f:
     domains_str = config.get("domains", "domain").replace("^", "").replace("(", "").replace(")", "")
     n_domains = f"n{n}_{domains_str}"
 
-model_name = (
-    model_name_prefix
-    + f"_action{action_type}_obs{obs_type}_{scenario_name if scenario_name is not None else n_domains}"
-)
+if "prefix=" in sys.argv[2]:
+    model_name = model_name[7:] + f"_action{action_type}_obs{obs_type}_{scenario_name if scenario_name is not None else n_domains}"
+
+train_dir = "./train"
+os.makedirs(train_dir, exist_ok=True)
+descriptor_path = os.path.join(train_dir, f"{model_name}.json")
+model_save_path = f"./models/complete/PPO/{model_name}.pt"
+
+resume = False
+if os.path.exists(descriptor_path) or os.path.exists(model_save_path):
+    print(f"\nA training run for '{model_name}' already exists.")
+    choice = input("Do you want to [c]ontinue training, start [f]resh, or [a]bort? ").strip().lower()
+    if choice == 'a':
+        quit()
+    elif choice == 'f':
+        pass
+    elif choice == 'c':
+        resume = True
+    else:
+        print("Invalid choice. Aborting.")
+        quit()
 
 device = DEVICE
 
@@ -103,6 +122,7 @@ elif action_type == "AddRemoveEdgeDiscreteNoSelfLoops":
             n,
             node_feat_dim=node_features_dim,
             gnn_hidden_dim=GNN_HIDDEN_DIM,
+            edge_feat_dim=edge_features_dim,
             head_hidden_dim=ACTOR_HEAD_HIDDEN_DIM,
             observation_space=env.observation_space,
             action_space=env.action_space,
@@ -274,6 +294,10 @@ agent = PPO(
     device=device,
 )
 
+if resume and os.path.exists(model_save_path):
+    print(f"Loading existing model from {model_save_path}...")
+    agent.load(model_save_path)
+
 trainer_cfg = SequentialTrainerCfg()
 trainer_cfg.timesteps = TOTAL_TIMESTEPS
 trainer_cfg.headless = True # we don't have env.render()
@@ -281,13 +305,17 @@ trainer = SequentialTrainer(cfg=trainer_cfg, env=env, agents=agent)
 
 import dataclasses
 import pprint
+import json
+import inspect
+from datetime import datetime
+
 print("##########################################")
 print(" TRAINING ")
 print("="*40)
 print(f"obs space: {trainer.env.observation_space}")
 print(f"action space: {trainer.env.action_space}")
-print(f"actor: {models["policy"].__class__.__name__}")
-print(f"critic: {models["value"].__class__.__name__}")
+print(f"actor: {models['policy'].__class__.__name__}")
+print(f"critic: {models['value'].__class__.__name__}")
 print(f"TOTAL_TIMESTEPS: {TOTAL_TIMESTEPS}")
 print(f"NR_ENVS: {NR_ENVS}")
 print(f"MEM_SIZE: {MEM_SIZE}")
@@ -301,12 +329,61 @@ pprint.pprint(dataclasses.asdict(cfg), width=80, sort_dicts=False)
 print("="*40 + "\n")
 print("##########################################")
 
+def make_serializable(obj):
+    if callable(obj):
+        return str(obj)
+    if isinstance(obj, dict):
+        return {k: make_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [make_serializable(v) for v in obj]
+    return obj
+
+with open("environments/"+filename+".json", "r") as env_file:
+    env_config_data = json.load(env_file)
+
+descriptor = {
+    "algorithm": "PPO",
+    "model_name": model_name,
+    "environment_config": filename,
+    "timestamp_started": datetime.now().isoformat(),
+    "total_timesteps_configured": TOTAL_TIMESTEPS,
+    "nr_envs": NR_ENVS,
+    "mem_size": MEM_SIZE,
+    "gnn_hidden_dim": GNN_HIDDEN_DIM,
+    "head_hidden_dim": ACTOR_HEAD_HIDDEN_DIM,
+    "critic_head_hidden_dim": CRITIC_HEAD_HIDDEN_DIM,
+    "hyperparameters": make_serializable(dataclasses.asdict(cfg)),
+    "status": "training",
+    "timesteps_completed": 0,
+    "actor_architecture": inspect.getsource(models["policy"].__class__).split("\n"),
+    "critic_architecture": inspect.getsource(models["value"].__class__).split("\n"),
+    "environment_config_raw": env_config_data
+}
+
+_original_post_interaction = agent.post_interaction
+def custom_post_interaction(*args, timestep, timesteps, **kwargs):
+    descriptor["timesteps_completed"] = timestep
+    return _original_post_interaction(*args, timestep=timestep, timesteps=timesteps, **kwargs)
+agent.post_interaction = custom_post_interaction
+
+with open(descriptor_path, "w") as f:
+    json.dump(descriptor, f, indent=4)
+
 print(f"Training on {device}...")
 print(f"Logging: {model_name}")
-trainer.train()
 
-agent.save(f"./models/complete/PPO/{model_name}.pt")
+try:
+    trainer.train()
+    descriptor["status"] = "completed"
+except KeyboardInterrupt:
+    print("\nStopping training gracefully (Ctrl+C)...")
+    descriptor["status"] = "interrupted"
+
+agent.save(model_save_path)
+
+with open(descriptor_path, "w") as f:
+    json.dump(descriptor, f, indent=4)
 
 print(f"Completed.")
-print(f"Model saved: models/complete/{model_name}.pt")
+print(f"Model saved: {model_save_path}")
 print(f"Model name: {model_name}")

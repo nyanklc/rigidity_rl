@@ -75,6 +75,7 @@ class PPO_ActorModel_Equivariant_SelectNodesSequentially(CategoricalMixin, Model
         # calculate node scores for selection
         add_remove_logits = self.head(new_embeddings).squeeze(-1)
         skip_logit = self.skip_head(torch.mean(h, dim=1))
+        # skip_logit = torch.full((batch_size, 1), -1e9, device=add_remove_logits.device)
         logits = torch.cat([add_remove_logits, skip_logit], dim=-1)
 
         # mask out self loops

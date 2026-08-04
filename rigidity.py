@@ -98,17 +98,19 @@ def extended_bearing_rigidity_matrix(network):
 
     return B
 
-def is_IBR_explicit(brmat, brmat_K=None, rank_K=None):
+def is_IBR_explicit(brmat, rank_K=None):
     if rank_K is None:
-        rank_K = np.linalg.matrix_rank(brmat_K)
-    return np.linalg.matrix_rank(brmat) == rank_K
+        raise Exception("HEY WHAT")
+    rank = np.linalg.matrix_rank(brmat)
+    return rank == rank_K, rank
 
-def is_IBR(network, rank_K=None):
+def is_IBR(network, brmat=None, rank_K=None):
     if int(network.edges.sum()) == 0:
         return False
 
     # rigidity matrix
-    brmat = extended_bearing_rigidity_matrix(network)
+    if brmat is None:
+        brmat = extended_bearing_rigidity_matrix(network)
 
     if rank_K is None:
         # rigidity matrix of the fully connected graph
@@ -138,8 +140,10 @@ def rigidity_eigenvalue(network, eps=1e-10, rank_K=None):
 
 # M. H. Trinh, Q. Van Tran, and H.-S. Ahn, “Minimal and Redundant Bearing Rigidity: Conditions and Applications,” IEEE Transactions on Automatic Control, vol. 65, no. 10, pp. 4186–4200, Oct. 2020, doi: 10.1109/TAC.2019.2958563.
 # NOTE: ONLY FOR R^d
-def is_MBR(network, rank_K=None):
-    isIBR = is_IBR(network, rank_K=rank_K)
+def is_MBR_Rd(network, rank_K=None, brmat=None):
+    if brmat:
+        isIBR, rank = is_IBR_explicit()
+    isIBR, rank = is_IBR(network, rank_K=rank_K)
 
     if len(network.agents) == 0:
         return False, isIBR
@@ -166,24 +170,68 @@ def is_MBR(network, rank_K=None):
 
     return m == m_required, isIBR
 
-# idk if this is reliable
-def is_MBR_general(network, rank_K=None):
-    raise Exception("MBR (general) doesn't quite work i think. Abort.")
+def MBR_required_Rd(n ,d):
+    k = (n - 2) // (d - 1)
+    r = (n - 2) % (d - 1)
+    sgn = 1 if r > 0 else 0
 
-    isIBR = is_IBR(network, rank_K=rank_K)
+    m_required = 1 + k * d + r + sgn
 
-    if len(network.agents) < 2 or not isIBR:
-        return False, isIBR
+    return m_required
 
-    edges_list = network.get_edge_list()
-    for edge in edges_list:
-        network.remove_edge(*edge)
-        still_rigid = is_IBR(network, rank_K=rank_K)
-        network.add_edge(*edge)
-        if still_rigid:
-            return False, True
+# # idk if this is reliable
+# def is_MBR_general(network, rank_K=None):
+#     raise Exception("MBR (general) doesn't quite work i think. Abort.")
 
-    return True, True
+#     isIBR = is_IBR(network, rank_K=rank_K)
+
+#     if len(network.agents) < 2 or not isIBR:
+#         return False, isIBR
+
+#     edges_list = network.get_edge_list()
+#     for edge in edges_list:
+#         network.remove_edge(*edge)
+#         still_rigid = is_IBR(network, rank_K=rank_K)
+#         network.add_edge(*edge)
+#         if still_rigid:
+#             return False, True
+
+#     return True, True
+
+def is_MBR(network, rank_K=None, brmat=None):
+    if int(network.edges.sum()) == 0:
+        return False, False, 0
+
+    if brmat is None:
+        brmat = extended_bearing_rigidity_matrix(network)
+
+    if rank_K is None:
+        network_K = network.fully_connected()
+        brmat_K = extended_bearing_rigidity_matrix(network_K)
+        rank_K = np.linalg.matrix_rank(brmat_K)
+
+    isIBR, rank_brmat = is_IBR_explicit(brmat, rank_K=rank_K)
+
+    if not isIBR:
+        return False, isIBR, rank_brmat
+
+    m = int(network.edges.sum())
+    c_e = []
+    for k in range(m):
+        block = brmat[3*k:3*(k+1), :]
+        c_e.append(np.linalg.matrix_rank(block))
+
+    c_e_sorted = sorted(c_e, reverse=True)
+
+    sum_c = 0
+    m_req = 0
+    for c in c_e_sorted:
+        sum_c += c
+        m_req += 1
+        if sum_c >= rank_K:
+            break
+
+    return m == m_req, isIBR, rank_brmat
 
 # J. F. Presenza, L. J. Colombo, J. I. Giribet, and I. Mas, “Angle-based Localization and Rigidity Maintenance Control for Multi-Robot Networks,” Apr. 17, 2026, arXiv: arXiv:2604.11754. doi: 10.48550/arXiv.2604.11754.
 def isIAR(network):

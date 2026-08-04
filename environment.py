@@ -8,7 +8,8 @@ from datetime import datetime
 import os
 import sys
 from network import Network
-from rigidity import is_IBR, rigidity_eigenvalue
+from rigidity import *
+from util import sample_gaussian
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.vec_env import VecNormalize
@@ -118,6 +119,8 @@ def action_AddRemoveEdgeMultiDiscrete(action, env: "Environment", reward, action
     # skip
     elif action[0] == 2:
         action_info += "skip"
+        if env.skip_is_stop:
+            env.stop_action = True
         pass
 
     print(action_info)
@@ -132,6 +135,8 @@ def action_AddRemoveEdgeDiscrete(action, env: "Environment", reward, action_info
     if action == 2 * ec:
         # skip
         action_info += "skip"
+        if env.skip_is_stop:
+            env.stop_action = True
         pass
     elif action < ec:
         # add
@@ -176,6 +181,8 @@ def action_AddEdgeDiscrete(action, env: "Environment", reward, action_info):
     if action == ec:
         # skip
         action_info += "skip"
+        if env.skip_is_stop:
+            env.stop_action = True
         pass
     else:
         # add
@@ -229,6 +236,8 @@ def action_AddEdgeDiscreteNoSelfLoops(
     # skip
     if action == n**2 - n:
         action_info += "skip"
+        if env.skip_is_stop:
+            env.stop_action = True
         pass
     # add
     else:
@@ -290,6 +299,8 @@ def action_AddRemoveEdgeDiscreteNoSelfLoops(
     if action == action_space_len - 1:
         # skip
         action_info += "skip"
+        if env.skip_is_stop:
+            env.stop_action = True
         pass
     elif action < (action_space_len - 1) // 2:
         # add
@@ -340,6 +351,8 @@ def action_SelectNodesSequentially(action, env: "Environment", reward, action_in
 
     if action == n:
         action_info += " skip"
+        if env.skip_is_stop:
+            env.stop_action = True
         env.selection = np.zeros(env.n, dtype=np.int64)
         return reward, action_info
 
@@ -381,6 +394,8 @@ def action_DecideOnEdge(action, env: "Environment", reward, action_info):
         env.network.remove_edge(int(env.proposed_edge[0]), int(env.proposed_edge[1]))
     elif action == 2:
         action_info += f"skip "
+        if env.skip_is_stop:
+            env.stop_action = True
     else:
         print(f"shouldn't happen: action_DecideOnEdge")
         quit()
@@ -579,11 +594,12 @@ class Environment(gym.Env):
         domains,
         action_space_type="AllEdges",
         obs_space_type="Complete",
-        reward_type="Rigid",
+        state_score_type="Rigid",
         termination_condition_type="MaxSteps",
         action_rewards_enable=False,
+        skip_is_stop=True,
+        random_graph_with_mean_min_edges=False,
         time_penalty_value=0.0,
-        incremental_rewards_enable=False,
         track_data_enable=False,
         max_steps=1e4,
         truncate_enable=True,
@@ -596,17 +612,36 @@ class Environment(gym.Env):
 
         self.action_space_type = action_space_type
         self.obs_space_type = obs_space_type
-        self.reward_type = reward_type
+        self.state_score_type = state_score_type
         self.termination_condition_type = termination_condition_type
+
+        self.random_graph_with_mean_min_edges = random_graph_with_mean_min_edges
 
         self.filepath = filepath
         if self.filepath is not None:
             self.network, self.goal_network = load_scenario(self.filepath)
         else:
-            self.network, self.goal_network = random_scenario(n, domains)
+            # Since learning with complete random number of edges gets basically impossible
+            # as the number of nodes grow, we'll sample the number of edges to
+            # be used centered around the minimum required amount for IBR.
+            # Important: We'll sample a value centered around the edge count for R^d.
+            # It should be less than the number for other domains but it should be okay I think.
+            if self.random_graph_with_mean_min_edges:
+                mean = MBR_required_Rd(n, 2 if (("R^2" in domains) or ("R^2xS^1" in domains)) else 3)
+                random_edge_count = sample_gaussian(
+                    mean,
+                    ((n**2-n) - mean)**2/9,
+                    n
+                    )
+                random_edge_count = 1 if random_edge_count < 1 else random_edge_count
+                random_edge_count = n**2-n if random_edge_count > n**2-n else random_edge_count
+                self.network, self.goal_network = random_scenario(n, domains, edge_count=random_edge_count)
+            else:
+                self.network, self.goal_network = random_scenario(n, domains)
 
         self.n = len(self.network.agents)
         self.m = int(self.network.edges.sum())
+        self.initial_m = self.m
 
         self.brm = self.network.extended_bearing_rigidity_matrix()
 
@@ -630,11 +665,12 @@ class Environment(gym.Env):
 
         self.only_randomize_edges = only_randomize_edges
 
-        self.last_reward = 0
+        self.last_state_score = 0
 
         self.action_rewards_enable = action_rewards_enable
-        self.incremental_rewards_enable = incremental_rewards_enable
         self.track_data_enable = track_data_enable
+
+        self.skip_is_stop = skip_is_stop
 
         self.time_penalty_value = time_penalty_value
 
@@ -642,9 +678,11 @@ class Environment(gym.Env):
         self.was_MBR = None
 
         self.writer = None
+        # self.initial_edges_writer = None
 
     def set_writer(self, experiment_name):
         self.writer = SummaryWriter(log_dir=os.path.join("runs", experiment_name))
+        # self.initial_edges_writer = SummaryWriter(log_dir=os.path.join("runs", experiment_name))
         self.writer_counter = 0 # don't reset this
 
     def load(self, filepath):
@@ -655,11 +693,11 @@ class Environment(gym.Env):
         domains = config["domains"]
         ACTION_TYPE = config["action_type"]
         OBS_TYPE = config["obs_type"]
-        REWARD_TYPE = config["reward_type"]
+        STATE_SCORE_TYPE = config["state_score_type"]
         TERMINATION_CONDITION_TYPE = config["termination_condition_type"]
         ACTION_REWARDS_ENABLE = config["action_rewards_enable"]
+        SKIP_IS_STOP = config["skip_is_stop"]
         TIME_PENALTY_VALUE = config["time_penalty_value"]
-        INCREMENTAL_REWARDS_ENABLE = config["incremental_rewards_enable"]
         TRACK_DATA_ENABLE = config["track_data_enable"]
         MAX_STEPS = config["max_steps"]
         TRUNCATE_ENABLE = config["truncate_enable"]
@@ -678,11 +716,11 @@ class Environment(gym.Env):
             domains,
             action_space_type=ACTION_TYPE,
             obs_space_type=OBS_TYPE,
-            reward_type=REWARD_TYPE,
+            state_score_type=STATE_SCORE_TYPE,
             termination_condition_type=TERMINATION_CONDITION_TYPE,
             action_rewards_enable=ACTION_REWARDS_ENABLE,
+            skip_is_stop=SKIP_IS_STOP,
             time_penalty_value=TIME_PENALTY_VALUE,
-            incremental_rewards_enable=INCREMENTAL_REWARDS_ENABLE,
             track_data_enable=TRACK_DATA_ENABLE,
             max_steps=MAX_STEPS,
             truncate_enable=TRUNCATE_ENABLE,
@@ -748,90 +786,102 @@ class Environment(gym.Env):
         # BRM
         brm = self.network.extended_bearing_rigidity_matrix()
 
-        # reward based on state
-        is_MBR, is_IBR = self.network.is_MBR(rank_K=self.rank_K)
-        if self.reward_type == "Rigid":
+        # state score, how good is the current state
+        state_score = 0
+        is_MBR, is_IBR, rank_brm = self.network.is_MBR(rank_K=self.rank_K, brm=brm)
+        if self.state_score_type == "Rigid":
             if is_IBR:
-                reward += 100
-        elif self.reward_type == "RigidAndMinEigenvalue":
+                state_score += 100
+        elif self.state_score_type == "RigidAndMinEigenvalue":
             punish = 10
             if not is_IBR:
-                reward -= punish
+                state_score -= punish
             else:
                 min_eig = rigidity_eigenvalue(self.network, rank_K=self.rank_K)
-                reward += min_eig
-        elif self.reward_type == "RigidAndMinRigid":
+                state_score += min_eig
+        elif self.state_score_type == "RigidAndMinRigid":
             if is_IBR:
-                reward += 10
+                state_score += 10
             if is_MBR:
-                reward += 10
-        elif self.reward_type == "RigidAndLogMinEigenvalueAndEdges":
+                state_score += 10
+        elif self.state_score_type == "RigidAndLogMinEigenvalueAndEdges":
             bonus = 100
             if is_IBR:
-                reward += bonus
+                state_score += bonus
 
             min_eig = rigidity_eigenvalue(self.network, rank_K=self.rank_K)
             if min_eig != 0.0:
-                reward += np.log10(min_eig * 1e5)
+                state_score += np.log10(min_eig * 1e5)
 
-            reward -= np.sum(self.network.edges)
+            state_score -= np.sum(self.network.edges)
 
-        elif self.reward_type == "MinRigid":
+        elif self.state_score_type == "MinRigid":
             if is_MBR:
-                reward += 10
+                state_score += 10
             else:
-                reward -= 10
-        elif self.reward_type == "MinRigidAndMinEigenvalue":
+                state_score -= 10
+        elif self.state_score_type == "MinRigidAndMinEigenvalue":
             punish = 10
             if not is_MBR:
-                reward -= punish
+                state_score -= punish
             else:
                 min_eig = rigidity_eigenvalue(self.network, rank_K=self.rank_K)
-                reward += min_eig
-        elif self.reward_type == "MinEigenvalue":
+                state_score += min_eig
+        elif self.state_score_type == "MinEigenvalue":
             min_eig = rigidity_eigenvalue(self.network, rank_K=self.rank_K)
-            reward += min_eig
-        elif self.reward_type == "Eigenvalues":
+            state_score += min_eig
+        elif self.state_score_type == "Eigenvalues":
             eigs = self.network.eigenvalues()
-            reward += 1e4 * np.sum(eigs)
-        elif self.reward_type == "EdgeCount":
+            state_score += 1e4 * np.sum(eigs)
+        elif self.state_score_type == "EdgeCount":
             edge_count = self.network.edges.sum()
-            reward -= edge_count
-        elif self.reward_type == "LogMinEigenvalue":
+            state_score -= edge_count
+        elif self.state_score_type == "LogMinEigenvalue":
             min_eig = rigidity_eigenvalue(self.network, rank_K=self.rank_K)
-            reward += np.log10(min_eig) if np.abs(min_eig) > 10e-10 else 0.0
-        elif self.reward_type == "RigidityMatrixRank":
+            state_score += np.log10(min_eig) if np.abs(min_eig) > 10e-10 else 0.0
+        elif self.state_score_type == "RigidityMatrixRank":
             if np.sum(brm):
-                reward += np.linalg.matrix_rank(brm)
-        elif self.reward_type == "RigidityMatrixRankAndEdges":
+                state_score += rank_brm
+        elif self.state_score_type == "RigidityMatrixRankAndEdges":
             if np.sum(brm):
-                reward += np.linalg.matrix_rank(brm)
-            reward -= np.sum(self.network.edges)
-        elif self.reward_type == "Weighted":
+                state_score += rank_brm
+            state_score -= np.sum(self.network.edges)
+        elif self.state_score_type == "Weighted":
             # TODO: tune hyperparameters somehow
-            # The Structural Potential of the graph
-            w_rank = 15.0
+            w_rank = 20.0
             w_edge = 10.0
 
-            # The "Milestone" bonuses
-            w_ibr = 5.0
+            w_ibr = 0
 
-            w_eig = 5
-            w_eig1 = 1e5
+            w_eig = 0 # 5
+            w_eig1 = 0 # 1e5
 
-            r_rank = w_rank * np.linalg.matrix_rank(brm)
-            r_ibr = w_ibr * np.float32(is_IBR)
-            r_eig = w_eig * np.float32(is_IBR) * np.log1p(w_eig1 * rigidity_eigenvalue(self.network, rank_K=self.rank_K))
-            r_edge = -w_edge * np.sum(self.network.edges)
+            s_rank = w_rank * rank_brm
+            s_ibr = w_ibr * np.float32(is_IBR)
+            s_eig = w_eig * np.float32(is_IBR) * np.log1p(w_eig1 * rigidity_eigenvalue(self.network, rank_K=self.rank_K))
+            s_edge = -w_edge * np.sum(self.network.edges)
 
-            reward += r_rank + r_ibr + r_eig + r_edge
+            state_score += s_rank + s_ibr + s_eig + s_edge
             # print(f"\nr_rank: {r_rank}: {w_rank}*...\nr_ibr: {r_ibr}: {w_ibr}*...\nr_eig: {r_eig}: {w_eig}*...\nr_edge: {r_edge}: {w_edge}*...")
-            # print(f"\ntotal: {reward}")
+            # print(f"\ntotal: {state_score}")
 
-        elif self.reward_type == "None" or None:
+        elif self.state_score_type == "None" or None:
             pass
 
-        state_reward = reward - action_reward
+        # # state score is always incremental from now on
+        # # we don't want to give any reward if it's just selecting the first node
+        # if self.action_space_type == "SelectNodesSequentially":
+        #     # we don't need this anymore since we're getting the incremental for state score
+        #     # if not np.sum(self.selection):
+        #     #     state_reward = self.last_state_reward
+        #     if not self.incremental_rewards_enable:
+        #         raise Exception("SelectNodesSequentially action type should only be used with incremental rewards.")
+
+        # (incremental) reward from state score
+        reward_from_state_score = state_score - self.last_state_score
+        reward += reward_from_state_score
+        self.last_state_score = state_score
+
 
         self.step_counter += 1
 
@@ -844,7 +894,7 @@ class Environment(gym.Env):
         elif self.termination_condition_type == "MaxStepsRankBonus":
             if self.step_counter >= self.max_steps:
                 if np.sum(brm):
-                    reward += np.linalg.matrix_rank(brm)
+                    reward += rank_brm
                 terminated = True
         elif self.termination_condition_type == "Rigid":
             if is_IBR:
@@ -853,12 +903,14 @@ class Environment(gym.Env):
                 terminated = True
         elif self.termination_condition_type == "RigidMinEigBonus":
             if is_IBR:
-                min_eig = rigidity_eigenvalue(self.network, rank_K=self.rank_K) # TODO: the value of this is pretty small
+                w_eig = 5
+                w_eig1 = 1e5
+                reward += w_eig * np.float32(is_IBR) * np.log1p(w_eig1 * rigidity_eigenvalue(self.network, rank_K=self.rank_K))
                 terminated = True
         elif self.termination_condition_type == "MinimallyRigid":
             if is_MBR:
                 # reward += self.network.nr_max_edges * 10
-                reward += 10
+                reward += self.network.n * 100
                 terminated = True
         elif self.termination_condition_type == "RigidMinEigAndEdgesBonus":
             if is_IBR:
@@ -876,47 +928,42 @@ class Environment(gym.Env):
                 reward -= self.truncate_penalty_value
                 truncated = True
 
-        termination_reward = reward - state_reward - action_reward
+        termination_reward = reward - reward_from_state_score - action_reward - time_penalty_reward
 
-        # we don't want to give any reward if it's just selecting the first node
-        if self.action_space_type == "SelectNodesSequentially":
-            if not np.sum(self.selection):
-                reward = self.last_reward
-            if not self.incremental_rewards_enable:
-                raise Exception("SelectNodesSequentially action type should only be used with incremental rewards.")
+        if self.stop_action:
+            terminated = True
 
-        # (incremental) reward
-        last_reward_copy = self.last_reward
-        self.last_reward = reward
-        if self.incremental_rewards_enable:
-            reward = reward - last_reward_copy
-
-        # debug
-        eigs = self.network.eigenvalues()
-        min_eig = rigidity_eigenvalue(self.network, rank_K=self.rank_K)
-        info = {
-            "step": f"{self.step_counter}",
-            "action (raw)": action,
-            "action": action_info,
-            "reward (raw)": self.last_reward,
-            "reward (step)": reward,
-            "reward (action)": action_reward,
-            "reward (state)": state_reward,
-            "reward (termination)": termination_reward,
-            "last reward": last_reward_copy,
-            "is rigid": is_IBR,
-            "was rigid": self.was_IBR,
-            "is min rigid": is_MBR,
-            "was min rigid": self.was_MBR,
-            "nr edges": int(self.network.edges.sum()),
-            "terminated": terminated,
-            "truncated": truncated,
-            "eigenvalues": eigs,
-            "min eigenvalue": min_eig,
-        }
-        # print(info)
-        self.info = info
         if self.track_data_enable and self.writer is not None:
+            eigs = self.network.eigenvalues()
+            min_eig = rigidity_eigenvalue(self.network, rank_K=self.rank_K)
+            info = {
+                "step": f"{self.step_counter}",
+                "action (raw)": action,
+                "action": action_info,
+                "reward": reward,
+                "reward (action)": action_reward,
+                "reward (state)": reward_from_state_score,
+                "reward (termination)": termination_reward,
+                "state score": state_score,
+                "is rigid": is_IBR,
+                "was rigid": self.was_IBR,
+                "is min rigid": is_MBR,
+                "was min rigid": self.was_MBR,
+                "nr edges": int(self.network.edges.sum()),
+                "nr initial edges": int(self.initial_m),
+                "terminated": terminated,
+                "truncated": truncated,
+                "eigenvalues": eigs,
+                "min eigenvalue": min_eig,
+            }
+            # # print #######################
+            # width = max(len(k) for k in info)
+            # print("\n" + "=" * 60)
+            # for k, v in info.items():
+            #     print(f"{k:<{width}} : {v}")
+            # print("=" * 60 + "\n")
+            # # print #######################
+            self.info = info
             self.writer_counter += 1
             self.write()
 
@@ -930,13 +977,24 @@ class Environment(gym.Env):
         log_period = 1
         if value is None:
             if self.info is not None and (self.writer_counter % log_period == 0):
+                # # 1. Log current edges to the main writer
+                # self.writer.add_scalar(tag="Environment/Edges",
+                #                        value=self.info["nr edges"],
+                #                        timestep=self.writer_counter)
+                # # 2. Log initial edges to the secondary writer using the EXACT SAME TAG
+                # if hasattr(self, 'initial_edges_writer'):
+                #     self.initial_edges_writer.add_scalar(tag="Environment/Edges",
+                #                                          value=self.info["nr initial edges"],
+                #                                          timestep=self.writer_counter)
+
+                self.writer.add_scalar(tag="Environment/ Nr initial edges", value=self.info["nr initial edges"], timestep=self.writer_counter)
                 self.writer.add_scalar(tag="Environment/ Nr edges", value=self.info["nr edges"], timestep=self.writer_counter)
                 self.writer.add_scalar(tag="Environment/ Is rigid", value=self.info["is rigid"], timestep=self.writer_counter)
                 self.writer.add_scalar(tag="Environment/ Is min rigid", value=self.info["is min rigid"],timestep=self.writer_counter)
-                self.writer.add_scalar(tag="Environment/ Reward raw", value=self.info["reward (raw)"], timestep=self.writer_counter)
-                self.writer.add_scalar(tag="Environment/ Reward step", value=self.info["reward (step)"], timestep=self.writer_counter)
+                self.writer.add_scalar(tag="Environment/ Reward step", value=self.info["reward"], timestep=self.writer_counter)
                 self.writer.add_scalar(tag="Environment/ Reward action", value=self.info["reward (action)"], timestep=self.writer_counter)
                 self.writer.add_scalar(tag="Environment/ Reward state", value=self.info["reward (state)"], timestep=self.writer_counter)
+                self.writer.add_scalar(tag="Environment/ State score", value=self.info["state score"], timestep=self.writer_counter)
                 self.writer.add_scalar(tag="Environment/ Reward termination", value=self.info["reward (termination)"], timestep=self.writer_counter)
                 self.writer.add_scalar(tag="Environment/ Min eig", value=self.info["min eigenvalue"], timestep=self.writer_counter)
 
@@ -995,10 +1053,23 @@ class Environment(gym.Env):
                 if self.action_space_type == "AddEdgeDiscreteNoSkipNoSelfLoops":
                     edge_count = 0
                 # TODO add other addition action types
-                self.network, self.goal_network = random_scenario(n, domains, edge_count=edge_count)
+                if self.random_graph_with_mean_min_edges:
+                    domains = [agent.domain for agent in self.network.agents]
+                    mean = MBR_required_Rd(n, 2 if (("R^2" in domains) or ("R^2xS^1" in domains)) else 3)
+                    random_edge_count = sample_gaussian(
+                        mean,
+                        ((n**2-n) - mean)**2/9,
+                        n
+                        )
+                    random_edge_count = 1 if random_edge_count < 1 else random_edge_count
+                    random_edge_count = n**2-n if random_edge_count > n**2-n else random_edge_count
+                    self.network, self.goal_network = random_scenario(n, domains, edge_count=edge_count)
+                else:
+                    self.network, self.goal_network = random_scenario(n, domains)
 
         self.n = len(self.network.agents)
         self.m = int(self.network.edges.sum())
+        self.initial_m = self.m
 
         network_K = self.network.fully_connected()
         self.rank_K = np.linalg.matrix_rank(network_K.extended_bearing_rigidity_matrix())
@@ -1011,7 +1082,9 @@ class Environment(gym.Env):
         self.nr_max_edges = self.n**2
         self.step_counter = 0
 
-        self.last_reward = 0
+        self.last_state_score = 0
+
+        self.stop_action = False
 
         self.info = None
 
@@ -1037,7 +1110,10 @@ if __name__ == "__main__":
     # ACTION_REWARDS_ENABLE = True
     ACTION_REWARDS_ENABLE = False
 
-    TIME_PENALTY_VALUE = 0.0
+    TIME_PENALTY_VALUE = 5.0
+
+    SKIP_IS_STOP = True
+    RANDOM_GRAPH_WITH_MEAN_MIN_EDGES = False
 
     # INCREMENTAL_REWARDS_ENABLE = False
     INCREMENTAL_REWARDS_ENABLE = True
@@ -1055,34 +1131,34 @@ if __name__ == "__main__":
     # OBS_TYPE = "DictBearingNodeFeaturesAndAdjAndSelection"
     # OBS_TYPE = "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection" ## GINE
 
-    # REWARD_TYPE = "Rigid"
-    # REWARD_TYPE = "RigidAndMinEigenvalue"
-    # REWARD_TYPE = "RigidAndMinRigid"
-    # REWARD_TYPE = "RigidAndLogMinEigenvalueAndEdges"
-    # REWARD_TYPE = "MinRigid"
-    # REWARD_TYPE = "MinRigidAndMinEigenvalue"
-    # REWARD_TYPE = "MinEigenvalue"
-    # REWARD_TYPE = "Eigenvalues"
-    # REWARD_TYPE = "EdgeCount"
-    # REWARD_TYPE = "LogMinEigenvalue"
-    # REWARD_TYPE = "RigidityMatrixRank"
-    # REWARD_TYPE = "RigidityMatrixRankAndEdges"
-    REWARD_TYPE = "Weighted"
-    # REWARD_TYPE = "None"
+    # STATE_SCORE_TYPE = "Rigid"
+    # STATE_SCORE_TYPE = "RigidAndMinEigenvalue"
+    # STATE_SCORE_TYPE = "RigidAndMinRigid"
+    # STATE_SCORE_TYPE = "RigidAndLogMinEigenvalueAndEdges"
+    # STATE_SCORE_TYPE = "MinRigid"
+    # STATE_SCORE_TYPE = "MinRigidAndMinEigenvalue"
+    # STATE_SCORE_TYPE = "MinEigenvalue"
+    # STATE_SCORE_TYPE = "Eigenvalues"
+    # STATE_SCORE_TYPE = "EdgeCount"
+    # STATE_SCORE_TYPE = "LogMinEigenvalue"
+    # STATE_SCORE_TYPE = "RigidityMatrixRank"
+    # STATE_SCORE_TYPE = "RigidityMatrixRankAndEdges"
+    STATE_SCORE_TYPE = "Weighted"
+    # STATE_SCORE_TYPE = "None"
 
-    TERMINATION_CONDITION_TYPE = "MaxSteps"
+    # TERMINATION_CONDITION_TYPE = "MaxSteps"
     # TERMINATION_CONDITION_TYPE = "MaxStepsRankBonus"
     # TERMINATION_CONDITION_TYPE = "Rigid"
     # TERMINATION_CONDITION_TYPE = "RigidMinEigBonus"
-    # TERMINATION_CONDITION_TYPE = "MinimallyRigid"
+    TERMINATION_CONDITION_TYPE = "MinimallyRigid"
     # TERMINATION_CONDITION_TYPE = "RigidMinEigAndEdgesBonus"
     # TERMINATION_CONDITION_TYPE = "Bandit"
 
     MAX_STEPS = 2000
 
-    TRUNCATE_ENABLE = False
-    TRUNCATE_MAX_STEPS = 1000
-    TRUNCATE_PENALTY_VALUE = 10
+    TRUNCATE_ENABLE = True
+    TRUNCATE_MAX_STEPS = 100
+    TRUNCATE_PENALTY_VALUE = 100
 
     ONLY_RANDOMIZE_EDGES = False
     #############################################
@@ -1128,7 +1204,7 @@ if __name__ == "__main__":
     now_str = now.strftime("%Y_%m_%d_%H_%M_%S")
 
     n_domains = f"n{n}_{domains_str}"
-    model_name = f"action{ACTION_TYPE}_obs{OBS_TYPE}_reward{REWARD_TYPE}_term{TERMINATION_CONDITION_TYPE}_{scenario_name if scenario_name is not None else n_domains}"
+    model_name = f"action{ACTION_TYPE}_obs{OBS_TYPE}_reward{STATE_SCORE_TYPE}_term{TERMINATION_CONDITION_TYPE}_{scenario_name if scenario_name is not None else n_domains}"
     print(f"MODEL NAME: {model_name}")
 
     log_dir = "./tboard_logs/"
@@ -1145,13 +1221,14 @@ if __name__ == "__main__":
     env_config = {
         "action_type": ACTION_TYPE,
         "obs_type": OBS_TYPE,
-        "reward_type": REWARD_TYPE,
+        "state_score_type": STATE_SCORE_TYPE,
         "termination_condition_type": TERMINATION_CONDITION_TYPE,
         "n": n,
         "domains": domains,
         "action_rewards_enable": ACTION_REWARDS_ENABLE,
+        "skip_is_stop": SKIP_IS_STOP,
+        "random_graph_with_mean_min_edges": RANDOM_GRAPH_WITH_MEAN_MIN_EDGES,
         "time_penalty_value": TIME_PENALTY_VALUE,
-        "incremental_rewards_enable": INCREMENTAL_REWARDS_ENABLE,
         "track_data_enable": TRACK_DATA_ENABLE,
         "max_steps": MAX_STEPS,
         "truncate_enable": TRUNCATE_ENABLE,

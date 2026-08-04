@@ -1,3 +1,8 @@
+import sys
+sys.path.append('/home/nyanklc/ws/thesis/rigidity_rl')
+
+import numpy as np
+import quaternion
 from pyexpat import features
 
 import numpy as np
@@ -11,6 +16,9 @@ from util import skew_symmetric
 from enum import Enum
 import copy
 
+import rigidity
+from rigidity import extended_bearing_rigidity_matrix, is_MBR
+from util import Pose, circle_polygon, move_polygon, skew_symmetric
 
 class Agent:
     def __init__(self, pose=None):
@@ -231,12 +239,15 @@ class Network:
         return rigidity.is_IBR(self, rank_K=rank_K)
 
     # also returns is IBR
-    def is_MBR(self, rank_K=None, brm=None):
+    def is_MBR(self, rank_K=None):
         # for agent in self.agents:
         #     if agent.domain not in ["R^2", "R^3"]:
         #         raise Exception("Minimally Bearing Rigidity is not defined for domains other than R^d.")
 
-        return rigidity.is_MBR(self, rank_K=rank_K, brmat=None)
+        return rigidity.is_MBR(self, rank_K=rank_K)
+
+    def is_MBR_general(self, rank_K=None):
+        return rigidity.is_MBR(self, rank_K=rank_K)
 
     def eigenvalues(self, eps=1e-10):
         brm = self.extended_bearing_rigidity_matrix()
@@ -481,3 +492,92 @@ class Network:
             lines.append(f"{i} -> {j}")
 
         return "\n".join(lines)
+def is_MBR_general_gemini(network, rank_K=None):
+    if int(network.edges.sum()) == 0:
+        return False, False
+
+    brmat = extended_bearing_rigidity_matrix(network)
+
+    if rank_K is None:
+        positions = np.array([agent.pose.position for agent in network.agents])
+        orientations = np.array([agent.pose.euler_angles() for agent in network.agents])
+        network_K = Network(positions, orientations, np.ones((len(network.agents), len(network.agents))) - np.eye(len(network.agents), dtype=bool))
+        for agent, domain_agent in zip(network_K.agents, network.agents):
+            agent.set_domain(domain_agent.domain, domain_agent.rotation_axis)
+        brmat_K = extended_bearing_rigidity_matrix(network_K)
+        rank_K = np.linalg.matrix_rank(brmat_K)
+
+    isIBR = np.linalg.matrix_rank(brmat) == rank_K
+
+    if len(network.agents) == 0:
+        return False, isIBR
+
+    if not isIBR:
+        return False, isIBR
+
+    m = int(network.edges.sum())
+    c_e = []
+    for k in range(m):
+        block = brmat[3*k:3*(k+1), :]
+        c_e.append(np.linalg.matrix_rank(block))
+
+    c_e_sorted = sorted(c_e, reverse=True)
+
+    sum_c = 0
+    m_req = 0
+    for c in c_e_sorted:
+        sum_c += c
+        m_req += 1
+        if sum_c >= rank_K:
+            break
+
+    return m == m_req, isIBR
+
+def test_mbr_logic():
+    n = 5
+    for domain in ["R^3", "R^2", "SE(3)", "R^2xS^1", "R^3xS^1"]:
+        positions = []
+        orientations_euler = []
+        for _ in range(n):
+            pos = np.random.rand(3)
+            if domain == "R^2":
+                pos[2] = 0.0
+            positions.append(pos)
+            orientations_euler.append(np.zeros(3))
+
+        # Fully connected test
+        fc_edges = np.ones((n, n)) - np.eye(n)
+        net = Network(positions, orientations_euler, fc_edges)
+        for agent in net.agents:
+            agent.set_domain(domain)
+
+        is_mbr, is_ibr = is_MBR_general_gemini(net)
+        print(f"FC Domain {domain}: new ({is_mbr},{is_ibr}), old {net.is_MBR()}")
+
+        # MBR network configuration test
+        if domain == "R^2":
+            edges_to_add = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 0), (0, 2), (1, 3)]
+        elif domain in ["R^3", "SE(3)", "R^3xS^1"]:
+            edges_to_add = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 0), (0, 2), (1, 3), (2, 4), (0, 3)]
+        elif domain == "R^2xS^1":
+            edges_to_add = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 0), (0, 2), (1, 3)]
+
+        net = Network(positions, orientations_euler, np.zeros((n, n), dtype=bool))
+        for agent in net.agents:
+            agent.set_domain(domain)
+        net.set_edges_list(edges_to_add)
+
+        is_mbr, is_ibr = is_MBR_general_gemini(net)
+        print(f"Domain {domain}: new ({is_mbr},{is_ibr}), old {net.is_MBR()}")
+
+        for i, j in zip(*np.nonzero(net.edges)):
+            dummynet = copy.deepcopy(net)
+            dummynet.remove_edge(i, j)
+            is_mbr, is_ibr = is_MBR_general_gemini(dummynet)
+            print(f"After removing {i},{j}: Domain {domain}: new ({is_mbr},{is_ibr}), old {dummynet.is_MBR()}")
+
+
+
+
+if __name__ == "__main__":
+    test_mbr_logic()
