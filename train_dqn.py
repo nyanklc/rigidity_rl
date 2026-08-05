@@ -14,22 +14,26 @@ from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
 from skrl.agents.torch.dqn import DQN, DQN_CFG
 from skrl.trainers.torch import SequentialTrainer, SequentialTrainerCfg
+import policy.gnn_backbone
 from policy import *
+import manifest
 
 ######################################
 TOTAL_TIMESTEPS = int(6e5)
 NR_ENVS = 1
-MEM_SIZE = 20000
+MEM_SIZE = 10000
+SEED = 0  # recorded in the manifest; training was unseeded before this
 EGREEDY_STEPS = TOTAL_TIMESTEPS * 0.6
 
-GNN_HIDDEN_DIM = 64
-QNETWORK_HEAD_HIDDEN_DIM = 128
+GNN_HIDDEN_DIM = 128
+QNETWORK_HEAD_HIDDEN_DIM = 256
 
 cfg = DQN_CFG()
 cfg.experiment.directory = "runs"
-cfg.batch_size = 128
+cfg.batch_size = 256
 cfg.target_update_interval = 1000
 cfg.update_interval = 4
+cfg.learning_rate = 3e-4
 cfg.learning_starts = MEM_SIZE + 1
 cfg.discount_factor = 0.99
 cfg.random_timesteps = MEM_SIZE
@@ -63,6 +67,8 @@ with open(filepath, "r") as f:
     scenario_name = config.get("scenario")
     action_type = config.get("action_type")
     obs_type = config.get("obs_type")
+    # skip is opt-out: see policy/*/SelectNodesSequentially.py for why
+    allow_skip = config.get("skip_enabled", True)
     n = config.get("n")
     domains_str = config.get("domains", "domain").replace("^", "").replace("(", "").replace(")", "")
     n_domains = f"n{n}_{domains_str}"
@@ -100,6 +106,12 @@ def make_env(i):
 # FIX: Replaced AsyncVectorEnv with SyncVectorEnv to eliminate RNG duplication
 raw_env = gym.vector.SyncVectorEnv([lambda idx=i: make_env(idx) for i in range(NR_ENVS)])
 env = wrap_env(raw_env)
+
+# seed everything so a run is reproducible from the manifest's recorded seed
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+env.action_space.seed(SEED)
+env.observation_space.seed(SEED)
 
 node_features_dim = raw_env.single_observation_space["node_features"].shape[1]
 edge_features_dim = raw_env.single_observation_space["edge_features"].shape[-1]
@@ -160,6 +172,7 @@ elif action_type == "SelectNodesSequentially":
             observation_space=env.observation_space,
             action_space=env.action_space,
             device=DEVICE,
+            allow_skip=allow_skip,
         )
     elif obs_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
         models["q_network"] = DQN_QNetwork_Equivariant_SelectNodesSequentially(
@@ -171,6 +184,7 @@ elif action_type == "SelectNodesSequentially":
             observation_space=env.observation_space,
             action_space=env.action_space,
             device=DEVICE,
+            allow_skip=allow_skip,
         )
     else:
         models["q_network"] = DQN_QNetwork_SelectNodesSequentially(
@@ -181,6 +195,7 @@ elif action_type == "SelectNodesSequentially":
             observation_space=env.observation_space,
             action_space=env.action_space,
             device=DEVICE,
+            allow_skip=allow_skip,
         )
 elif action_type == "AddEdgeDiscreteNoSkipNoSelfLoops":
     if obs_type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
@@ -208,15 +223,14 @@ elif action_type == "AddEdgeDiscreteNoSkipNoSelfLoops":
     else:
         raise Exception(f"Not implemented {action_type} {obs_type}")
 else:
-    print(f"Q network for {raw_env.action_space_type} is not implemented.")
+    print(f"Q network for action {action_type} / obs {obs_type} is not implemented.")
     quit()
 
 models["target_q_network"] = copy.deepcopy(models["q_network"])
 
 
-env.action_space.seed(int(datetime.now().timestamp()))
-env.observation_space.seed(int(datetime.now().timestamp()))
-# env.state_space.seed(int(datetime.now().timestamp()))
+# (the spaces are seeded from SEED above; re-seeding from the clock here would make the
+# run irreproducible)
 
 memory = RandomMemory(memory_size=MEM_SIZE, num_envs=env.num_envs, device=DEVICE)
 
@@ -292,9 +306,16 @@ descriptor = {
     "hyperparameters": make_serializable(dataclasses.asdict(cfg)),
     "status": "training",
     "timesteps_completed": 0,
+    # the model classes only *reference* the backbone, so archive it too or a checkpoint
+    # stops loading the moment gnn_backbone.py changes
+    "backbone_source": inspect.getsource(policy.gnn_backbone).split("\n"),
     "q_network_architecture": inspect.getsource(models["q_network"].__class__).split("\n"),
     "environment_config_raw": env_config_data
 }
+
+# archive every file that determines this run, plus versions/seed/git state, so the
+# checkpoint stays reproducible after the code moves on (see manifest.py)
+descriptor = manifest.build_manifest(descriptor, env_config_data, seed=SEED, device=DEVICE)
 
 _original_post_interaction = agent.post_interaction
 def custom_post_interaction(*args, timestep, timesteps, **kwargs):

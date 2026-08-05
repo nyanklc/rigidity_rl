@@ -4,61 +4,61 @@ from torch_geometric.nn import GATConv, GINEConv
 from egnn_pytorch import EGNN
 
 
+# The layer count used to be hardcoded at 3 and was 2 in older runs. It is a
+# constructor argument now so that a checkpoint trained at a different depth can
+# still be loaded (see agent_loader.rebuild_backbone). Submodules keep the names
+# conv1..convN, so state dicts of 3-layer models are unaffected.
+class _GNNBackbone(nn.Module):
+    def _register_convs(self, convs):
+        self.num_layers = len(convs)
+        for i, conv in enumerate(convs, start=1):
+            setattr(self, f"conv{i}", conv)
 
-class GNNBackboneGAT(nn.Module):
-    def __init__(self, node_feat_dim, hidden_dim):
+    def convs(self):
+        return [getattr(self, f"conv{i}") for i in range(1, self.num_layers + 1)]
+
+
+class GNNBackboneGAT(_GNNBackbone):
+    def __init__(self, node_feat_dim, hidden_dim, num_layers=3):
         super().__init__()
-        self.conv1 = GATConv(node_dim=node_feat_dim, hidden_dim=hidden_dim)
-        self.conv2 = GATConv(node_dim=hidden_dim, hidden_dim=hidden_dim)
-        self.conv3 = GATConv(node_dim=hidden_dim, hidden_dim=hidden_dim)
+        self.init_args = dict(node_feat_dim=node_feat_dim, hidden_dim=hidden_dim)
+        self._register_convs([
+            GATConv(node_feat_dim if i == 0 else hidden_dim, hidden_dim)
+            for i in range(num_layers)
+        ])
 
     def forward(self, nodes, edge_index):
         batch_size, n, _ = nodes.shape
-        x = nodes.reshape(-1, nodes.size(-1))
+        h = nodes.reshape(-1, nodes.size(-1))
 
-        h = F.leaky_relu(self.conv1(x, edge_index))
-        h = F.leaky_relu(self.conv2(h, edge_index))
-        h = F.leaky_relu(self.conv3(h, edge_index))
+        for conv in self.convs():
+            h = F.leaky_relu(conv(h, edge_index))
 
         return h.reshape(batch_size, n, -1)
 
 
 # TODO: hardcoded MLP sizes
-class GNNBackboneGINE(nn.Module):
-    def __init__(self, node_feat_dim, edge_feat_dim, hidden_dim):
+class GNNBackboneGINE(_GNNBackbone):
+    def __init__(self, node_feat_dim, edge_feat_dim, hidden_dim, num_layers=3):
         super().__init__()
-        self.conv1 = GINEConv(
-            nn=nn.Sequential(
-                nn.Linear(node_feat_dim, 128),
-                nn.LeakyReLU(),
-                nn.Linear(128, hidden_dim),
-            ),
-            edge_dim=edge_feat_dim
+        self.init_args = dict(
+            node_feat_dim=node_feat_dim, edge_feat_dim=edge_feat_dim, hidden_dim=hidden_dim
         )
-        self.conv2 = GINEConv(
-            nn=nn.Sequential(
-                nn.Linear(hidden_dim, 128),
-                nn.LeakyReLU(),
-                nn.Linear(128, hidden_dim),
-            ),
-            edge_dim=edge_feat_dim
-        )
-        self.conv3 = GINEConv(
-                    nn=nn.Sequential(
-                        nn.Linear(hidden_dim, 128),
-                        nn.LeakyReLU(),
-                        nn.Linear(128, hidden_dim),
-                    ),
-                    edge_dim=edge_feat_dim
-                )
+        self._register_convs([
+            GINEConv(
+                nn=nn.Sequential(
+                    nn.Linear(node_feat_dim if i == 0 else hidden_dim, 128),
+                    nn.LeakyReLU(),
+                    nn.Linear(128, hidden_dim),
+                ),
+                edge_dim=edge_feat_dim,
+            )
+            for i in range(num_layers)
+        ])
 
     def forward(self, nodes, edge_index, edges):
         batch_size, n, _ = nodes.shape
-        x = nodes.reshape(-1, nodes.size(-1))
-        # e = edges.reshape(-1, edges.size(-1))
-
-        # print(f"inside gnn nodes: {nodes.shape}, edge_index: {edge_index.shape}, edges: {edges.shape}")
-        # print(f"inside gnn x: {x.shape}, e: -")
+        h = nodes.reshape(-1, nodes.size(-1))
 
         # IMPORTANT: the GIN(E) message passing adds the inward edge features
         # to the neighbor's features during message passing. however it makes
@@ -67,19 +67,22 @@ class GNNBackboneGINE(nn.Module):
         edge_index = edge_index.flip(0)
 
         # TODO: relu??
-        h = self.conv1(x, edge_index, edge_attr=edges)
-        h = self.conv2(h, edge_index, edge_attr=edges)
-        h = self.conv3(h, edge_index, edge_attr=edges)
+        for conv in self.convs():
+            h = conv(h, edge_index, edge_attr=edges)
 
         return h.reshape(batch_size, n, -1)
 
 
-class GNNBackboneEquivariant(nn.Module):
-    def __init__(self, node_feat_dim, edge_dim, hidden_dim):
+class GNNBackboneEquivariant(_GNNBackbone):
+    def __init__(self, node_feat_dim, edge_dim, hidden_dim, num_layers=3):
         super().__init__()
-        self.conv1 = EGNN(dim=node_feat_dim, m_dim=hidden_dim, edge_dim=edge_dim)
-        self.conv2 = EGNN(dim=node_feat_dim, m_dim=hidden_dim, edge_dim=edge_dim)
-        self.conv3 = EGNN(dim=node_feat_dim, m_dim=hidden_dim, edge_dim=edge_dim)
+        self.init_args = dict(
+            node_feat_dim=node_feat_dim, edge_dim=edge_dim, hidden_dim=hidden_dim
+        )
+        self._register_convs([
+            EGNN(dim=node_feat_dim, m_dim=hidden_dim, edge_dim=edge_dim)
+            for _ in range(num_layers)
+        ])
 
     def forward(self,
                 feats,
@@ -90,18 +93,7 @@ class GNNBackboneEquivariant(nn.Module):
         n = feats.shape[1]
 
         # TODO: should we recalculate bearings (edges) by using the new coordinates (c_out)?
-        n_out, c_out = self.conv1(feats=feats,
-                                  coors=coors,
-                                  edges=edges,
-                                  adj_mat=adj_mat)
-        n_out, c_out = self.conv2(feats=n_out,
-                          coors=c_out,
-                          edges=edges,
-                          adj_mat=adj_mat)
+        for conv in self.convs():
+            feats, coors = conv(feats=feats, coors=coors, edges=edges, adj_mat=adj_mat)
 
-        h, _ = self.conv3(feats=n_out,
-                          coors=c_out,
-                          edges=edges,
-                          adj_mat=adj_mat)
-
-        return h.reshape(batch_size, n, -1)
+        return feats.reshape(batch_size, n, -1)

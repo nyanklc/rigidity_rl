@@ -1,6 +1,7 @@
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
+import copy
 import time
 import signal
 import json
@@ -19,6 +20,15 @@ import torch
 from visualizer import Visualizer
 from scenario import load_scenario, random_scenario, randomize_scenario
 from control import GradientBasedController
+
+
+def random_edge_list(n, edge_count):
+    """edge_count distinct directed edges, no self loops."""
+    edge_set = set()
+    while len(edge_set) < edge_count:
+        i, j = np.random.choice(n, size=2, replace=False)
+        edge_set.add((int(i), int(j)))
+    return list(edge_set)
 
 
 def define_action_space(type: str, env: "Environment"):
@@ -618,8 +628,11 @@ class Environment(gym.Env):
         self.random_graph_with_mean_min_edges = random_graph_with_mean_min_edges
 
         self.filepath = filepath
+        self.scenario_network = None
         if self.filepath is not None:
             self.network, self.goal_network = load_scenario(self.filepath)
+            # cached so reset() does not re-read and re-parse the file every episode
+            self.scenario_network = copy.deepcopy(self.network)
         else:
             # Since learning with complete random number of edges gets basically impossible
             # as the number of nodes grow, we'll sample the number of edges to
@@ -627,19 +640,16 @@ class Environment(gym.Env):
             # Important: We'll sample a value centered around the edge count for R^d.
             # It should be less than the number for other domains but it should be okay I think.
             if self.random_graph_with_mean_min_edges:
-                mean = MBR_required_Rd(n, 2 if (("R^2" in domains) or ("R^2xS^1" in domains)) else 3)
-                random_edge_count = sample_gaussian(
-                    mean,
-                    ((n**2-n) - mean)**2/9,
-                    n
-                    )
-                random_edge_count = 1 if random_edge_count < 1 else random_edge_count
-                random_edge_count = n**2-n if random_edge_count > n**2-n else random_edge_count
-                self.network, self.goal_network = random_scenario(n, domains, edge_count=random_edge_count)
+                self.network, self.goal_network = random_scenario(
+                    n, domains, edge_count=self.sample_initial_edge_count(n, domains)
+                )
             else:
                 self.network, self.goal_network = random_scenario(n, domains)
 
         self.n = len(self.network.agents)
+        # resolved per-agent domains; for a scenario these come from the file, and they
+        # must survive every reset or a heterogeneous network silently homogenizes
+        self.domains = [agent.domain for agent in self.network.agents]
         self.m = int(self.network.edges.sum())
         self.initial_m = self.m
 
@@ -677,6 +687,9 @@ class Environment(gym.Env):
         self.was_IBR = None
         self.was_MBR = None
 
+        # when True, reset() keeps the current graph instead of drawing a new one
+        self.freeze_network = False
+
         self.writer = None
         # self.initial_edges_writer = None
 
@@ -693,10 +706,13 @@ class Environment(gym.Env):
         domains = config["domains"]
         ACTION_TYPE = config["action_type"]
         OBS_TYPE = config["obs_type"]
-        STATE_SCORE_TYPE = config["state_score_type"]
+        # older configs named this "reward_type"
+        STATE_SCORE_TYPE = config.get("state_score_type", config.get("reward_type"))
         TERMINATION_CONDITION_TYPE = config["termination_condition_type"]
         ACTION_REWARDS_ENABLE = config["action_rewards_enable"]
-        SKIP_IS_STOP = config["skip_is_stop"]
+        # keys added after the older configs were generated
+        SKIP_IS_STOP = config.get("skip_is_stop", False)
+        RANDOM_GRAPH_WITH_MEAN_MIN_EDGES = config.get("random_graph_with_mean_min_edges", False)
         TIME_PENALTY_VALUE = config["time_penalty_value"]
         TRACK_DATA_ENABLE = config["track_data_enable"]
         MAX_STEPS = config["max_steps"]
@@ -720,6 +736,7 @@ class Environment(gym.Env):
             termination_condition_type=TERMINATION_CONDITION_TYPE,
             action_rewards_enable=ACTION_REWARDS_ENABLE,
             skip_is_stop=SKIP_IS_STOP,
+            random_graph_with_mean_min_edges=RANDOM_GRAPH_WITH_MEAN_MIN_EDGES,
             time_penalty_value=TIME_PENALTY_VALUE,
             track_data_enable=TRACK_DATA_ENABLE,
             max_steps=MAX_STEPS,
@@ -731,64 +748,50 @@ class Environment(gym.Env):
         )
 
     # -----------------------------------
-    def step(self, action):
-        reward = 0.0
-        reward -= self.time_penalty_value # time taken
-        time_penalty_reward = reward
-        n = len(self.network.agents)
+    # Uniformly random edge counts are almost always far above the number of
+    # edges rigidity actually needs (the requirement grows ~linearly in n while
+    # n^2-n grows quadratically), so the agent would only ever see graphs that
+    # need edges removed. Sample around the minimum requirement instead.
+    # NOTE: the mean is only exact for homogeneous R^d networks.
+    def sample_initial_edge_count(self, n, domains):
+        if isinstance(domains, str):
+            domains = [domains]
+        d = 2 if (("R^2" in domains) or ("R^2xS^1" in domains)) else 3
+        mean = MBR_required_Rd(n, d)
+        max_edges = n**2 - n
+        edge_count = int(sample_gaussian(mean, (max_edges - mean)**2 / 9, n).item())
+        return int(np.clip(edge_count, 1, max_edges))
 
-        action_info = ""
+    # -----------------------------------
+    # Keeps the highest-scoring graph seen this episode, so a policy can be judged
+    # on what it found rather than on where it happened to stop.
+    def update_best_state(self, state_score, is_IBR, is_MBR, rank_brm, min_eig=None, reset=False):
+        if (not reset) and state_score <= self.best_state_score:
+            return
+        # only computed when this state is actually the new best, and reused from the
+        # caller when it already had to compute it for logging (it rebuilds the
+        # rigidity matrix, so it is one of the expensive per-step operations)
+        if min_eig is None:
+            min_eig = rigidity_eigenvalue(self.network, rank_K=self.rank_K)
+        self.best_state_score = state_score
+        self.best_edges = self.network.edges.copy()
+        # how many steps it took to get here; a policy that converges fast and one that
+        # stumbles onto the same graph late are otherwise indistinguishable
+        self.best_step = self.step_counter
+        self.best_stats = {
+            "m": int(self.network.edges.sum()),
+            "is_IBR": bool(is_IBR),
+            "is_MBR": bool(is_MBR),
+            "rank": int(rank_brm),
+            "min_eig": float(min_eig),
+        }
 
-        # action and reward based on action
-        action_return = None
-        if self.action_space_type == "AllEdges":
-            action_return = action_AllEdges(action, self, reward, action_info)
-        elif self.action_space_type == "AddRemoveEdgeMultiDiscrete":
-            action_return = action_AddRemoveEdgeMultiDiscrete(action, self, reward, action_info)
-        elif self.action_space_type == "AddRemoveEdgeDiscrete":
-            action_return = action_AddRemoveEdgeDiscrete(action, self, reward, action_info)
-        elif self.action_space_type == "AddEdgeDiscrete":
-            action_return = action_AddEdgeDiscrete(action, self, reward, action_info)
-        elif self.action_space_type == "AddEdgeDiscreteNoSkip":
-            action_return = action_AddEdgeDiscreteNoSkip(action, self, reward, action_info)
-        elif self.action_space_type == "AddEdgeDiscreteNoSelfLoops":
-            action_return = action_AddEdgeDiscreteNoSelfLoops(action, self, reward, action_info)
-        elif self.action_space_type == "AddEdgeDiscreteNoSkipNoSelfLoops":
-            action_return = action_AddEdgeDiscreteNoSkipNoSelfLoops(
-                action, self, reward, action_info
-            )
-        elif self.action_space_type == "AddRemoveEdgeDiscreteNoSelfLoops":
-            action_return = action_AddRemoveEdgeDiscreteNoSelfLoops(
-                action, self, reward, action_info
-            )
-        elif self.action_space_type == "SelectNodesSequentially":
-            action_return = action_SelectNodesSequentially(
-                action, self, reward, action_info
-            )
-        elif self.action_space_type == "DecideOnEdge":
-            action_return = action_DecideOnEdge(
-                action, self, reward, action_info
-            )
-        else:
-            print(f"faulty action space definition?")
-            quit()
-
-        if self.action_rewards_enable:
-            reward, action_info = action_return
-        else:
-            _, action_info = action_return
-
-        action_reward = reward - time_penalty_reward
-
-        # obs
-        obs = self._get_obs()
-
-        # BRM
-        brm = self.network.extended_bearing_rigidity_matrix()
-
-        # state score, how good is the current state
+    # -----------------------------------
+    # How good is the current graph. The reward uses the *improvement* of this
+    # value between steps, so it must be computable outside step() too (reset()
+    # needs the initial graph's score as the baseline).
+    def compute_state_score(self, brm, is_IBR, is_MBR, rank_brm):
         state_score = 0
-        is_MBR, is_IBR, rank_brm = self.network.is_MBR(rank_K=self.rank_K, brm=brm)
         if self.state_score_type == "Rigid":
             if is_IBR:
                 state_score += 100
@@ -856,10 +859,19 @@ class Environment(gym.Env):
             w_eig = 0 # 5
             w_eig1 = 0 # 1e5
 
-            s_rank = w_rank * rank_brm
-            s_ibr = w_ibr * np.float32(is_IBR)
-            s_eig = w_eig * np.float32(is_IBR) * np.log1p(w_eig1 * rigidity_eigenvalue(self.network, rank_K=self.rank_K))
-            s_edge = -w_edge * np.sum(self.network.edges)
+            s_rank = 0
+            s_ibr = 0
+            s_eig = 0
+            s_edge = 0
+
+            if w_rank != 0:
+                s_rank = w_rank * rank_brm
+            if w_ibr != 0:
+                s_ibr = w_ibr * np.float32(is_IBR)
+            if w_eig != 0 and w_eig1 != 0:
+                s_eig = w_eig * np.float32(is_IBR) * np.log1p(w_eig1 * rigidity_eigenvalue(self.network, rank_K=self.rank_K))
+            if w_edge != 0:
+                s_edge = -w_edge * np.sum(self.network.edges)
 
             state_score += s_rank + s_ibr + s_eig + s_edge
             # print(f"\nr_rank: {r_rank}: {w_rank}*...\nr_ibr: {r_ibr}: {w_ibr}*...\nr_eig: {r_eig}: {w_eig}*...\nr_edge: {r_edge}: {w_edge}*...")
@@ -868,22 +880,82 @@ class Environment(gym.Env):
         elif self.state_score_type == "None" or None:
             pass
 
-        # # state score is always incremental from now on
-        # # we don't want to give any reward if it's just selecting the first node
-        # if self.action_space_type == "SelectNodesSequentially":
-        #     # we don't need this anymore since we're getting the incremental for state score
-        #     # if not np.sum(self.selection):
-        #     #     state_reward = self.last_state_reward
-        #     if not self.incremental_rewards_enable:
-        #         raise Exception("SelectNodesSequentially action type should only be used with incremental rewards.")
+        return state_score
+
+    # -----------------------------------
+    def step(self, action):
+        reward = 0.0
+        reward -= self.time_penalty_value # time taken
+        time_penalty_reward = reward
+        n = len(self.network.agents)
+
+        action_info = ""
+
+        # action and reward based on action
+        action_return = None
+        if self.action_space_type == "AllEdges":
+            action_return = action_AllEdges(action, self, reward, action_info)
+        elif self.action_space_type == "AddRemoveEdgeMultiDiscrete":
+            action_return = action_AddRemoveEdgeMultiDiscrete(action, self, reward, action_info)
+        elif self.action_space_type == "AddRemoveEdgeDiscrete":
+            action_return = action_AddRemoveEdgeDiscrete(action, self, reward, action_info)
+        elif self.action_space_type == "AddEdgeDiscrete":
+            action_return = action_AddEdgeDiscrete(action, self, reward, action_info)
+        elif self.action_space_type == "AddEdgeDiscreteNoSkip":
+            action_return = action_AddEdgeDiscreteNoSkip(action, self, reward, action_info)
+        elif self.action_space_type == "AddEdgeDiscreteNoSelfLoops":
+            action_return = action_AddEdgeDiscreteNoSelfLoops(action, self, reward, action_info)
+        elif self.action_space_type == "AddEdgeDiscreteNoSkipNoSelfLoops":
+            action_return = action_AddEdgeDiscreteNoSkipNoSelfLoops(
+                action, self, reward, action_info
+            )
+        elif self.action_space_type == "AddRemoveEdgeDiscreteNoSelfLoops":
+            action_return = action_AddRemoveEdgeDiscreteNoSelfLoops(
+                action, self, reward, action_info
+            )
+        elif self.action_space_type == "SelectNodesSequentially":
+            action_return = action_SelectNodesSequentially(
+                action, self, reward, action_info
+            )
+        elif self.action_space_type == "DecideOnEdge":
+            action_return = action_DecideOnEdge(
+                action, self, reward, action_info
+            )
+        else:
+            print(f"faulty action space definition?")
+            quit()
+
+        if self.action_rewards_enable:
+            reward, action_info = action_return
+        else:
+            _, action_info = action_return
+
+        action_reward = reward - time_penalty_reward
+
+        # obs
+        obs = self._get_obs()
+
+        # BRM
+        brm = self.network.extended_bearing_rigidity_matrix()
+
+        # counted before the best-state update so best_step is the number of steps
+        # actually taken to reach that graph
+        self.step_counter += 1
+
+        # state score, how good is the current state
+        is_MBR, is_IBR, rank_brm = self.network.is_MBR(rank_K=self.rank_K, brm=brm)
+        state_score = self.compute_state_score(brm, is_IBR, is_MBR, rank_brm)
+
+        # when tracking, this is needed for logging anyway, so compute it once here and
+        # hand it to the best-state tracker instead of letting it redo the work
+        tracking = self.track_data_enable and self.writer is not None
+        min_eig = rigidity_eigenvalue(self.network, rank_K=self.rank_K) if tracking else None
+        self.update_best_state(state_score, is_IBR, is_MBR, rank_brm, min_eig=min_eig)
 
         # (incremental) reward from state score
         reward_from_state_score = state_score - self.last_state_score
         reward += reward_from_state_score
         self.last_state_score = state_score
-
-
-        self.step_counter += 1
 
         # termination conditions
         truncated = False
@@ -933,9 +1005,11 @@ class Environment(gym.Env):
         if self.stop_action:
             terminated = True
 
-        if self.track_data_enable and self.writer is not None:
+        # the metrics below rebuild the rigidity matrix, so only pay for them
+        # when we're actually logging (min_eig was already computed above)
+        info = {}
+        if tracking:
             eigs = self.network.eigenvalues()
-            min_eig = rigidity_eigenvalue(self.network, rank_K=self.rank_K)
             info = {
                 "step": f"{self.step_counter}",
                 "action (raw)": action,
@@ -955,6 +1029,12 @@ class Environment(gym.Env):
                 "truncated": truncated,
                 "eigenvalues": eigs,
                 "min eigenvalue": min_eig,
+                "best state score": self.best_state_score,
+                "best nr edges": self.best_stats["m"],
+                "best is rigid": self.best_stats["is_IBR"],
+                "best is min rigid": self.best_stats["is_MBR"],
+                "best min eigenvalue": self.best_stats["min_eig"],
+                "best step": self.best_step,
             }
             # # print #######################
             # width = max(len(k) for k in info)
@@ -998,6 +1078,14 @@ class Environment(gym.Env):
                 self.writer.add_scalar(tag="Environment/ Reward termination", value=self.info["reward (termination)"], timestep=self.writer_counter)
                 self.writer.add_scalar(tag="Environment/ Min eig", value=self.info["min eigenvalue"], timestep=self.writer_counter)
 
+                # best graph seen this episode (independent of where the policy stopped)
+                self.writer.add_scalar(tag="Environment/ Best state score", value=self.info["best state score"], timestep=self.writer_counter)
+                self.writer.add_scalar(tag="Environment/ Best nr edges", value=self.info["best nr edges"], timestep=self.writer_counter)
+                self.writer.add_scalar(tag="Environment/ Best is rigid", value=self.info["best is rigid"], timestep=self.writer_counter)
+                self.writer.add_scalar(tag="Environment/ Best is min rigid", value=self.info["best is min rigid"], timestep=self.writer_counter)
+                self.writer.add_scalar(tag="Environment/ Best min eig", value=self.info["best min eigenvalue"], timestep=self.writer_counter)
+                self.writer.add_scalar(tag="Environment/ Best step", value=self.info["best step"], timestep=self.writer_counter)
+
                 # Safely extract the action value, regardless of its data type
                 action_val = self.info["action (raw)"]
                 if isinstance(action_val, torch.Tensor):
@@ -1018,55 +1106,39 @@ class Environment(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
 
-        if self.filepath:
-            if self.only_randomize_edges:
-                raise Exception("only randomize edges with scenario not implemented yet")
-            else:
-                # TODO: no edges in addition actions
-                self.network, self.goal_network = randomize_scenario(self.filepath)
+        # baselines.py sets this to run several methods from the *same* random
+        # instance: the episode bookkeeping is redone, the graph is left alone
+        if self.freeze_network:
+            return self.begin_episode()
+
+        n = self.n
+        domains = self.domains
+
+        edge_count = None
+        # start with empty graph on addition action types
+        if self.action_space_type == "AddEdgeDiscreteNoSkipNoSelfLoops":
+            edge_count = 0
+        # TODO add other addition action types
+        elif self.random_graph_with_mean_min_edges:
+            edge_count = self.sample_initial_edge_count(n, domains)
+
+        if self.only_randomize_edges:
+            # keep the poses, resample only the edges. With a scenario that means the
+            # scenario's own geometry, which is what you want for a case study figure.
+            if self.scenario_network is not None:
+                self.network = copy.deepcopy(self.scenario_network)
+            if edge_count is None:
+                edge_count = np.random.randint(0, n**2 - n + 1)
+            self.network.set_edges_list(random_edge_list(n, edge_count))
         else:
-            n = self.network.n
-            domains = self.network.agents[0].domain # only homogeneous is supported
-            if self.only_randomize_edges:
-                edge_set = set()
-                max_possible_edges = n**2 - n # no self loops
-                m = np.random.randint(0, max_possible_edges + 1)
-                while len(edge_set) < m:
-                    i, j = np.random.choice(n, size=2, replace=False)
-                    if ((i, j) not in edge_set):
-                        edge_set.add((i, j))
-                edges = np.array(list(edge_set))
+            # poses and edges are both redrawn; domains are carried over, so a
+            # scenario contributes its domain mix rather than its geometry
+            self.network, self.goal_network = random_scenario(n, domains, edge_count=edge_count)
 
-                # start with empty graph on addition action types
-                if self.action_space_type == "AddEdgeDiscreteNoSkipNoSelfLoops":
-                    edge_set = set()
-                    edges = np.empty()
-                # TODO add other addition action types
+        return self.begin_episode()
 
-                if len(edge_set) == 0:
-                    self.network.set_edges(None)
-                else:
-                    self.network.set_edges_indices(edges[:, 0], edges[:, 1])
-            else:
-                edge_count = None
-                # start with empty graph on addition action types
-                if self.action_space_type == "AddEdgeDiscreteNoSkipNoSelfLoops":
-                    edge_count = 0
-                # TODO add other addition action types
-                if self.random_graph_with_mean_min_edges:
-                    domains = [agent.domain for agent in self.network.agents]
-                    mean = MBR_required_Rd(n, 2 if (("R^2" in domains) or ("R^2xS^1" in domains)) else 3)
-                    random_edge_count = sample_gaussian(
-                        mean,
-                        ((n**2-n) - mean)**2/9,
-                        n
-                        )
-                    random_edge_count = 1 if random_edge_count < 1 else random_edge_count
-                    random_edge_count = n**2-n if random_edge_count > n**2-n else random_edge_count
-                    self.network, self.goal_network = random_scenario(n, domains, edge_count=edge_count)
-                else:
-                    self.network, self.goal_network = random_scenario(n, domains)
-
+    # Per-episode bookkeeping for whatever graph self.network currently holds.
+    def begin_episode(self):
         self.n = len(self.network.agents)
         self.m = int(self.network.edges.sum())
         self.initial_m = self.m
@@ -1082,7 +1154,18 @@ class Environment(gym.Env):
         self.nr_max_edges = self.n**2
         self.step_counter = 0
 
-        self.last_state_score = 0
+        # The reward is the improvement in state score, so the baseline has to be
+        # the initial graph's score. Leaving it at 0 would make the first step's
+        # reward the *absolute* score of the graph after one action.
+        is_MBR_0, is_IBR_0, rank_brm_0 = self.network.is_MBR(rank_K=self.rank_K, brm=self.brm)
+        self.last_state_score = self.compute_state_score(
+            self.brm, is_IBR_0, is_MBR_0, rank_brm_0
+        )
+
+        # Best graph seen during the episode. Scoring an episode on the final state
+        # conflates "found a good topology" with "learned to stop on it"; this keeps
+        # the two separate. Metric only, the reward does not use it.
+        self.update_best_state(self.last_state_score, is_IBR_0, is_MBR_0, rank_brm_0, reset=True)
 
         self.stop_action = False
 
@@ -1110,13 +1193,15 @@ if __name__ == "__main__":
     # ACTION_REWARDS_ENABLE = True
     ACTION_REWARDS_ENABLE = False
 
-    TIME_PENALTY_VALUE = 5.0
+    TIME_PENALTY_VALUE = 0.0
 
-    SKIP_IS_STOP = True
-    RANDOM_GRAPH_WITH_MEAN_MIN_EDGES = False
-
-    # INCREMENTAL_REWARDS_ENABLE = False
-    INCREMENTAL_REWARDS_ENABLE = True
+    # False masks the skip action out of the policy entirely. Recommended with
+    # MaxSteps: skip is a zero-reward action the agent can loop on forever
+    # (select -> skip changes nothing), which on-policy methods collapse onto.
+    # Score such runs with the best-state-visited metric instead.
+    SKIP_ENABLED = False
+    SKIP_IS_STOP = False
+    RANDOM_GRAPH_WITH_MEAN_MIN_EDGES = True
 
     TRACK_DATA_ENABLE = True
     # TRACK_DATA_ENABLE = False
@@ -1146,17 +1231,17 @@ if __name__ == "__main__":
     STATE_SCORE_TYPE = "Weighted"
     # STATE_SCORE_TYPE = "None"
 
-    # TERMINATION_CONDITION_TYPE = "MaxSteps"
+    TERMINATION_CONDITION_TYPE = "MaxSteps"
     # TERMINATION_CONDITION_TYPE = "MaxStepsRankBonus"
     # TERMINATION_CONDITION_TYPE = "Rigid"
     # TERMINATION_CONDITION_TYPE = "RigidMinEigBonus"
-    TERMINATION_CONDITION_TYPE = "MinimallyRigid"
+    # TERMINATION_CONDITION_TYPE = "MinimallyRigid"
     # TERMINATION_CONDITION_TYPE = "RigidMinEigAndEdgesBonus"
     # TERMINATION_CONDITION_TYPE = "Bandit"
 
-    MAX_STEPS = 2000
+    MAX_STEPS = 100
 
-    TRUNCATE_ENABLE = True
+    TRUNCATE_ENABLE = False
     TRUNCATE_MAX_STEPS = 100
     TRUNCATE_PENALTY_VALUE = 100
 
@@ -1226,6 +1311,7 @@ if __name__ == "__main__":
         "n": n,
         "domains": domains,
         "action_rewards_enable": ACTION_REWARDS_ENABLE,
+        "skip_enabled": SKIP_ENABLED,
         "skip_is_stop": SKIP_IS_STOP,
         "random_graph_with_mean_min_edges": RANDOM_GRAPH_WITH_MEAN_MIN_EDGES,
         "time_penalty_value": TIME_PENALTY_VALUE,

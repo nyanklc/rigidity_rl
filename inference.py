@@ -22,6 +22,7 @@ from skrl.agents.torch.dqn import DQN, DQN_CFG
 from skrl.trainers.torch import SequentialTrainer, SequentialTrainerCfg
 from skrl.resources.preprocessors.torch import RunningStandardScaler
 from policy import *
+from agent_loader import load_agent, load_run, list_checkpoints, manifest_path
 import torch
 
 
@@ -54,31 +55,6 @@ if len(sys.argv) < 3:
 model_name = sys.argv[1]
 env_name = sys.argv[2]
 
-train_json_path = f"./train/{model_name}.json"
-if not os.path.exists(train_json_path):
-    print(f"file {train_json_path} does not exist. Cannot determine model architecture automatically.")
-    quit()
-
-with open(train_json_path, "r") as f:
-    train_info = json.load(f)
-
-MODEL_TYPE = train_info.get("algorithm", "PPO")
-MEM_SIZE = train_info.get("mem_size", 2048 * 4)
-
-if MODEL_TYPE == "PPO":
-    modelpath = "./models/complete/PPO/" + model_name + ".pt"
-elif MODEL_TYPE == "DQN":
-    modelpath = "./models/complete/DQN/" + model_name + ".pt"
-elif MODEL_TYPE == "DDQN":
-    modelpath = "./models/complete/DDQN/" + model_name + ".pt"
-else:
-    print(f"Unknown algorithm {MODEL_TYPE}")
-    quit()
-
-if not os.path.exists(modelpath):
-    print(f"file {modelpath} does not exist")
-    quit()
-
 filepath = "./environments/" + env_name + ".json"
 if not os.path.exists(filepath):
     print(f"file environments/{env_name}.json does not exist")
@@ -97,107 +73,27 @@ torch.set_printoptions(threshold=10000)
 
 device = "cpu"
 
-raw_env = Environment()
-raw_env.load(filepath)
-raw_env.device = device
-env = wrap_env(raw_env)
-env.reset()
+print(f"env: {env_name} | action={action_type} obs={obs_type}")
 
-n = len(raw_env.network.agents)
-node_features_dim = raw_env.observation_space["node_features"].shape[1]
-edge_features_dim = raw_env.observation_space["edge_features"].shape[-1]
-################################################################################
-import inspect
-
-def get_class_name(architecture_lines):
-    for line in architecture_lines:
-        line = line.strip()
-        if line.startswith("class "):
-            return line.split()[1].split("(")[0].rstrip(":")
-    return None
-
-def instantiate_model(class_name, all_kwargs):
-    cls = globals()[class_name]
-    sig = inspect.signature(cls.__init__)
-    valid_kwargs = {k: v for k, v in all_kwargs.items() if k in sig.parameters}
-    return cls(**valid_kwargs)
-
-all_kwargs = {
-    "n": n,
-    "node_feat_dim": node_features_dim,
-    "edge_feat_dim": edge_features_dim,
-    "gnn_hidden_dim": train_info.get("gnn_hidden_dim", 32),
-    "observation_space": env.observation_space,
-    "action_space": env.action_space,
-    "device": device
-}
-
-models = {}
-
-if MODEL_TYPE == "PPO":
-    actor_class_name = get_class_name(train_info["actor_architecture"])
-    critic_class_name = get_class_name(train_info["critic_architecture"])
-
-    actor_kwargs = all_kwargs.copy()
-    actor_kwargs["head_hidden_dim"] = train_info.get("head_hidden_dim", 32)
-    models["policy"] = instantiate_model(actor_class_name, actor_kwargs)
-
-    critic_kwargs = all_kwargs.copy()
-    critic_kwargs["head_hidden_dim"] = train_info.get("critic_head_hidden_dim", 32)
-    models["value"] = instantiate_model(critic_class_name, critic_kwargs)
-
-elif MODEL_TYPE == "DQN":
-    q_class_name = get_class_name(train_info["q_network_architecture"])
-
-    q_kwargs = all_kwargs.copy()
-    q_kwargs["head_hidden_dim"] = train_info.get("head_hidden_dim", 32)
-
-    models["q_network"] = instantiate_model(q_class_name, q_kwargs)
-    models["target_q_network"] = copy.deepcopy(models["q_network"])
-
-
-
-################################################################################
-memory = RandomMemory(memory_size=MEM_SIZE, num_envs=NR_ENVS, device=DEVICE)
-
-if MODEL_TYPE == "DQN":
-    cfg = DQN_CFG()
-    cfg.experiment.directory = "runs_inference"
-    cfg.experiment.experiment_name = model_name
-    cfg.batch_size = 128
-    cfg.target_update_interval = 1000
-    cfg.update_interval = 4
-    cfg.learning_starts = MEM_SIZE + 1
-    cfg.discount_factor = 0.99
-    cfg.random_timesteps = MEM_SIZE
-
-    agent = DQN(
-        models=models,
-        memory=memory,
-        cfg=cfg,
-        observation_space=env.observation_space,
-        action_space=env.action_space,
-        device=DEVICE,
-    )
-
-if MODEL_TYPE == "PPO":
-    cfg = PPO_CFG()
-    cfg.rollouts = MEM_SIZE # to ensure we don't get garbage data from memory
-    cfg.experiment.directory = "runs_inference"
-    cfg.experiment.experiment_name = model_name
-    # incentivize exploration more
-    cfg.entropy_loss_scale = 0.01
-
-    agent = PPO(
-        models=models,
-        memory=memory,
-        cfg=cfg,
-        observation_space=env.observation_space,
-        action_space=env.action_space,
-        device=device,
-    )
-
-agent.load(modelpath)
+# load_run replays the environment this model was trained against whenever the archived
+# sources differ from the working tree, so a checkpoint keeps running after the observation
+# format or action semantics change. Models predating the manifests fall back to recovery
+# from the checkpoint's parameter shapes.
+try:
+    agent, env, raw_env, train_info = load_run(model_name, env_name=env_name, device=device)
+    MODEL_TYPE = (train_info or {}).get("algorithm", "PPO")
+    n = len(raw_env.network.agents)
+except (FileNotFoundError, ValueError) as e:
+    print(f"\n{e}\n")
+    available = list_checkpoints()
+    if available:
+        print("available checkpoints:")
+        for algo, names in available.items():
+            for name in names:
+                mark = " " if os.path.exists(manifest_path(name)) else "*"
+                print(f"  {mark} [{algo}] {name}")
+        print("\n  * = no train/<name>.json manifest, will be recovered interactively")
+    quit()
 
 
 vis = Visualizer()

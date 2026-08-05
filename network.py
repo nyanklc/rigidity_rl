@@ -236,7 +236,7 @@ class Network:
         #     if agent.domain not in ["R^2", "R^3"]:
         #         raise Exception("Minimally Bearing Rigidity is not defined for domains other than R^d.")
 
-        return rigidity.is_MBR(self, rank_K=rank_K, brmat=None)
+        return rigidity.is_MBR(self, rank_K=rank_K, brmat=brm)
 
     def eigenvalues(self, eps=1e-10):
         brm = self.extended_bearing_rigidity_matrix()

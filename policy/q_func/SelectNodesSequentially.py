@@ -20,10 +20,17 @@ class DQN_QNetwork_SelectNodesSequentially(TabularMixin, Model):
         observation_space,
         action_space,
         device,
+        allow_skip=True,
     ):
         # Model.__init__(self, observation_space, action_space, device)
         Model.__init__(self, observation_space=observation_space, action_space=action_space, device=device)
         TabularMixin.__init__(self)
+
+        # An always-available zero-reward action is an absorbing optimum: with
+        # SelectNodesSequentially, select->skip is a no-op 2-cycle that never touches
+        # the graph. Masked here in both compute() and random_act() so epsilon-greedy
+        # exploration cannot reintroduce it.
+        self.allow_skip = allow_skip
 
         self.gnn = GNNBackboneGAT(
             node_feat_dim, gnn_hidden_dim
@@ -48,7 +55,7 @@ class DQN_QNetwork_SelectNodesSequentially(TabularMixin, Model):
         invalid_mask = selected_mask & has_selected   # (B, N)
         valid_mask = ~invalid_mask
 
-        skip_mask = torch.ones((batch_size, 1), dtype=torch.bool, device=selection.device)
+        skip_mask = torch.full((batch_size, 1), self.allow_skip, dtype=torch.bool, device=selection.device)
         full_mask = torch.cat([valid_mask, skip_mask], dim=1)
 
         actions = torch.multinomial(full_mask.float(), 1)
@@ -80,6 +87,10 @@ class DQN_QNetwork_SelectNodesSequentially(TabularMixin, Model):
 
         # calculate node scores for selection
         q_values = self.head(torch.cat([h.flatten(-2), selection], dim=-1)).squeeze(-1).reshape(batch_size, -1)
+
+        # this head emits all n+1 values at once, so mask the skip column in place
+        if not self.allow_skip:
+            q_values[:, -1] = -1e9
 
         # mask out self loops
         # print(f"q_values before: {q_values}")

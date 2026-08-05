@@ -10,12 +10,17 @@ from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
 from skrl.agents.torch.ppo import PPO, PPO_CFG
 from skrl.trainers.torch import SequentialTrainer, SequentialTrainerCfg
+from skrl.resources.preprocessors.torch import RunningStandardScaler
+import policy.gnn_backbone
 from policy import *
+import numpy as np
+import manifest
 
 ######################################
 TOTAL_TIMESTEPS = int(6e5)
 NR_ENVS = 1
-MEM_SIZE = 4096
+MEM_SIZE = 2048
+SEED = 0  # recorded in the manifest; training was unseeded before this
 
 GNN_HIDDEN_DIM = 64
 ACTOR_HEAD_HIDDEN_DIM = 128
@@ -26,6 +31,12 @@ cfg.rollouts = MEM_SIZE # to ensure we don't get garbage data from memory
 cfg.experiment.directory = "runs"
 # incentivize exploration more
 cfg.entropy_loss_scale = 0.01
+cfg.learning_rate = 3e-4
+cfg.learning_epochs = 4
+cfg.mini_batches = 8
+cfg.kl_threshold = 0.015
+cfg.value_preprocessor = RunningStandardScaler
+cfg.value_preprocessor_kwargs = {"size": 1, "device": "cuda"}
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 ######################################
@@ -48,6 +59,8 @@ with open(filepath, "r") as f:
     scenario_name = config.get("scenario")
     action_type = config.get("action_type")
     obs_type = config.get("obs_type")
+    # skip is opt-out: see policy/*/SelectNodesSequentially.py for why
+    allow_skip = config.get("skip_enabled", True)
     n = config.get("n")
     domains_str = config.get("domains", "domain").replace("^", "").replace("(", "").replace(")", "")
     n_domains = f"n{n}_{domains_str}"
@@ -88,6 +101,12 @@ def make_env(i):
 # Gym Vector Envs expect a list of callables, so we use a lambda
 raw_env = gym.vector.SyncVectorEnv([lambda idx=i: make_env(idx) for i in range(NR_ENVS)])
 env = wrap_env(raw_env)
+
+# seed everything so a run is reproducible from the manifest's recorded seed
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+env.action_space.seed(SEED)
+env.observation_space.seed(SEED)
 
 # Use single_observation_space since raw_env is now batched
 node_features_dim = raw_env.single_observation_space["node_features"].shape[1]
@@ -149,6 +168,7 @@ elif action_type == "SelectNodesSequentially":
             observation_space=env.observation_space,
             action_space=env.action_space,
             device=device,
+            allow_skip=allow_skip,
         )
     elif obs_type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
         models["policy"] = PPO_ActorModel_GINE_SelectNodesSequentially(
@@ -160,6 +180,7 @@ elif action_type == "SelectNodesSequentially":
             observation_space=env.observation_space,
             action_space=env.action_space,
             device=device,
+            allow_skip=allow_skip,
         )
     else:
         models["policy"] = PPO_ActorModel_SelectNodesSequentially(
@@ -170,6 +191,7 @@ elif action_type == "SelectNodesSequentially":
             observation_space=env.observation_space,
             action_space=env.action_space,
             device=device,
+            allow_skip=allow_skip,
         )
 elif action_type == "DecideOnEdge":
     models["policy"] = PPO_ActorModel_DecideOnEdge(
@@ -355,10 +377,17 @@ descriptor = {
     "hyperparameters": make_serializable(dataclasses.asdict(cfg)),
     "status": "training",
     "timesteps_completed": 0,
+    # the model classes only *reference* the backbone, so archive it too or a checkpoint
+    # stops loading the moment gnn_backbone.py changes
+    "backbone_source": inspect.getsource(policy.gnn_backbone).split("\n"),
     "actor_architecture": inspect.getsource(models["policy"].__class__).split("\n"),
     "critic_architecture": inspect.getsource(models["value"].__class__).split("\n"),
     "environment_config_raw": env_config_data
 }
+
+# archive every file that determines this run, plus versions/seed/git state, so the
+# checkpoint stays reproducible after the code moves on (see manifest.py)
+descriptor = manifest.build_manifest(descriptor, env_config_data, seed=SEED, device=device)
 
 _original_post_interaction = agent.post_interaction
 def custom_post_interaction(*args, timestep, timesteps, **kwargs):
