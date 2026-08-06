@@ -1,0 +1,60 @@
+{
+  "args": {
+    "environment_name": "env_actionAddRemoveEdgeDiscreteNoSelfLoops_obsDictEquivariantNodeFeaturesAndAdjAndSelection_rewardWeighted_termMaxSteps_n8_R3",
+    "episodes": 20,
+    "model": "hetero_actionAddRemoveEdgeDiscreteNoSelfLoops_obsDictEquivariantNodeFeaturesAndAdjAndSelection_hetero",
+    "brute_force": false,
+    "steps": 1000,
+    "seed": 0,
+    "device": "cpu",
+    "tag": null,
+    "out_dir": null,
+    "no_plots": false,
+    "plot_episodes": 20,
+    "brief": false,
+    "methods": "initial,random,learned,greedy",
+    "policy_mode": "sample",
+    "replay_env": false
+  },
+  "environment_config": {
+    "action_type": "AddRemoveEdgeDiscreteNoSelfLoops",
+    "obs_type": "DictEquivariantNodeFeaturesAndAdjAndSelection",
+    "state_score_type": "Weighted",
+    "termination_condition_type": "MaxSteps",
+    "n": 8,
+    "domains": "R^3",
+    "action_rewards_enable": false,
+    "skip_enabled": true,
+    "skip_is_stop": false,
+    "random_graph_with_mean_min_edges": true,
+    "time_penalty_value": 0.0,
+    "track_data_enable": true,
+    "max_steps": 200,
+    "truncate_enable": false,
+    "truncate_max_steps": 100,
+    "truncate_penalty_value": 100,
+    "only_randomize_edges": false,
+    "scenario": null
+  },
+  "n": 8,
+  "rollout_steps": 1000,
+  "provenance": {
+    "captured_at_training": true,
+    "timestamp": "2026-08-06T05:21:59.987707",
+    "command": "baselines.py env_actionAddRemoveEdgeDiscreteNoSelfLoops_obsDictEquivariantNodeFeaturesAndAdjAndSelection_rewardWeighted_termMaxSteps_n8_R3 --model hetero_actionAddRemoveEdgeDiscreteNoSelfLoops_obsDictEquivariantNodeFeaturesAndAdjAndSelection_hetero --brute-force --device cpu --plot-episodes 20 --methods initial,random,learned,greedy --steps 1000",
+    "cwd": "/home/nyanklc/ws/thesis/rigidity_rl",
+    "git_commit": "4e006657a213590964aaf34c9f39668e1112564a",
+    "git_dirty": true,
+    "device": "cpu",
+    "seed": 0,
+    "packages": {
+      "python": "3.12.13",
+      "torch": "2.8.0+cu126",
+      "skrl": "2.1.0",
+      "numpy": "2.4.6",
+      "torch_geometric": "2.8.0.post1",
+      "gymnasium": "1.3.0",
+      "egnn_pytorch": "unknown"
+    }
+  }
+}

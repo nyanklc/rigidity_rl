@@ -1,0 +1,43 @@
+==============================================================================
+BASELINE COMPARISON
+==============================================================================
+  environment : env_actionSelectNodesSequentially_obsDictEquivariantNodeFeaturesAndAdjAndSelection_rewardWeighted_termMaxSteps_n16_R3
+  network     : 16 agents in R^3, action space SelectNodesSequentially
+  objective   : Weighted state score
+  instances   : 20 random networks, seed 0
+  policy      : pposelect8_actionSelectNodesSequentially_obsDictEquivariantNodeFeaturesAndAdjAndSelection_n8_R3 (PPO, --policy-mode sample, 100-step budget)
+
+  method          edges         score   rigid  minimal   rigidity   work  best@
+                (fewer)      (higher)       %        %   (higher)  edits   step
+  -----------------------------------------------------------------------------
+  initial  52.25+-46.53109.50+-324.71      60        0    4.5e-05      -      -
+  random   57.70+-36.05288.00+-347.38      65        0    4.1e-05     42     36
+  learned  53.60+-37.79308.00+-349.55      65        0    4.4e-05     50     64
+
+------------------------------------------------------------------------------
+WHAT THE METHODS ARE
+  initial   the random graph each method starts from
+  random    uniform random actions - the floor any method should beat
+  learned   the trained policy
+
+WHAT THE COLUMNS MEAN
+  edges     how many directed bearing measurements the final network needs.
+            Each edge is a sensor/communication link, so fewer is better.
+  score     the objective every method is scored with (phi). Higher is better;
+            it rewards rigidity and penalises each extra edge.
+  rigid     % of networks whose shape is fully determined by its bearing
+            measurements. This is the property being solved for.
+  minimal   % that are rigid AND use the fewest possible edges.
+            (heuristic on mixed-domain networks - may under-report)
+  rigidity  how much margin the network has before it stops being rigid.
+            Larger is more robust; ~1e-5 is normal at this scale.
+  work      how many changes to the network the method actually made.
+  best@     the step at which its best network was found. Lower means it
+            converged faster; the rest of the budget added nothing.
+
+HOW TO READ IT
+  'initial' and 'optimal' are reference points, not competing methods:
+  every method starts from 'initial', and 'optimal' is the best achievable.
+  A method is doing well when it approaches 'optimal' with low 'work'.
+  All methods are run on the same networks, so rows compare directly.
+==============================================================================

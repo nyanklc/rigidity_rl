@@ -216,12 +216,43 @@ Scores several methods on identical problem instances, all through the same φ t
 | `optimal` | exhaustive search for the fewest-edge rigid graph (`--brute-force`, small `n` only) |
 
 Options: `--episodes N`, `--model <name>`, `--brute-force`, `--steps K` (rollout horizon),
-`--methods a,b,c`, `--seed`, `--device`, `--tag <suffix>` (keeps separate runs from overwriting
-each other's CSV), `--replay-env`. Per-episode rows are written to
-`runs_baselines/<environment_name>[_tag].csv`.
+`--methods a,b,c`, `--policy-mode sample|greedy`, `--seed`, `--device`, `--tag <label>`,
+`--out-dir PATH`, `--no-plots`, `--plot-episodes N`, `--brief`, `--replay-env`.
 
-In the results table, `steps` means edits applied for `greedy`, and steps taken to reach the best
-graph for `random` and `learned`.
+Each run writes one self-describing directory:
+
+```
+runs_baselines/<timestamp>__<environment>__<model>/
+  summary.txt        the printed comparison table and its legend
+  results.csv        one row per (episode, method) — the final outcome
+  trajectories.csv   one row per (episode, method, step) — the full time series
+  meta.json          arguments, environment config, versions, seed, git state
+  plots/             trajectories, summary and per-episode figures (PDF + PNG)
+```
+
+The table reports, per method: edges used, objective score, the percentage of networks that came
+out rigid and minimally rigid, the rigidity margin, **work** (how many changes to the network the
+method actually made) and **best@** (the step at which its best network was found). A legend
+below the table explains each column in plain language; `--brief` omits it.
+
+The plots cover the whole run rather than just its outcome — objective score, edge count,
+rigidity-matrix rank and rigidity margin against step, for every method, with the exhaustive
+optimum drawn as a reference line. Per-step tracing is what makes these possible and costs roughly
+20–30% per step, so `--no-plots` disables both.
+
+**`--policy-mode`** controls how the trained policy is rolled out, and the two modes measure
+different things:
+
+- `sample` (default) — actions are sampled from the policy. Combined with best-state-visited
+  scoring over the horizon, this uses the policy as a *sampling-based search*, which is the usual
+  inference procedure for neural combinatorial optimization. Reproducible for a given `--seed`,
+  but the result depends on the rollout budget, so report it together with `--steps`.
+- `greedy` — the single action the policy considers best. This is what a deployed policy would do,
+  is reproducible regardless of seed, and terminates as soon as the trajectory repeats a state
+  (a deterministic policy in a deterministic environment is eventually periodic).
+
+A DQN Q-network has no distribution to sample from and takes the argmax in either mode; the
+distinction only affects PPO.
 
 `greedy` is the expensive baseline — it evaluates all `n(n-1)` candidate toggles per improvement,
 so cost grows quadratically in `n`. Drop it with `--methods` on large graphs. Brute force refuses

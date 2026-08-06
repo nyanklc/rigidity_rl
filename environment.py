@@ -690,6 +690,11 @@ class Environment(gym.Env):
         # when True, reset() keeps the current graph instead of drawing a new one
         self.freeze_network = False
 
+        # compute the rigidity eigenvalue every step even without a writer, so a caller
+        # can record it; costs one extra eigendecomposition per step
+        self.trace_min_eig = False
+        self.last_stats = None
+
         self.writer = None
         # self.initial_edges_writer = None
 
@@ -947,10 +952,25 @@ class Environment(gym.Env):
         state_score = self.compute_state_score(brm, is_IBR, is_MBR, rank_brm)
 
         # when tracking, this is needed for logging anyway, so compute it once here and
-        # hand it to the best-state tracker instead of letting it redo the work
+        # hand it to the best-state tracker instead of letting it redo the work.
+        # trace_min_eig asks for it without a writer attached (baselines.py records the
+        # rigidity eigenvalue over time)
         tracking = self.track_data_enable and self.writer is not None
-        min_eig = rigidity_eigenvalue(self.network, rank_K=self.rank_K) if tracking else None
+        min_eig = (rigidity_eigenvalue(self.network, rank_K=self.rank_K)
+                   if (tracking or self.trace_min_eig) else None)
         self.update_best_state(state_score, is_IBR, is_MBR, rank_brm, min_eig=min_eig)
+
+        # everything an outside observer needs about this step, so nothing has to be
+        # recomputed to record a trajectory
+        self.last_stats = {
+            "score": float(state_score),
+            "m": int(self.network.edges.sum()),
+            "rank": int(rank_brm),
+            "rank_K": int(self.rank_K),
+            "is_IBR": bool(is_IBR),
+            "is_MBR": bool(is_MBR),
+            "min_eig": float(min_eig) if min_eig is not None else None,
+        }
 
         # (incremental) reward from state score
         reward_from_state_score = state_score - self.last_state_score
@@ -1166,6 +1186,16 @@ class Environment(gym.Env):
         # conflates "found a good topology" with "learned to stop on it"; this keeps
         # the two separate. Metric only, the reward does not use it.
         self.update_best_state(self.last_state_score, is_IBR_0, is_MBR_0, rank_brm_0, reset=True)
+        # step 0 of a trajectory: the graph as the sampler produced it
+        self.last_stats = {
+            "score": float(self.last_state_score),
+            "m": int(self.m),
+            "rank": int(rank_brm_0),
+            "rank_K": int(self.rank_K),
+            "is_IBR": bool(is_IBR_0),
+            "is_MBR": bool(is_MBR_0),
+            "min_eig": float(self.best_stats["min_eig"]),
+        }
 
         self.stop_action = False
 

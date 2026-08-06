@@ -130,12 +130,41 @@ rank) unless the configured `state_score_type` actually reads the flag — `Weig
 full stats are computed once for the reported row. Use `--methods` to drop `greedy` entirely.
 Brute force is separate and already refuses above `MAX_BRUTE_FORCE_N = 5`.
 
-In the table, `steps` means edits applied for `greedy` and steps-to-best for `random`/`learned`
-(a rollout method always burns the whole horizon, so elapsed steps say nothing). Pass `--device`
-if you want the `--model` rollout on GPU; it defaults to cpu and also sets `env.device` so the skrl
-wrapper puts observations on the same device as the agent. `--brute-force` prints per-level
-progress because the cost explodes with the required edge count: 1.6k subsets at `n=4` (needs 5
-edges) but ~432k at `n=5` when 9 edges are needed.
+`--policy-mode` selects how `learned` is rolled out: `sample` (default, the policy used as a
+sampling search, reproducible under `--seed`) or `greedy` (argmax, what a deployed policy does,
+terminates on a repeated state). A DQN q-network is argmax either way.
+
+Pass `--device` if you want the `--model` rollout on GPU; it defaults to cpu and also sets
+`env.device` so the skrl wrapper puts observations on the same device as the agent.
+`--brute-force` prints per-level progress because the cost explodes with the required edge count:
+1.6k subsets at `n=4` (needs 5 edges) but ~432k at `n=5` when 9 edges are needed.
+
+**Output lives in one directory per run** (`report.py`), named
+`runs_baselines/<timestamp>__<short-env>[__<model>][__<tag>]/`:
+
+```
+summary.txt        the printed table and its legend
+results.csv        one row per (episode, method) -- the final outcome
+trajectories.csv   one row per (episode, method, step) -- the time series
+meta.json          args, env config, and manifest.collect_provenance()
+plots/             trajectories + summary + episode_NNN, each as pdf and png
+```
+
+The table is written to be read without the source: `work` counts graph modifications actually
+applied and `best_at` is the step the best graph was reached at (the old single `steps` column
+meant different things per method), episode count moved into the header, every column states its
+direction, and a legend explains each method and column in plain language (`--brief` drops it).
+
+Per-step tracing rides with the plots — `--no-plots` skips both. It costs one extra
+eigendecomposition per step (+31% at `n=4`, +21% at `n=8`) and is served by
+`Environment.last_stats`, which `step()` fills from values it already computes; the
+`trace_min_eig` flag makes it also compute the rigidity eigenvalue without a TensorBoard writer.
+Both are guarded with `getattr`/`hasattr` in `baselines.py` because `--replay-env` can hand back
+an *archived* `Environment` from before those attributes existed.
+
+Plot colours come from the data-viz reference palette, used unchanged: the three compared methods
+take categorical slots 1–3 (certified for the all-pairs case), while `initial` and `optimal` are
+reference points drawn in neutral ink with dashed strokes rather than competing for a hue.
 
 `agent_loader.load_agent()` rebuilds a trained skrl agent from its `train/<name>.json` manifest.
 Both `inference.py` and `baselines.py` use it.
