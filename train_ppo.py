@@ -18,8 +18,15 @@ import manifest
 
 ######################################
 TOTAL_TIMESTEPS = int(6e5)
-NR_ENVS = 1
-MEM_SIZE = 2048 * 4
+NR_ENVS = 4
+# One constant for both the memory and cfg.rollouts, and they must stay equal.
+# skrl's PPO.update() runs compute_gae() over the *whole* memory ring and then
+# samples batch_size=len(memory), so a memory larger than one rollout trains on
+# stale off-policy data (7/8 of it at memory_size=8192, rollouts=1024) with
+# last_values bootstrapped at the ring's wrap point instead of the trajectory
+# end. The stale samples fall outside the ratio clip band and contribute no
+# gradient. This is what broke bigPPOSelectEquivariant3e-4lrNormalizedPositions.
+ROLLOUT_SIZE = 256
 SEED = 0  # recorded in the manifest; training was unseeded before this
 
 GNN_HIDDEN_DIM = 128
@@ -27,19 +34,30 @@ ACTOR_HEAD_HIDDEN_DIM = 256
 CRITIC_HEAD_HIDDEN_DIM = 256
 
 cfg = PPO_CFG()
-cfg.rollouts = 1024 # to ensure we don't get garbage data from memory
+cfg.rollouts = ROLLOUT_SIZE
 cfg.experiment.directory = "runs"
 # incentivize exploration more
 cfg.entropy_loss_scale = 0.01
 cfg.learning_rate = 3e-4
-cfg.learning_epochs = 4
-cfg.learning_starts = MEM_SIZE+1
+cfg.learning_epochs = 2
+cfg.learning_starts = ROLLOUT_SIZE+1
 cfg.mini_batches = 8
 cfg.kl_threshold = 0.015
 cfg.value_preprocessor = RunningStandardScaler
 cfg.value_preprocessor_kwargs = {"size": 1, "device": "cuda"}
 cfg.time_limit_bootstrap = True # this is crucial since we do not want skrl to treat the final state having value=0
-cfg.discount_factor = 1.0 # this is to make sure the reported reward curve matches with what PPO optimizes
+# Must stay < 1. The environment's reward is potential-based (phi(s') - phi(s)),
+# so at gamma = 1 the return telescopes to phi(s_T) - phi(s_0) and the advantage
+# becomes E[phi(s_T)|s'] - E[phi(s_T)|s], which is ~0 under a near-uniform policy
+# because the walk over edge sets mixes and forgets s -- no gradient to bootstrap
+# from, which is what froze the earlier run's entropy at ~1.9 of a ~2.0 ceiling.
+# At gamma < 1, Abel summation turns the same reward into
+#     -phi(s_0) + (1 - gamma) * sum_t gamma^(t-1) phi(s_t)
+# i.e. maximize the discounted average of phi along the trajectory: converge fast
+# and stay converged. DQN uses 0.99 and solves n=8/R^3; match it.
+# (gamma = 1 used to be set so the logged return matched the optimized objective.
+#  Read Episode/ Return for that instead -- it is undiscounted by construction.)
+cfg.discount_factor = 0.99
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 ######################################
@@ -298,7 +316,7 @@ else:
 
 # for rollouts
 # TODO: env.num_envs??
-memory = RandomMemory(memory_size=MEM_SIZE, num_envs=env.num_envs, device=device)
+memory = RandomMemory(memory_size=ROLLOUT_SIZE, num_envs=env.num_envs, device=device)
 
 cfg.experiment.experiment_name = model_name
 
@@ -343,7 +361,7 @@ print(f"actor: {models['policy'].__class__.__name__}")
 print(f"critic: {models['value'].__class__.__name__}")
 print(f"TOTAL_TIMESTEPS: {TOTAL_TIMESTEPS}")
 print(f"NR_ENVS: {NR_ENVS}")
-print(f"MEM_SIZE: {MEM_SIZE}")
+print(f"MEM_SIZE: {ROLLOUT_SIZE}")
 print(f"GNN_HIDDEN_DIM: {GNN_HIDDEN_DIM}")
 print(f"ACTOR_HEAD_HIDDEN_DIM: {ACTOR_HEAD_HIDDEN_DIM}")
 print(f"CRITIC_HEAD_HIDDEN_DIM: {CRITIC_HEAD_HIDDEN_DIM}")
@@ -373,7 +391,7 @@ descriptor = {
     "timestamp_started": datetime.now().isoformat(),
     "total_timesteps_configured": TOTAL_TIMESTEPS,
     "nr_envs": NR_ENVS,
-    "mem_size": MEM_SIZE,
+    "mem_size": ROLLOUT_SIZE,
     "gnn_hidden_dim": GNN_HIDDEN_DIM,
     "head_hidden_dim": ACTOR_HEAD_HIDDEN_DIM,
     "critic_head_hidden_dim": CRITIC_HEAD_HIDDEN_DIM,
