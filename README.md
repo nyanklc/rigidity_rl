@@ -10,6 +10,8 @@
 
 ## See also
 
+- [ROADMAP.md](ROADMAP.md) — the live plan: what currently works, what is known-broken and why,
+  and the phased fix. Read this before changing the environment, observations or reward.
 - [Draft presentation](resources/rigidity_rl_260807-1.pdf) — slides on the current state of this work.
 - [Michieletto et al. (2021), *A Unified Dissertation on Bearing Rigidity Theory*](resources/Michieletto%20et%20al.%20-%202021%20-%20A%20Unified%20Dissertation%20on%20Bearing%20Rigidity%20Theory.pdf) — the reference the rigidity theory in this repo follows.
 
@@ -32,6 +34,29 @@ shaped by the configured action space.
 Supported agent domains: `R^2`, `R^3`, `R^2xS^1`, `R^3xS^1`, `SE(3)`. Networks may be
 heterogeneous — the domain pair of an edge's endpoints determines which degrees of freedom that
 bearing measurement actually constrains.
+
+The longer-term motivation is a **distributed** method for maintaining rigid formations in swarms.
+The centralized formulation here is a deliberate first step; see
+[ROADMAP.md appendix A](ROADMAP.md) for an assessment of what would carry over.
+
+## Status
+
+**Works:** at 8 agents in `R^3`, a trained DQN policy reaches **10.02 edges against an optimum of
+10, 100% rigid and 98.2% minimally rigid**, and holds it. It gets there in roughly 8 edge toggles,
+against a greedy hill-climber's 11 improvement steps of `n(n-1)` objective evaluations each.
+
+**Does not work yet:**
+
+- **Generalization across `n` and domain.** A policy trained at `n=8`/`R^3` is *worse than a random
+  policy* when transferred zero-shot to `n=4`/`R^2` (45% vs 80% rigid) and no better than random at
+  `n=16`. It learns an edge-count prior for its training configuration rather than a rigidity
+  criterion — the observations carry no rigidity information and no geometry for edges the graph
+  does not already have.
+- **PPO.** Currently does not learn on this task for two identified reasons (a PPO memory/rollout
+  sizing bug, and `discount_factor = 1.0` making the advantage identically zero under
+  potential-based shaping). DQN is unaffected. Both are being fixed.
+
+Details, evidence and the fix plan are in [ROADMAP.md](ROADMAP.md).
 
 ## Evaluation output
 
@@ -144,7 +169,11 @@ Currently in active use:
   (feeds the GINE backbone). Both provide node features (domain one-hot, in/out degree,
   closeness / eigenvector centrality, betweenness), edge features (bearing vector, edge
   betweenness, reciprocity, common neighbours), the adjacency matrix, and the current selection.
-- **State score** — `Weighted`, currently `20 * rank(B) - 10 * |E|`.
+  **Bearings are only populated for edges that exist**, so a policy cannot currently see the
+  geometry of an edge it might add — a known limitation, see [ROADMAP.md](ROADMAP.md) §2.2.
+- **State score** — `Weighted`, currently `20 * rank(B) - 10 * |E|`. Note that a rigidity-matrix
+  edge block has rank 2 in `R^3` but 1 in `R^2`, so these fixed weights trade rank against edges
+  differently per domain and the score does not transfer — ROADMAP §2.5.
 - **Termination** — `MaxSteps` (fixed horizon) or `MinimallyRigid`.
 
 **Reward.** Each step yields
@@ -154,7 +183,10 @@ reward = -time_penalty + [action reward] + (φ(s') - φ(s)) + [terminal bonus]
 ```
 
 The φ term is potential-based shaping: the reward is how much *better* the graph became, not its
-absolute quality.
+absolute quality. **The discount factor interacts with this and is not free.** At γ=1 the return
+telescopes to `φ(s_T) − φ(s_0)` and the advantage collapses to ≈0 under a near-uniform policy, so
+nothing learns. At γ<1 the same reward becomes "maximize the discounted average of φ along the
+trajectory" — converge quickly and stay converged. Use γ<1.
 
 **Episode reset** re-randomises poses *and* edges, so a policy must generalise across geometries
 rather than memorise one.
@@ -165,8 +197,12 @@ rather than memorise one.
 per (backbone × action-space) combination, all re-exported from `policy/__init__.py`.
 
 - `GNNBackboneEquivariant` — E(n)-equivariant GNN (EGNN). Preserves the node feature width;
-  `gnn_hidden_dim` sets only the internal message width.
-- `GNNBackboneGINE` — GINE, edge-feature aware. Outputs `gnn_hidden_dim`.
+  `gnn_hidden_dim` sets only the internal message width. **Caveat:** the adjacency matrix passed to
+  it is currently ignored by `egnn_pytorch` (it is only consulted in nearest-neighbour mode), so
+  message passing is dense over all pairs and the topology reaches the network only through the
+  edge features. See [ROADMAP.md](ROADMAP.md) §2.1.
+- `GNNBackboneGINE` — GINE, edge-feature aware. Outputs `gnn_hidden_dim`. Message passing is
+  restricted to existing edges, so this backbone sees no geometry for candidate edges at all.
 
 Naming: `Equivariant_*` = EGNN, `GINE_*` = GINE. **Action masking happens inside the model** —
 invalid actions get `-1e9` written into their logit/Q-value; the environment does not mask. DQN
@@ -362,6 +398,7 @@ the checkpoint's parameter shapes, then finding the matching model class in `pol
 ## Repository layout
 
 ```
+ROADMAP.md              current plan: diagnosis, ranked issues, phased fixes
 environment.py          the gymnasium environment; action / observation / reward / termination dispatch
 network.py              Agent and Network; graph features used by the observations
 rigidity.py             bearing rigidity matrix, IBR / MBR tests, rigidity eigenvalue
