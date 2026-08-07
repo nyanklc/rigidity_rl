@@ -14,3 +14,4 @@ runs_old_old/
 train/*.json.bak
 runs_baselines/
 train/
+dumdumdum.sh

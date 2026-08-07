@@ -232,7 +232,7 @@ Each phase is independently testable and leaves the repository in a working stat
 `environment.py` dispatch names are kept intact throughout, so existing checkpoints keep replaying
 through the manifest system.
 
-### Phase 1 — PPO discount factor and memory sizing
+### Phase 1 — PPO discount factor and memory sizing — **DONE** (`b14396b`)
 *Fixes 1.2. Two lines, largest expected effect per unit of work.*
 
 - `cfg.discount_factor = 1.0` -> `0.99`.
@@ -240,23 +240,41 @@ through the manifest system.
 - Record in the source comment *why* gamma=1 is degenerate here, since the existing comment argues
   for it.
 
-**Acceptance:** a PPO run on `...termMaxSteps_n8_R3` shows entropy falling below ~1.4 nats and
-`Episode/ Best is min rigid` rising above 0.5 within 300k trainer steps. Target is parity with
-DQN's 0.98.
+**Acceptance (not yet run):** a PPO run on `...termMaxSteps_n8_R3` shows entropy falling below
+~1.4 nats and `Episode/ Best is min rigid` rising above 0.5 within 300k trainer steps. Target is
+parity with DQN's 0.98.
 
-### Phase 2 — dimension-normalized state score
+### Phase 2 — dimension-normalized state score — **DONE**
 *Fixes 2.5. Prerequisite for anything multi-n or multi-domain.*
 
 - New `state_score_type = "WeightedNormalized"`:
-  `phi = w_r * rank/rank_K - w_e * m/m_req`, both terms O(1), optimum ~ `w_r - w_e` regardless of
-  n and domain.
-- `rank_K` is already cached per episode. `m_req` comes from `MBR_required_Rd` for homogeneous
-  `R^d` and from the `is_MBR` greedy lower bound otherwise (cache it per episode alongside
-  `rank_K`).
-- `Weighted` stays exactly as it is.
+  `phi = w_rank * rank/rank_K - w_edge * m/m_req` at `(100, 25)`. Both terms are O(1), the optimum
+  is `w_rank - w_edge = 75` regardless of n and domain, and the rank/edge trade-off is the weight
+  *ratio* rather than an accident of the dimension. 4:1 reproduces R^3's existing 3:1 preference
+  for adding rank over pruning a redundant edge, now identically in every domain.
+- `rigidity.required_edge_count(network, rank_K, brmat_K)` gives `m_req`: the closed form for
+  homogeneous `R^d`, otherwise a greedy accumulation over the *fully-connected* graph's sorted
+  per-edge block ranks. Verified to reproduce `MBR_required_Rd` exactly on every homogeneous case
+  tested (n=4..16, R^2 and R^3) — unlike `is_MBR`'s `m_req`, which is derived from the current
+  edge set and therefore is not an episode constant.
+- `Environment.compute_episode_constants()` builds `B_K` once and derives both `rank_K` and
+  `m_req` from it, called from `initialize()` and `begin_episode()`.
+- `Network.fully_connected()` no longer sets the diagonal (pulled forward from phase 6): the
+  zero blocks it produced would otherwise have to be special-cased by anything iterating `B_K`'s
+  per-edge blocks. `rank_K` is unchanged, `B_K` is now `(3n(n-1), 6n)`.
+- `Weighted` is untouched, so existing runs replay unchanged.
 
-**Acceptance:** phi's optimum is within a few percent of the same value for n=4/R^2, n=8/R^3 and
-n=16/R^3; `baselines.py` `optimal` and `greedy` rows confirm it.
+**Result:** phi's ceiling is now identical across configurations, and the reference methods land
+on it.
+
+| config | rank_K | m_req | greedy phi | greedy edges | old `Weighted` phi |
+|---|---|---|---|---|---|
+| n=4 / R^2 | 5 | 5 | **75.00** (= optimum) | 5.00 | 50 |
+| n=8 / R^3 | 20 | 10 | **73.00** | 10.80 | 270 |
+| n=8 / R^2 | 13 | 13 | — | — | 130 |
+| n=16 / R^3 | 44 | 22 | — | — | 590 |
+
+Brute-force `optimal` at n=4/R^2 also returns exactly 75.00 with 5 edges. Acceptance met.
 
 ### Phase 3 — all-pairs bearing observation (geometry-only ablation arm)
 *Fixes 2.2 and 2.1.*

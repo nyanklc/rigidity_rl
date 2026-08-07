@@ -179,6 +179,54 @@ def MBR_required_Rd(n ,d):
 
     return m_required
 
+# The smallest edge count that could possibly make *these poses* rigid -- an
+# episode constant, unlike is_MBR's m_req which is derived from whatever edges
+# the graph currently has.
+#
+# Homogeneous R^d has a closed form. Otherwise: every edge contributes at most
+# rank(B[3k:3k+3, :]) to rank(B), so taking the highest-rank blocks of the
+# fully-connected graph first and accumulating until rank_K is reached gives a
+# sound lower bound (rank subadditivity over edge blocks). The two agree exactly
+# on homogeneous R^2 and R^3, where every block has rank d-1 and the bound
+# reduces to ceil(rank_K / (d - 1)).
+#
+# Costs n(n-1) small rank computations, so call it once per episode and cache it
+# -- Environment does this in begin_episode().
+def required_edge_count(network, rank_K=None, brmat_K=None):
+    n = len(network.agents)
+    if n < 2:
+        return 0
+
+    domains = {agent.domain for agent in network.agents}
+    if len(domains) == 1:
+        domain = next(iter(domains))
+        if domain in ["R^2", "R^3"]:
+            return MBR_required_Rd(n, 2 if domain == "R^2" else 3)
+
+    if brmat_K is None or rank_K is None:
+        network_K = network.fully_connected()
+        brmat_K = extended_bearing_rigidity_matrix(network_K)
+        if rank_K is None:
+            rank_K = np.linalg.matrix_rank(brmat_K)
+
+    m_K = brmat_K.shape[0] // 3
+    block_ranks = sorted(
+        (np.linalg.matrix_rank(brmat_K[3*k:3*(k+1), :]) for k in range(m_K)),
+        reverse=True,
+    )
+
+    sum_c = 0
+    m_req = 0
+    for c in block_ranks:
+        if c == 0:  # a zero block constrains nothing; the rest are zero too
+            break
+        sum_c += c
+        m_req += 1
+        if sum_c >= rank_K:
+            break
+
+    return max(m_req, 1)
+
 # # idk if this is reliable
 # def is_MBR_general(network, rank_K=None):
 #     raise Exception("MBR (general) doesn't quite work i think. Abort.")

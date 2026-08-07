@@ -448,7 +448,11 @@ class Network:
     def fully_connected(self):
         network_K = copy.copy(self)
         n = len(network_K.agents)
-        network_K.edges = np.ones((n, n))
+        # no self loops: a diagonal entry produced a 3-row block of zeros, which
+        # left rank_K correct only because extended_bearing_rigidity_matrix skips
+        # i == j. Anything that iterates the blocks (required_edge_count) would
+        # otherwise have to know about the padding.
+        network_K.edges = ~np.eye(n, dtype=bool)
         return network_K # TODO: return does copy?
 
     def print(self):

@@ -655,8 +655,7 @@ class Environment(gym.Env):
 
         self.brm = self.network.extended_bearing_rigidity_matrix()
 
-        network_K = self.network.fully_connected()
-        self.rank_K = np.linalg.matrix_rank(network_K.extended_bearing_rigidity_matrix())
+        self.compute_episode_constants()
 
         self.selection = np.zeros(self.n, dtype=np.int64)
         self.proposed_edge = np.zeros(2)
@@ -775,6 +774,23 @@ class Environment(gym.Env):
         max_edges = n**2 - n
         edge_count = int(sample_gaussian(mean, (max_edges - mean)**2 / 9, n).item())
         return int(np.clip(edge_count, 1, max_edges))
+
+    # -----------------------------------
+    # Everything that depends on the poses but not on the edge set, computed once
+    # per episode. Both are properties of *this geometry*, so they are the natural
+    # denominators for a state score that has to mean the same thing at different
+    # n and in different domains:
+    #   rank_K -- rank of the fully-connected graph's rigidity matrix; the rank a
+    #             rigid graph must reach (3n-4 in R^3, 2n-3 in R^2)
+    #   m_req  -- the fewest edges that could possibly make these poses rigid
+    # B_K is built once and handed to both, since it is the expensive part.
+    def compute_episode_constants(self):
+        network_K = self.network.fully_connected()
+        brmat_K = network_K.extended_bearing_rigidity_matrix()
+        self.rank_K = np.linalg.matrix_rank(brmat_K)
+        self.m_req = required_edge_count(
+            self.network, rank_K=self.rank_K, brmat_K=brmat_K
+        )
 
     # -----------------------------------
     # Running totals for the per-episode metrics. Sums and counts only -- no
@@ -969,6 +985,33 @@ class Environment(gym.Env):
             state_score += s_rank + s_ibr + s_eig + s_edge
             # print(f"\nr_rank: {r_rank}: {w_rank}*...\nr_ibr: {r_ibr}: {w_ibr}*...\nr_eig: {r_eig}: {w_eig}*...\nr_edge: {r_edge}: {w_edge}*...")
             # print(f"\ntotal: {state_score}")
+
+        elif self.state_score_type == "WeightedNormalized":
+            # `Weighted` measures rank and edge count in raw units, which do not
+            # mean the same thing across domains: a rigidity-matrix edge block has
+            # rank 2 in R^3 but 1 in R^2, so at (20, 10) a rank-adding edge is
+            # worth +30 in R^3 and +10 in R^2 against +10 for pruning either way.
+            # The optimum also moves with the configuration (50 at n=4/R^2, 300 at
+            # n=8/R^3), which shifts the critic's target range whenever n or the
+            # domain changes. One policy cannot span both under that score.
+            #
+            # Dividing each term by its own ceiling fixes both: rank/rank_K and
+            # m/m_req are dimensionless, the optimum is w_rank - w_edge whatever
+            # the configuration, and the rank/edge trade-off is the *ratio* of the
+            # weights rather than an accident of the domain.
+            #
+            # w_rank / w_edge = 4 reproduces R^3's current 3:1 preference for
+            # adding rank over pruning a redundant edge, now identically in every
+            # domain. That ratio is the meaningful knob here; the overall scale
+            # only sets the reward magnitude.
+            w_rank = 100.0
+            w_edge = 25.0
+
+            m = np.sum(self.network.edges)
+            rank_K = max(int(self.rank_K), 1)
+            m_req = max(int(self.m_req), 1)
+
+            state_score += w_rank * (rank_brm / rank_K) - w_edge * (m / m_req)
 
         elif self.state_score_type == "None" or None:
             pass
@@ -1262,8 +1305,7 @@ class Environment(gym.Env):
         self.m = int(self.network.edges.sum())
         self.initial_m = self.m
 
-        network_K = self.network.fully_connected()
-        self.rank_K = np.linalg.matrix_rank(network_K.extended_bearing_rigidity_matrix())
+        self.compute_episode_constants()
 
         self.brm = self.network.extended_bearing_rigidity_matrix()
 
@@ -1360,7 +1402,11 @@ if __name__ == "__main__":
     # STATE_SCORE_TYPE = "LogMinEigenvalue"
     # STATE_SCORE_TYPE = "RigidityMatrixRank"
     # STATE_SCORE_TYPE = "RigidityMatrixRankAndEdges"
-    STATE_SCORE_TYPE = "Weighted"
+    # STATE_SCORE_TYPE = "Weighted"
+    # Dimensionless version of Weighted: rank/rank_K and m/m_req instead of raw
+    # rank and edge count. Use this for anything spanning several n or domains --
+    # Weighted's fixed weights trade rank against edges differently per dimension.
+    STATE_SCORE_TYPE = "WeightedNormalized"
     # STATE_SCORE_TYPE = "None"
 
     TERMINATION_CONDITION_TYPE = "MaxSteps"
