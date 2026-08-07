@@ -6,11 +6,14 @@
 > architectures change frequently. The repository also contains superseded code and older
 > experimental work that is no longer part of the active pipeline.
 
-By Noyan. MIT licensed.
-
 ---
 
-## What this is
+## See also
+
+- [Draft presentation](resources/rigidity_rl_260807-1.pdf) — slides on the current state of this work.
+- [Michieletto et al. (2021), *A Unified Dissertation on Bearing Rigidity Theory*](resources/Michieletto%20et%20al.%20-%202021%20-%20A%20Unified%20Dissertation%20on%20Bearing%20Rigidity%20Theory.pdf) — the reference the rigidity theory in this repo follows.
+
+## What is this?
 
 Topology optimization for **bearing rigid multi-agent networks**, using deep reinforcement
 learning with graph neural networks.
@@ -29,6 +32,19 @@ shaped by the configured action space.
 Supported agent domains: `R^2`, `R^3`, `R^2xS^1`, `R^3xS^1`, `SE(3)`. Networks may be
 heterogeneous — the domain pair of an edge's endpoints determines which degrees of freedom that
 bearing measurement actually constrains.
+
+## Evaluation output
+
+Every evaluation run measures the trained policy against reference points. The starting graph,
+a random policy, and a greedy search in case of the examples below.
+
+![Baseline comparison table](resources/baselines-table.svg)
+
+![Run trajectories](resources/baselines-trajectories.svg)
+
+![Final, best and mean outcome per method](resources/baselines-outcomes.svg)
+
+![Outcome distribution across networks](resources/baselines-summary.svg)
 
 ## Requirements
 
@@ -98,11 +114,12 @@ rigidity matrix* `B` (shape `3m x 6n` for `m` edges and `n` agents): the graph i
 Two derived quantities are used throughout:
 
 - **Rigidity eigenvalue** — the first nonzero eigenvalue of `B^T B`. A scalar measure of *how
-  robustly* rigid a framework is. Values are small (order `1e-5`) because matrix entries scale as
-  `1/||p_ij||` and poses are drawn from `[-100, 100]`; plot on a log axis.
+  robustly* rigid a framework is. Its absolute magnitude is not meaningful on its own — matrix
+  entries scale as `1/||p_ij||`, so it moves with the pose range `random_scenario` draws from
+  (`pos_limits`, currently `[-1, 1]`). Compare frameworks at the same scale, and plot on a log axis.
 - **Minimal Bearing Rigidity (MBR)** — whether the graph is rigid with as few edges as possible.
   Exact via a closed form for homogeneous `R^d` networks; otherwise a greedy per-edge lower bound
-  is used (see [Caveats](#caveats)).
+  is used.
 
 ### The environment
 
@@ -192,12 +209,22 @@ TensorBoard logs in `runs/<name>/`.
 tensorboard --logdir runs
 ```
 
-Beyond the usual reward/loss curves, the environment logs `Environment/ *` series: edge count,
-is-rigid, is-min-rigid, the reward decomposition, minimum eigenvalue, the chosen action, and a
-**best-state-visited** group (`Best state score`, `Best nr edges`, `Best is rigid`,
-`Best is min rigid`, `Best min eig`, `Best step`). The best-state group records the highest-scoring
-graph seen during an episode and how many steps it took to reach it — useful because scoring an
-episode on its *final* state conflates finding a good topology with learning to stop on one.
+Beyond the usual reward/loss curves, the environment logs an `Episode/ *` group — **one point per
+tag per episode**, written when the episode ends and plotted against the global environment step so
+it lines up with skrl's own curves. Each episode contributes three views of itself:
+
+- **`Final *`** — the graph the episode ended on (`Final state score`, `Final nr edges`,
+  `Final rank`, `Final rank deficit`, `Final is rigid`, `Final is min rigid`, `Final min eig`),
+  plus `Nr initial edges`, `Edge delta`, `Length`, `Nr edits`, `Skip fraction`, `Terminated`
+  and the return decomposition.
+- **`Best *`** — the highest-scoring graph *seen* during the episode and the step it was reached
+  at (`Best state score`, `Best nr edges`, `Best rank`, `Best is rigid`, `Best is min rigid`,
+  `Best min eig`, `Best step`). Scoring an episode on its final state alone conflates finding a
+  good topology with learning to stop on one; `Best-final score gap` measures exactly that
+  difference — 0 means the episode ended on the best graph it found.
+- **`Mean *` / fractions** — the episode average (`Mean state score`, `Mean nr edges`, `Mean rank`,
+  `Mean min eig`, `Rigid fraction`, `Min rigid fraction`), i.e. what the graph looked like
+  throughout rather than at one instant.
 
 ### Evaluation
 
@@ -227,18 +254,45 @@ runs_baselines/<timestamp>__<environment>__<model>/
   results.csv        one row per (episode, method) — the final outcome
   trajectories.csv   one row per (episode, method, step) — the full time series
   meta.json          arguments, environment config, versions, seed, git state
-  plots/             trajectories, summary and per-episode figures (PDF + PNG)
+  plots/pdf/         table, trajectories, outcomes, summary and per-episode figures
+  plots/png/         the same figures as PNG
 ```
+
+Every figure is written in both formats and filed by format — PDF for the thesis, PNG for
+looking at.
 
 The table reports, per method: edges used, objective score, the percentage of networks that came
 out rigid and minimally rigid, the rigidity margin, **work** (how many changes to the network the
 method actually made) and **best@** (the step at which its best network was found). A legend
 below the table explains each column in plain language; `--brief` omits it.
 
-The plots cover the whole run rather than just its outcome — objective score, edge count,
-rigidity-matrix rank and rigidity margin against step, for every method, with the exhaustive
-optimum drawn as a reference line. Per-step tracing is what makes these possible and costs roughly
-20–30% per step, so `--no-plots` disables both.
+Every value is a mean over the networks with its standard deviation, except the percentage
+columns — those are already means of a yes/no outcome, so their spread carries no extra
+information. The margin appears twice: arithmetically (`mean ± sd`) and geometrically
+(`gmean ×/÷ gsd`), since it ranges over orders of magnitude and an arithmetic ± implies a range
+crossing zero. The geometric column is marked `*` when non-rigid networks had to be excluded —
+their margin is exactly 0, which a geometric mean cannot take, so a starred row describes only
+the networks that came out rigid.
+
+Four figures cover the run, each with the full environment and model names in its title block and
+a notes card explaining how it was built:
+
+- **`table`** — the comparison table itself, the same numbers as `summary.txt` but laid out:
+  each column states its direction under its name, reference rows are drawn as reference rows,
+  and the column legend rides along in the card. Use it when the table has to appear beside the
+  plots rather than in a terminal.
+- **`trajectories`** — objective score, edge count, rigidity-matrix rank and rigidity margin
+  against step, for every method, with full rigidity and the exhaustive optimum as reference lines.
+  Mean across networks with the middle 50% shaded; `episode_NNN` is the same figure for one network.
+- **`outcomes`** — **final / best / mean** side by side for every method: the network the run ended
+  on, the best-scoring one it passed through, and the average over the run. The same three views
+  the environment logs per episode to TensorBoard. A method whose `best` bar stands well above its
+  `final` bar found a good topology and then moved off it.
+- **`summary`** — the spread across networks (box plots) of the outcome each method is scored on,
+  the percentage rigid and minimally rigid, and how long each method took to reach its best.
+
+Per-step tracing is what makes these possible and costs roughly 20–30% per step, so `--no-plots`
+disables both.
 
 **`--policy-mode`** controls how the trained policy is rolled out, and the two modes measure
 different things:
@@ -272,7 +326,8 @@ the exhaustively-optimal topology for comparison.
 ## Run manifests and reproducibility
 
 Every training run writes `train/<model_name>.json` — a **self-contained record of that run**.
-These files are tracked in git and are the authoritative log of what was executed. Each contains:
+`train/` is gitignored, so a manifest lives only on the machine that produced it; keep it
+alongside the checkpoint it describes. Each contains:
 
 - hyperparameters and the environment configuration used
 - the **source code** of the actor/critic/Q-network classes
@@ -330,8 +385,9 @@ environments/           environment configs      (gitignored)
 scenarios/              fixed poses/domains      (gitignored)
 models/                 checkpoints              (gitignored)
 runs/                   TensorBoard logs         (gitignored)
-runs_baselines/         baseline CSV output
-train/                  run manifests            (tracked)
+runs_baselines/         evaluation output        (gitignored)
+resources/              papers, slides, README figures
+train/                  run manifests            (gitignored)
 ```
 
 `gpu_environment.py`, `gpu_network.py` and `gpu_rigidity.py` are an in-progress batched PyTorch

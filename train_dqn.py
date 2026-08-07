@@ -20,10 +20,10 @@ import manifest
 
 ######################################
 TOTAL_TIMESTEPS = int(6e5)
-NR_ENVS = 1
+NR_ENVS = 4
 MEM_SIZE = 10000
 SEED = 0  # recorded in the manifest; training was unseeded before this
-EGREEDY_STEPS = TOTAL_TIMESTEPS * 0.6
+EGREEDY_STEPS = TOTAL_TIMESTEPS * 0.5
 
 GNN_HIDDEN_DIM = 128
 QNETWORK_HEAD_HIDDEN_DIM = 256
@@ -31,7 +31,7 @@ QNETWORK_HEAD_HIDDEN_DIM = 256
 cfg = DQN_CFG()
 cfg.experiment.directory = "runs"
 cfg.batch_size = 256
-cfg.target_update_interval = 1000
+cfg.target_update_interval = 200
 cfg.update_interval = 4
 cfg.learning_rate = 3e-4
 cfg.learning_starts = MEM_SIZE + 1

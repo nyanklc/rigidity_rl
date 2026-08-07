@@ -19,24 +19,27 @@ import manifest
 ######################################
 TOTAL_TIMESTEPS = int(6e5)
 NR_ENVS = 1
-MEM_SIZE = 2048
+MEM_SIZE = 2048 * 4
 SEED = 0  # recorded in the manifest; training was unseeded before this
 
-GNN_HIDDEN_DIM = 64
-ACTOR_HEAD_HIDDEN_DIM = 128
-CRITIC_HEAD_HIDDEN_DIM = 128
+GNN_HIDDEN_DIM = 128
+ACTOR_HEAD_HIDDEN_DIM = 256
+CRITIC_HEAD_HIDDEN_DIM = 256
 
 cfg = PPO_CFG()
-cfg.rollouts = MEM_SIZE # to ensure we don't get garbage data from memory
+cfg.rollouts = 1024 # to ensure we don't get garbage data from memory
 cfg.experiment.directory = "runs"
 # incentivize exploration more
 cfg.entropy_loss_scale = 0.01
 cfg.learning_rate = 3e-4
 cfg.learning_epochs = 4
+cfg.learning_starts = MEM_SIZE+1
 cfg.mini_batches = 8
 cfg.kl_threshold = 0.015
 cfg.value_preprocessor = RunningStandardScaler
 cfg.value_preprocessor_kwargs = {"size": 1, "device": "cuda"}
+cfg.time_limit_bootstrap = True # this is crucial since we do not want skrl to treat the final state having value=0
+cfg.discount_factor = 1.0 # this is to make sure the reported reward curve matches with what PPO optimizes
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 ######################################

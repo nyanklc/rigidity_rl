@@ -12,3 +12,5 @@ runs_old_old/
 .spyproject/
 .vscode/
 train/*.json.bak
+runs_baselines/
+train/

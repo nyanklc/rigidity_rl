@@ -514,15 +514,33 @@ def main():
 
     written = ["summary.txt", "results.csv"] + (["trajectories.csv"] if traces else [])
     if traces:
-        title = f"{report.short_env_name(args.environment_name)} - {args.episodes} networks"
-        report.plot_trajectories(run_dir, traces, rows, title)
-        report.plot_summary(run_dir, rows, title)
+        # the full names go in the figure titles (wrapped): a plot pulled into a slide
+        # has to say which model and which environment produced it
+        header = {
+            "short": report.short_env_name(args.environment_name),
+            "env": args.environment_name,
+            "model": args.model,
+            "network": context["network"],
+            "episodes": args.episodes,
+            "seed": args.seed,
+        }
+        report.plot_trajectories(run_dir, traces, rows, header)
+        report.plot_outcomes(run_dir, traces, rows, header)
+        report.plot_summary(run_dir, rows, header)
+        # the table itself, so the numbers travel with the figures. The policy line drops
+        # the model name -- the header already carries it in full one line above
+        policy = (f"{algorithm}, --policy-mode {args.policy_mode}, {steps}-step budget"
+                  if args.model else None)
+        report.plot_table(run_dir, rows, dict(header, objective=context["objective"],
+                                              policy=policy))
         for ep in range(min(args.plot_episodes, args.episodes)):
             sel = [t for t in traces if t["episode"] == ep]
+            ep_header = dict(header, episodes=None, subtitle=f"episode {ep}")
             report.plot_trajectories(run_dir, sel, [r for r in rows if r["episode"] == ep],
-                                     f"{title} - episode {ep}", filename=f"episode_{ep:03d}",
+                                     ep_header, filename=f"episode_{ep:03d}",
                                      aggregate_over_episodes=False)
-        written.append(f"plots/ ({2 + min(args.plot_episodes, args.episodes)} figures, pdf+png)")
+        figures = 4 + min(args.plot_episodes, args.episodes)
+        written.append(f"plots/pdf/ and plots/png/ ({figures} figures each)")
 
     print(f"\nwrote {run_dir}/")
     for w in written:

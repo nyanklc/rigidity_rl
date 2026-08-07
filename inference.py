@@ -80,7 +80,7 @@ print(f"env: {env_name} | action={action_type} obs={obs_type}")
 # format or action semantics change. Models predating the manifests fall back to recovery
 # from the checkpoint's parameter shapes.
 try:
-    agent, env, raw_env, train_info = load_run(model_name, env_name=env_name, device=device)
+    agent, env, raw_env, train_info = load_run(model_name, env_name=env_name, device=device, prefer_archived_env=False)
     MODEL_TYPE = (train_info or {}).get("algorithm", "PPO")
     n = len(raw_env.network.agents)
 except (FileNotFoundError, ValueError) as e:

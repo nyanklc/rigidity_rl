@@ -695,6 +695,14 @@ class Environment(gym.Env):
         self.trace_min_eig = False
         self.last_stats = None
 
+        # Environment metrics are written once per episode, not once per step: a
+        # step-resolution scalar costs a tensorboard event per step and is then
+        # downsampled/averaged for display anyway, so the detail is paid for and
+        # never seen. See new_episode_accum() / episode_summary() / write_episode().
+        self.episode_counter = 0
+        self.episode_accum = self.new_episode_accum()
+        self.last_episode_stats = None
+
         self.writer = None
         # self.initial_edges_writer = None
 
@@ -702,6 +710,7 @@ class Environment(gym.Env):
         self.writer = SummaryWriter(log_dir=os.path.join("runs", experiment_name))
         # self.initial_edges_writer = SummaryWriter(log_dir=os.path.join("runs", experiment_name))
         self.writer_counter = 0 # don't reset this
+        self.episode_counter = 0
 
     def load(self, filepath):
         with open(filepath, "r") as f:
@@ -766,6 +775,85 @@ class Environment(gym.Env):
         max_edges = n**2 - n
         edge_count = int(sample_gaussian(mean, (max_edges - mean)**2 / 9, n).item())
         return int(np.clip(edge_count, 1, max_edges))
+
+    # -----------------------------------
+    # Running totals for the per-episode metrics. Sums and counts only -- no
+    # per-step history is kept, so an episode costs the same whether it is 100 or
+    # 2000 steps long.
+    def new_episode_accum(self):
+        return {
+            "steps": 0,
+            "edits": 0,     # steps that actually changed the edge set
+            "skips": 0,     # steps the action space treated as a skip / no-op
+            "return": 0.0,
+            "return_action": 0.0,
+            "return_state": 0.0,
+            "return_termination": 0.0,
+            "sum_score": 0.0,
+            "sum_m": 0.0,
+            "sum_rank": 0.0,
+            "sum_IBR": 0.0,
+            "sum_MBR": 0.0,
+            "sum_min_eig": 0.0,
+            "n_min_eig": 0, # min eig is not always computed, so it needs its own count
+        }
+
+    # -----------------------------------
+    # The whole episode as one record: where it ended up (Final ...), the best
+    # graph it visited (Best ...), and what it looked like throughout (Mean ...).
+    # Kept flat and float-valued so write_episode() can dump it without knowing
+    # what any of it means.
+    def episode_summary(self, state_score, rank_brm, is_IBR, is_MBR, min_eig,
+                        terminated, truncated):
+        acc = self.episode_accum
+        steps = max(acc["steps"], 1)
+        m_final = int(self.network.edges.sum())
+        m_initial = int(self.initial_m)
+        n_eig = acc["n_min_eig"]
+        return {
+            "Episode index": self.episode_counter,
+            "Length": acc["steps"],
+            # 1 = a termination condition fired, 0 = ran out of steps
+            "Terminated": float(terminated),
+            "Nr edits": acc["edits"],
+            "Skip fraction": acc["skips"] / steps,
+
+            "Return": acc["return"],
+            "Return (action)": acc["return_action"],
+            "Return (state)": acc["return_state"],
+            "Return (termination)": acc["return_termination"],
+
+            "Nr initial edges": m_initial,
+            "Final state score": float(state_score),
+            "Final nr edges": m_final,
+            "Final rank": int(rank_brm),
+            # 0 means rigid; how far the final graph is from rank_K
+            "Final rank deficit": int(self.rank_K) - int(rank_brm),
+            "Final is rigid": float(is_IBR),
+            "Final is min rigid": float(is_MBR),
+            "Final min eig": None if min_eig is None else float(min_eig),
+            # negative = the episode removed edges, positive = it added them
+            "Edge delta": m_final - m_initial,
+
+            "Best state score": float(self.best_state_score),
+            "Best nr edges": self.best_stats["m"],
+            "Best rank": self.best_stats["rank"],
+            "Best is rigid": float(self.best_stats["is_IBR"]),
+            "Best is min rigid": float(self.best_stats["is_MBR"]),
+            "Best min eig": self.best_stats["min_eig"],
+            "Best step": self.best_step,
+            # 0 means the episode ended on the best graph it found; positive means
+            # it found something better and then moved off it -- the difference
+            # between "can find a good topology" and "knows to stop on one"
+            "Best-final score gap": float(self.best_state_score) - float(state_score),
+
+            "Mean state score": acc["sum_score"] / steps,
+            "Mean nr edges": acc["sum_m"] / steps,
+            "Mean rank": acc["sum_rank"] / steps,
+            "Rigid fraction": acc["sum_IBR"] / steps,
+            "Min rigid fraction": acc["sum_MBR"] / steps,
+            "Mean min eig": (acc["sum_min_eig"] / n_eig) if n_eig else None,
+        }
 
     # -----------------------------------
     # Keeps the highest-scoring graph seen this episode, so a policy can be judged
@@ -893,6 +981,9 @@ class Environment(gym.Env):
         reward -= self.time_penalty_value # time taken
         time_penalty_reward = reward
         n = len(self.network.agents)
+        # an action toggles at most one edge, so the edge count changing is exactly
+        # "this step modified the graph"
+        m_before = int(self.network.edges.sum())
 
         action_info = ""
 
@@ -982,7 +1073,8 @@ class Environment(gym.Env):
         terminated = False
         if self.termination_condition_type == "MaxSteps":
             if self.step_counter >= self.max_steps:
-                terminated = True
+                truncated = True # this is crucial since we do not want skrl to treat the final state having value=0
+                # "truncated" combined with "time_limit_bootstrap" makes it so that the final state's value is also estimated
         elif self.termination_condition_type == "MaxStepsRankBonus":
             if self.step_counter >= self.max_steps:
                 if np.sum(brm):
@@ -1015,7 +1107,8 @@ class Environment(gym.Env):
             if self.step_counter >= 1:
                 terminated = True
 
-        if self.truncate_enable:
+        # custom truncate logic we can use for certain situations. this should be off if using "MaxSteps"
+        if self.truncate_enable and self.termination_condition_type != "MaxSteps":
             if self.step_counter >= self.truncate_max_steps:
                 reward -= self.truncate_penalty_value
                 truncated = True
@@ -1025,11 +1118,30 @@ class Environment(gym.Env):
         if self.stop_action:
             terminated = True
 
-        # the metrics below rebuild the rigidity matrix, so only pay for them
-        # when we're actually logging (min_eig was already computed above)
+        # fold this step into the episode totals. Nothing is written yet -- the
+        # environment logs once, at the end of the episode
+        acc = self.episode_accum
+        m_now = int(self.network.edges.sum())
+        acc["steps"] += 1
+        acc["edits"] += int(m_now != m_before)
+        acc["skips"] += int("skip" in action_info)
+        acc["return"] += float(reward)
+        acc["return_action"] += float(action_reward)
+        acc["return_state"] += float(reward_from_state_score)
+        acc["return_termination"] += float(termination_reward)
+        acc["sum_score"] += float(state_score)
+        acc["sum_m"] += m_now
+        acc["sum_rank"] += int(rank_brm)
+        acc["sum_IBR"] += float(is_IBR)
+        acc["sum_MBR"] += float(is_MBR)
+        if min_eig is not None:
+            acc["sum_min_eig"] += float(min_eig)
+            acc["n_min_eig"] += 1
+
+        # per-step detail for whoever is watching a single rollout (inference.py
+        # renders this); it is not logged, so keep it free of extra computation
         info = {}
         if tracking:
-            eigs = self.network.eigenvalues()
             info = {
                 "step": f"{self.step_counter}",
                 "action (raw)": action,
@@ -1047,7 +1159,6 @@ class Environment(gym.Env):
                 "nr initial edges": int(self.initial_m),
                 "terminated": terminated,
                 "truncated": truncated,
-                "eigenvalues": eigs,
                 "min eigenvalue": min_eig,
                 "best state score": self.best_state_score,
                 "best nr edges": self.best_stats["m"],
@@ -1064,63 +1175,51 @@ class Environment(gym.Env):
             # print("=" * 60 + "\n")
             # # print #######################
             self.info = info
+
+        # the episode-level scalars are written against the global env step, so they
+        # line up with skrl's own curves; the counter therefore has to advance every
+        # step even though nothing is written on most of them
+        if tracking:
             self.writer_counter += 1
-            self.write()
+
+        if terminated or truncated:
+            self.last_episode_stats = self.episode_summary(
+                state_score, rank_brm, is_IBR, is_MBR, min_eig, terminated, truncated
+            )
+            if tracking:
+                self.write_episode()
+            self.episode_counter += 1
 
         self.was_IBR = is_IBR
         self.was_MBR = is_MBR
 
         return obs, reward, terminated, truncated, info
 
-    # TODO: this is expensive if logged every step, we should log mean values over episodes maybe or idk how to handle "is rigid"
+    # -----------------------------------
+    # One data point per tag per episode. Writing these every step produced tens of
+    # thousands of events that tensorboard has to downsample and average before it
+    # can draw them, so the resolution was paid for and never seen; the summary is
+    # both cheaper and closer to what the plots were showing anyway.
+    #
+    # Written against writer_counter (the global env step) rather than the episode
+    # index so the curves share an x-axis with skrl's loss/reward plots.
+    def write_episode(self):
+        stats = self.last_episode_stats
+        if self.writer is None or stats is None:
+            return
+        for key, value in stats.items():
+            if value is None:
+                continue
+            self.writer.add_scalar(
+                tag=f"Episode/ {key}", value=float(value), timestep=self.writer_counter
+            )
+
+    # Custom scalars from outside the environment; the environment's own metrics
+    # go through write_episode()
     def write(self, value=None, tag=None):
-        log_period = 1
-        if value is None:
-            if self.info is not None and (self.writer_counter % log_period == 0):
-                # # 1. Log current edges to the main writer
-                # self.writer.add_scalar(tag="Environment/Edges",
-                #                        value=self.info["nr edges"],
-                #                        timestep=self.writer_counter)
-                # # 2. Log initial edges to the secondary writer using the EXACT SAME TAG
-                # if hasattr(self, 'initial_edges_writer'):
-                #     self.initial_edges_writer.add_scalar(tag="Environment/Edges",
-                #                                          value=self.info["nr initial edges"],
-                #                                          timestep=self.writer_counter)
-
-                self.writer.add_scalar(tag="Environment/ Nr initial edges", value=self.info["nr initial edges"], timestep=self.writer_counter)
-                self.writer.add_scalar(tag="Environment/ Nr edges", value=self.info["nr edges"], timestep=self.writer_counter)
-                self.writer.add_scalar(tag="Environment/ Is rigid", value=self.info["is rigid"], timestep=self.writer_counter)
-                self.writer.add_scalar(tag="Environment/ Is min rigid", value=self.info["is min rigid"],timestep=self.writer_counter)
-                self.writer.add_scalar(tag="Environment/ Reward step", value=self.info["reward"], timestep=self.writer_counter)
-                self.writer.add_scalar(tag="Environment/ Reward action", value=self.info["reward (action)"], timestep=self.writer_counter)
-                self.writer.add_scalar(tag="Environment/ Reward state", value=self.info["reward (state)"], timestep=self.writer_counter)
-                self.writer.add_scalar(tag="Environment/ State score", value=self.info["state score"], timestep=self.writer_counter)
-                self.writer.add_scalar(tag="Environment/ Reward termination", value=self.info["reward (termination)"], timestep=self.writer_counter)
-                self.writer.add_scalar(tag="Environment/ Min eig", value=self.info["min eigenvalue"], timestep=self.writer_counter)
-
-                # best graph seen this episode (independent of where the policy stopped)
-                self.writer.add_scalar(tag="Environment/ Best state score", value=self.info["best state score"], timestep=self.writer_counter)
-                self.writer.add_scalar(tag="Environment/ Best nr edges", value=self.info["best nr edges"], timestep=self.writer_counter)
-                self.writer.add_scalar(tag="Environment/ Best is rigid", value=self.info["best is rigid"], timestep=self.writer_counter)
-                self.writer.add_scalar(tag="Environment/ Best is min rigid", value=self.info["best is min rigid"], timestep=self.writer_counter)
-                self.writer.add_scalar(tag="Environment/ Best min eig", value=self.info["best min eigenvalue"], timestep=self.writer_counter)
-                self.writer.add_scalar(tag="Environment/ Best step", value=self.info["best step"], timestep=self.writer_counter)
-
-                # Safely extract the action value, regardless of its data type
-                action_val = self.info["action (raw)"]
-                if isinstance(action_val, torch.Tensor):
-                    action_val = action_val.item() if action_val.numel() == 1 else action_val[0].item()
-                elif isinstance(action_val, np.ndarray):
-                    action_val = action_val.item() if action_val.size == 1 else action_val[0]
-                elif isinstance(action_val, list):
-                    action_val = action_val[0]
-
-                self.writer.add_scalar(tag="Environment/ Action", value=action_val, timestep=self.writer_counter)
-
-                # if type(self.info["action (raw)"]) not in [list, np.ndarray, torch.Tensor]:
-                #     self.writer.add_scalar(tag="Environment/ Action", value=self.info["action (raw)"], timestep=self.writer_counter)
-        else:
-            self.writer.add_scalar(tag=tag, value=value, timestep=self.writer_counter)
+        if self.writer is None or value is None or tag is None:
+            return
+        self.writer.add_scalar(tag=tag, value=value, timestep=self.writer_counter)
 
     # -----------------------------------
     def reset(self, seed=None, options=None):
@@ -1199,6 +1298,9 @@ class Environment(gym.Env):
 
         self.stop_action = False
 
+        # running totals for this episode; written out once, when it ends
+        self.episode_accum = self.new_episode_accum()
+
         self.info = None
 
         self.was_IBR = None
@@ -1269,7 +1371,7 @@ if __name__ == "__main__":
     # TERMINATION_CONDITION_TYPE = "RigidMinEigAndEdgesBonus"
     # TERMINATION_CONDITION_TYPE = "Bandit"
 
-    MAX_STEPS = 100
+    MAX_STEPS = 200
 
     TRUNCATE_ENABLE = False
     TRUNCATE_MAX_STEPS = 100
@@ -1355,8 +1457,10 @@ if __name__ == "__main__":
     }
     env_filename = f"env_{model_name}.json"
     env_path = os.path.join("./environments/", env_filename)
+    # before the open(), not inside it -- environments/ is gitignored, so on a fresh
+    # clone the directory does not exist yet and open("w") is what fails
+    os.makedirs("./environments/", exist_ok=True)
     with open(env_path, "w") as f:
-        os.makedirs("./environments/", exist_ok=True)
         json.dump(env_config, f, indent=2)
         print(f"SAVED: {env_path}")
         print(f"env: env_{model_name}")

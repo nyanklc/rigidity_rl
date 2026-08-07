@@ -13,7 +13,8 @@ import os
 def random_scenario(
     n,
     domains: str | list[str] = "SE(3)",
-    pos_limits=([-100, -100, -100], [100, 100, 100]),
+    pos_limits=([-1, -1, -1], [1, 1, 1]),
+    # pos_limits=([-100, -100, -100], [100, 100, 100]),
     edge_count=None,
 ):
     low, high = np.array(pos_limits[0]), np.array(pos_limits[1])
@@ -96,8 +97,10 @@ def save_scenario(filename, network, goal_network):
         "goal_edges": goal_network.edges.tolist(),
     }
 
+    # before the open(), not inside it: scenarios/ is gitignored, so on a fresh clone
+    # the directory does not exist and open("w") is what fails
+    os.makedirs(os.path.dirname(filename) or ".", exist_ok=True)
     with open(filename, "w") as f:
-        os.makedirs("./scenarios/", exist_ok=True)
         json.dump(data, f, indent=2)
 
 
@@ -154,6 +157,8 @@ if __name__ == "__main__":
                 [1, 1, 0],
                 [0, 1, 0],
                 [0.5, 0.5, 1],
+                [0.65, 0.123, 0.5],
+                [0.1, 0.5, 0.8],
                 # [1, 0, 1],
                 # [1, 1, 1],
                 # [0, 1, 1],
@@ -188,6 +193,8 @@ if __name__ == "__main__":
     network = Network(positions, orientations_euler, edges)
     network.set_agents_domain_homogeneous("R^2")
     network.agents[4].set_domain("SE(3)")
+    network.agents[5].set_domain("SE(3)")
+    network.agents[6].set_domain("SE(3)")
     bearings = network.get_bearings()
 
     # goal

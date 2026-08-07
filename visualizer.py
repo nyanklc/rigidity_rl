@@ -36,7 +36,7 @@ class Visualizer:
         network: Network,
         node_color=(0, 255, 0),
         edge_color=(0, 128, 128),
-        node_size=1,
+        node_size=1/100,
         label_prefix="",
     ):
         positions = np.array([agent.pose.position for agent in network.agents])
@@ -65,9 +65,9 @@ class Visualizer:
                 name=f"/edge_{label_prefix}{k}:({i}, {j})",
                 points=edge_line_segment,
                 colors=np.array(edge_color),
-                shaft_radius=0.1,
-                head_radius=1.5,
-                head_length=3,
+                shaft_radius=0.1/100,
+                head_radius=1.5/100,
+                head_length=3/100,
             )
 
         # orientations
@@ -76,8 +76,8 @@ class Visualizer:
                 wxyz = np.asarray(quaternion.as_float_array(agent.pose.orientation))
                 self.server.scene.add_frame(
                     name=f"/frame_{label_prefix}{i}",
-                    axes_length=4,
-                    axes_radius=0.6,
+                    axes_length=4/100,
+                    axes_radius=0.6/100,
                     position=agent.pose.position,
                     # w is stored on the last index in our case
                     wxyz=wxyz

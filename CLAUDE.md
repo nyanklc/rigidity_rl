@@ -95,9 +95,9 @@ To add a variant, add an `elif` branch in the relevant dispatcher (and a matchin
 
 **`skip_enabled`** (env config, default `True`). When `False`, `train_ppo.py` / `train_dqn.py` pass `allow_skip=False` to the `SelectNodesSequentially` models, which mask the skip logit to `-1e9` in `compute()` *and* in the DQN `random_act()`. The action space stays `Discrete(n+1)`, so checkpoints and `agent_loader` stay compatible. Turn skip off with `MaxSteps`: `select -> skip` is a zero-reward 2-cycle that never touches the graph, and on-policy methods collapse onto it (observed: entropy → 0, all rewards exactly 0, graph unmodified for two thirds of training). Score skip-less runs with the best-state-visited metric below.
 
-**Best-state-visited metric.** `Environment` tracks the highest-scoring graph seen during an episode (`best_state_score` / `best_edges` / `best_step` / `best_stats` with `m`/`is_IBR`/`is_MBR`/`rank`/`min_eig`, updated in `update_best_state()`), exposed in `info` and logged as `Environment/ Best *`. This is observational — the reward does not use it. It exists because scoring an episode on its *final* state conflates "found a good topology" with "learned to stop on it", which matters under `MaxSteps` where the agent is expected to converge and then hold with `skip`. `best_step` records how many steps it took to get there, which is the only way to tell a policy that converges fast from one that stumbles onto the same graph late.
+**Best-state-visited metric.** `Environment` tracks the highest-scoring graph seen during an episode (`best_state_score` / `best_edges` / `best_step` / `best_stats` with `m`/`is_IBR`/`is_MBR`/`rank`/`min_eig`, updated in `update_best_state()`), exposed in `info` and logged as `Episode/ Best *`. This is observational — the reward does not use it. It exists because scoring an episode on its *final* state conflates "found a good topology" with "learned to stop on it", which matters under `MaxSteps` where the agent is expected to converge and then hold with `skip`. `best_step` records how many steps it took to get there, which is the only way to tell a policy that converges fast from one that stumbles onto the same graph late.
 
-`Best min eig` values are ~1e-5 (rigidity-matrix entries scale as `1/‖p_ij‖` and poses are drawn in `[-100, 100]`) — plot it on a log axis. It frequently sits *below* `Min eig`, which is correct: `Weighted` has `w_eig = 0`, so φ trades rigidity margin away for fewer edges.
+`Best min eig` has no meaningful absolute scale: rigidity-matrix entries scale as `1/‖p_ij‖`, so it tracks `random_scenario`'s `pos_limits` (`scenario.py`, currently `[-1, 1]`; it was `[-100, 100]`, which put the eigenvalue at ~1e-5). Plot it on a log axis and don't compare across pose ranges. It frequently sits *below* `Min eig`, which is correct: `Weighted` has `w_eig = 0`, so φ trades rigidity margin away for fewer edges.
 
 **Scenarios.** With `"scenario": "<name>"`, `initialize()` loads `scenarios/<name>.json` and caches it. What a scenario contributes on reset depends on `only_randomize_edges`: `false` carries over only the **domain mix** (poses and edges are redrawn each episode — use this for heterogeneous generalization experiments), `true` keeps the scenario's **actual geometry** and resamples only the edges (use this for a fixed case-study figure). Both paths honour `random_graph_with_mean_min_edges`.
 
@@ -147,13 +147,46 @@ summary.txt        the printed table and its legend
 results.csv        one row per (episode, method) -- the final outcome
 trajectories.csv   one row per (episode, method, step) -- the time series
 meta.json          args, env config, and manifest.collect_provenance()
-plots/             trajectories + summary + episode_NNN, each as pdf and png
+plots/pdf/         table + trajectories + outcomes + summary + episode_NNN
+plots/png/         the same figures again -- every figure is written in both formats,
+                   filed by format (`PLOT_FORMATS` / `_save()`) rather than interleaved
 ```
 
 The table is written to be read without the source: `work` counts graph modifications actually
 applied and `best_at` is the step the best graph was reached at (the old single `steps` column
 meant different things per method), episode count moved into the header, every column states its
 direction, and a legend explains each method and column in plain language (`--brief` drops it).
+Every column is a mean over the episodes carrying its own `+-` spread; the percentage columns
+(`rigid`/`minimal`/`=best`) deliberately have none, because they are means of a 0/1 indicator
+whose sd is `sqrt(p(1-p))` — fully determined by the value already shown. The margin appears
+twice, arithmetic (`mean+-sd`) and geometric (`gmean x/gsd`, via `_gmean`/`_gsd`), because it
+spans decades and an arithmetic `+-` implies a range crossing zero. `_fmt_geo` marks a row `*`
+when zero-margin (non-rigid) networks had to be dropped, since a geometric mean cannot take them.
+
+**The figures are built to survive being pasted into a slide with no caption.** Every one carries
+a title block (what the figure is, then the *full* environment and model names, wrapped rather
+than truncated) and a notes card along the bottom: method key on the left, how the figure is
+computed on the right. Panel titles name the quantity and put the reading direction on a second,
+muted line — `_panel_title()`. Layout mechanics that matter: the card is drawn straight onto the
+figure in a reserved band (`_draw_card`), *not* as a gridspec row, because a row's height is
+scaled down by whatever the panels spend on decorations and the card came out too short for its
+own text; `_figure()`/`_finish()` size the figure as `2*panel_h + header + card` and hand
+`tight_layout` the matching `rect`.
+
+`plot_table()` (`plots/*/table.*`) renders the same table as `summary.txt` as a figure — driven by
+the same `aggregate()`, so the two can't drift. Column direction moves into a subtitle under each
+column name, `initial`/`optimal` are drawn in muted ink with their reference strokes, and the
+column legend becomes the card. The card flows newspaper-style when the notes outrun the method
+list (`_card_rows`): the left column continues under the method key, the right column picks up
+from there, and splits only happen between notes.
+
+`plot_outcomes()` (`plots/*/outcomes.*`) is the **final / best / mean** figure — the same three
+views `Environment.write_episode()` logs per episode, so a baselines bar and a tensorboard curve
+mean the same thing. `outcome_stats()` derives all three from `traces` (final = last step, best =
+highest-scoring step, mean = over recorded steps), so nothing extra is computed. The gap between
+a method's `final` and `best` bar is the "found it but did not stop on it" failure, visible per
+method. Caveat stated on the card: greedy records one point per applied edit, so its `mean` is
+over edits, not over a step budget.
 
 Per-step tracing rides with the plots — `--no-plots` skips both. It costs one extra
 eigendecomposition per step (+31% at `n=4`, +21% at `n=8`) and is served by
@@ -234,10 +267,16 @@ reports that explicitly rather than failing on a shape error. Of the 26 manifest
 
 ### Training (`train_ppo.py`, `train_dqn.py`)
 
-Both: load env config → build `SyncVectorEnv` → select actor/critic (or Q-net) by `(action_type, obs_type)` → `skrl` agent + `SequentialTrainer`. They write `train/<model_name>.json` containing hyperparameters, the env config, and **the actual source of the model classes** (`inspect.getsource`) — these manifests are tracked in git and are the record of what was run. Env-side metrics (edge count, is-rigid, is-min-rigid, reward decomposition, min eigenvalue) are logged by `Environment.write()` to `runs/<experiment_name>`.
+Both: load env config → build `SyncVectorEnv` → select actor/critic (or Q-net) by `(action_type, obs_type)` → `skrl` agent + `SequentialTrainer`. They write `train/<model_name>.json` containing hyperparameters, the env config, and **the actual source of the model classes** (`inspect.getsource`) — these manifests are the record of what was run, but `train/` is gitignored, so they live only on the machine that produced them. Env-side metrics go to `runs/<experiment_name>` via `Environment.write_episode()`, **once per episode** (see below).
+
+**Episode-level logging.** All environment metrics are written at episode end, not per step — a step-resolution scalar costs one tensorboard event per step and is then downsampled and averaged for display, so the detail was paid for and never seen. `step()` folds each step into `episode_accum` (`new_episode_accum()`: sums and counts only, so episode length is free), and on `terminated or truncated` builds `episode_summary()` → `last_episode_stats` → `write_episode()`, which dumps every entry under `Episode/ <key>`. Three views per episode: `Final *` (where it ended), `Best *` (best graph visited, plus `Best-final score gap` — 0 iff the episode ended on its own best graph), and `Mean *` / `* fraction` (the episode average). Scalars are written against `writer_counter` (global env step), *not* the episode index, so they share an x-axis with skrl's loss/reward curves; `writer_counter` therefore still advances every step. `last_episode_stats` is a plain attribute rather than an `info` key because `SyncVectorEnv` aggregates sub-env `info` dicts into arrays. `Environment.write(value, tag)` remains for custom scalars.
 
 ### Gitignored (don't assume present)
-`environments/`, `scenarios/`, `models/`, `runs/`, `runs_old*/`, `tboard_logs/`, `junk/`. `train/*.json` **is** tracked.
+`environments/`, `scenarios/`, `models/`, `runs/`, `runs_old*/`, `runs_baselines/`, `train/`, `tboard_logs/`, `junk/`.
+
+**Nothing a run produces is tracked any more.** `runs_baselines/` and `train/` were both tracked until they were untracked wholesale — the first churned hundreds of binary files per run, the second is paired with `models/` which was already ignored. Consequence: a manifest now only exists on the machine that trained it, so `train/<name>.json` is no longer a shared record — back it up alongside the checkpoint it describes. Anything that has to survive (the README's figures) is copied into `resources/`.
+
+Because every output directory is ignored, **a fresh clone has none of them**, and any code that writes output has to `os.makedirs(..., exist_ok=True)` *before* opening the file. Two places had the call inside the `with open(...)` block, which fails on exactly that fresh clone (`environment.py` writing `environments/`, `scenario.py` writing `scenarios/`); both are fixed. The library-managed paths take care of themselves: `SummaryWriter` creates its `log_dir`, and skrl creates its checkpoint directory (`skrl/agents/torch/base.py`).
 
 ## Known issues / open questions
 

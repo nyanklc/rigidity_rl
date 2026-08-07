@@ -9,6 +9,7 @@ import csv
 import json
 import os
 import re
+import textwrap
 from datetime import datetime
 
 import numpy as np
@@ -25,6 +26,7 @@ INK_2 = "#52514e"
 MUTED = "#898781"
 GRID = "#e1e0d9"
 AXIS = "#c3c2b7"
+CARD = "#f4f3ee"   # one step off the surface, so the notes card reads as a panel
 
 METHOD_STYLE = {
     "greedy":  {"color": "#2a78d6", "ls": "-",  "z": 3},   # categorical slot 1
@@ -45,6 +47,9 @@ METHOD_BLURB = {
     "learned": "the trained policy",
     "optimal": "exhaustive search over every graph (small networks only)",
 }
+
+# both formats, one directory each under plots/
+PLOT_FORMATS = ("pdf", "png")
 
 ACTION_SHORT = {
     "SelectNodesSequentially": "selectseq",
@@ -77,15 +82,46 @@ def make_run_dir(root, env_name, model_name=None, tag=None, out_dir=None, with_p
         if tag:
             parts.append(tag)
         path = os.path.join(root, "__".join(parts))
-    os.makedirs(os.path.join(path, "plots") if with_plots else path, exist_ok=True)
+    if with_plots:
+        for ext in PLOT_FORMATS:
+            os.makedirs(os.path.join(path, "plots", ext), exist_ok=True)
+    else:
+        os.makedirs(path, exist_ok=True)
     return path
 
 
 # ── aggregation ───────────────────────────────────────────────────────────────────────
-def _fmt(mean, sd=None, width=None):
+def _gmean(values):
+    """exp(mean(log x)). Positive values only -- the caller filters."""
+    return float(np.exp(np.mean(np.log(values)))) if values else None
+
+
+def _gsd(values):
+    """Multiplicative standard deviation: a dimensionless factor >= 1, used as
+    `gmean x/ gsd` rather than `mean +- sd`."""
+    return float(np.exp(np.std(np.log(values)))) if values else None
+
+
+def _fmt_geo(v, times=" x/", mark="*"):
+    """`gmean x/ gsd`, flagged when zero-margin networks had to be left out."""
+    if v["min_eig_gmean"] is None:
+        return "-"
+    partial = mark if v["min_eig_n_pos"] < v["min_eig_n"] else ""
+    # one surviving network has no spread; printing "x/1.0" would read as "no spread"
+    # rather than "nothing to spread over"
+    if v["min_eig_n_pos"] < 2:
+        return f"{v['min_eig_gmean']:.1e}{partial}"
+    return f"{v['min_eig_gmean']:.1e}{times}{v['min_eig_gsd']:.1f}{partial}"
+
+
+def _fmt(mean, sd=None, spec=".2f", pm="+-"):
+    """mean +- sd in a given number format. Every value in the table is a mean over the
+    networks, so every one of them carries its spread."""
+    if mean is None:
+        return "-"
     if sd is None:
-        return f"{mean:.2f}"
-    return f"{mean:.2f}+-{sd:.2f}"
+        return f"{mean:{spec}}"
+    return f"{mean:{spec}}{pm}{sd:{spec}}"
 
 
 def aggregate(rows):
@@ -98,6 +134,7 @@ def aggregate(rows):
     for m in methods:
         sel = [r for r in rows if r["method"] == m]
         eig = [r["min_eig"] for r in sel if r.get("min_eig") is not None]
+        pos = [e for e in eig if e > 0]
         matched = [r for r in sel if r["episode"] in opt]
         out[m] = {
             "episodes": len(sel),
@@ -108,8 +145,20 @@ def aggregate(rows):
             "rigid_pct": 100.0 * float(np.mean([r["is_IBR"] for r in sel])),
             "minimal_pct": 100.0 * float(np.mean([r["is_MBR"] for r in sel])),
             "min_eig_mean": float(np.mean(eig)) if eig else None,
+            "min_eig_sd": float(np.std(eig)) if eig else None,
+            # the margin spans decades, so an arithmetic sd implies a range crossing
+            # zero. The geometric pair is the honest spread for it: a multiplicative
+            # factor you divide and multiply the geometric mean by.
+            "min_eig_gmean": _gmean(pos),
+            "min_eig_gsd": _gsd(pos),
+            # a non-rigid network has margin exactly 0, which no geometric mean can
+            # take -- record how many networks the geometric pair actually saw
+            "min_eig_n": len(eig),
+            "min_eig_n_pos": len(pos),
             "work_mean": float(np.mean([r.get("work", 0) for r in sel])),
+            "work_sd": float(np.std([r.get("work", 0) for r in sel])),
             "best_at_mean": float(np.mean([r.get("best_at", 0) for r in sel])),
+            "best_at_sd": float(np.std([r.get("best_at", 0) for r in sel])),
             "matches_opt_pct": (100.0 * sum(1 for r in matched
                                             if r["score"] >= opt[r["episode"]] - 1e-9)
                                 / len(matched)) if matched else None,
@@ -122,7 +171,16 @@ def format_table(rows, context, brief=False):
     agg = aggregate(rows)
     has_opt = any(v["matches_opt_pct"] is not None for v in agg.values())
     lines = []
-    w = 78
+
+    head1 = (f"  {'method':<9}{'edges':>12}{'score':>14}{'rigid':>8}{'minimal':>9}"
+             f"{'rigidity':>19}{'rigidity(geo)':>17}{'work':>11}{'best@':>12}")
+    head2 = (f"  {'':<9}{'(fewer)':>12}{'(higher)':>14}{'%':>8}{'%':>9}"
+             f"{'mean+-sd':>19}{'gmean x/gsd':>17}{'edits':>11}{'step':>12}")
+    if has_opt:
+        head1 += f"{'=best':>7}"
+        head2 += f"{'%':>7}"
+    # the rules follow the table, not the other way round
+    w = max(len(head1), 100)
 
     lines.append("=" * w)
     lines.append("BASELINE COMPARISON")
@@ -131,23 +189,20 @@ def format_table(rows, context, brief=False):
         lines.append(f"  {k:<12}: {v}")
     lines.append("")
 
-    head1 = f"  {'method':<9}{'edges':>12}{'score':>14}{'rigid':>8}{'minimal':>9}{'rigidity':>11}{'work':>7}{'best@':>7}"
-    head2 = f"  {'':<9}{'(fewer)':>12}{'(higher)':>14}{'%':>8}{'%':>9}{'(higher)':>11}{'edits':>7}{'step':>7}"
-    if has_opt:
-        head1 += f"{'=best':>7}"
-        head2 += f"{'%':>7}"
     lines.append(head1)
     lines.append(head2)
     lines.append("  " + "-" * (len(head1) - 2))
 
     for m, v in agg.items():
-        eig = f"{v['min_eig_mean']:.1e}" if v["min_eig_mean"] is not None else "-"
-        work = "-" if m in ("initial", "optimal") else f"{v['work_mean']:.0f}"
-        best = "-" if m in ("initial", "optimal") else f"{v['best_at_mean']:.0f}"
+        ref = m in ("initial", "optimal")
+        eig = _fmt(v["min_eig_mean"], v["min_eig_sd"], ".1e")
+        work = "-" if ref else _fmt(v["work_mean"], v["work_sd"], ".1f")
+        best = "-" if ref else _fmt(v["best_at_mean"], v["best_at_sd"], ".1f")
         row = (f"  {m:<9}"
                f"{_fmt(v['edges_mean'], v['edges_sd']):>12}"
                f"{_fmt(v['score_mean'], v['score_sd']):>14}"
-               f"{v['rigid_pct']:>8.0f}{v['minimal_pct']:>9.0f}{eig:>11}{work:>7}{best:>7}")
+               f"{v['rigid_pct']:>8.0f}{v['minimal_pct']:>9.0f}"
+               f"{eig:>19}{_fmt_geo(v):>17}{work:>11}{best:>12}")
         if has_opt:
             row += ("-" if v["matches_opt_pct"] is None
                     else f"{v['matches_opt_pct']:.0f}").rjust(7)
@@ -172,7 +227,15 @@ def format_table(rows, context, brief=False):
     lines.append("  minimal   % that are rigid AND use the fewest possible edges.")
     lines.append("            (heuristic on mixed-domain networks - may under-report)")
     lines.append("  rigidity  how much margin the network has before it stops being rigid.")
-    lines.append("            Larger is more robust; ~1e-5 is normal at this scale.")
+    lines.append("            Larger is more robust. Its absolute size depends on how far")
+    lines.append("            apart the agents are, so compare rows rather than the number.")
+    lines.append("  rigidity(geo)")
+    lines.append("            the same margin as a geometric mean and spread, because it")
+    lines.append("            ranges over orders of magnitude: 'a x/b' means the typical")
+    lines.append("            network sits between a/b and a*b. A '*' marks rows where")
+    lines.append("            non-rigid networks (margin exactly 0) had to be left out --")
+    lines.append("            a zero cannot enter a geometric mean, so those rows describe")
+    lines.append("            only the networks that came out rigid.")
     lines.append("  work      how many changes to the network the method actually made.")
     lines.append("  best@     the step at which its best network was found. Lower means it")
     lines.append("            converged faster; the rest of the budget added nothing.")
@@ -180,6 +243,10 @@ def format_table(rows, context, brief=False):
         lines.append("  =best     % of networks where the method tied the exhaustive optimum.")
     lines.append("")
     lines.append("HOW TO READ IT")
+    lines.append("  Every value is a mean over the networks; '+-' is the standard deviation")
+    lines.append("  across them, i.e. how much the method varies from one network to the next.")
+    lines.append("  The percentage columns carry no '+-': they already are means of a yes/no")
+    lines.append("  outcome, whose spread is fixed by the percentage itself.")
     lines.append("  'initial' and 'optimal' are reference points, not competing methods:")
     lines.append("  every method starts from 'initial', and 'optimal' is the best achievable.")
     lines.append("  A method is doing well when it approaches 'optimal' with low 'work'.")
@@ -221,13 +288,177 @@ def write_summary(run_dir, text):
 
 # ── plots ─────────────────────────────────────────────────────────────────────────────
 # Static output for a thesis, so light mode only and no hover layer. Identity is never
-# colour alone: every series carries a legend entry and a direct label at its line end.
+# colour alone: every series carries a direct label at its line end (or a value label on
+# its bar), and every figure ships the notes card that says what it is showing.
+#
+# Each panel is titled with *what the quantity is*, with the reading direction on a second
+# line -- "edges used" told a reader nothing about why they should care.
 PANELS = [
-    ("score", "objective score\n(higher is better)", False),
-    ("edges", "edges used\n(fewer is better)", False),
-    ("rank", "rigidity matrix rank\n(dashed = fully rigid)", False),
-    ("min_eig", "rigidity margin\n(higher is more robust)", True),
+    dict(field="score", title="Objective score  φ",
+         note="rewards rigidity, charges for every edge — higher is better", log=False),
+    dict(field="edges", title="Network size",
+         note="directed bearing measurements in use — fewer is better", log=False),
+    dict(field="rank", title="Rigidity matrix rank",
+         note="the shape is fully determined once it reaches the dashed line", log=False),
+    dict(field="min_eig", title="Rigidity margin",
+         note="smallest nonzero eigenvalue of BᵀB — higher survives more noise", log=True),
 ]
+
+# final / best / mean, the same three views the environment logs per episode
+STAT_ORDER = ["final", "best", "mean"]
+STAT_ALPHA = {"final": 0.95, "best": 0.55, "mean": 0.22}
+STAT_BLURB = {
+    "final": "the network the run ended on",
+    "best":  "the best-scoring network the run passed through",
+    "mean":  "averaged over every step of the run",
+}
+
+
+# ── headers and cards ─────────────────────────────────────────────────────────────────
+def _wrap(text, width_in, fontsize):
+    """Wrap to a physical width, since the strings here are long generated identifiers.
+
+    0.60 em per character is measured, not nominal: it has to over-estimate slightly or
+    the card is sized for fewer lines than it ends up drawing and the text runs out of it.
+    """
+    chars = max(24, int(width_in * 72.0 / (fontsize * 0.60)))
+    return textwrap.wrap(text, chars) or [""]
+
+
+def _header_height(header, width_in):
+    """Inches the title block needs -- the caller sizes the figure around it."""
+    return 0.30 + 0.16 * len(_header_detail_lines(header, width_in))
+
+
+HEADER_FIELDS = [("model", "model"), ("env", "environment"), ("network", "network"),
+                 ("objective", "objective"), ("policy", "policy")]
+
+
+def _header_detail_lines(header, width_in):
+    lines = []
+    for key, label in HEADER_FIELDS:
+        if header.get(key):
+            lines += _wrap(f"{label:<11} : {header[key]}", width_in - 0.2, 8.0)
+    bits = []
+    if header.get("episodes"):
+        bits.append(f"{header['episodes']} random networks")
+    if header.get("seed") is not None:
+        bits.append(f"seed {header['seed']}")
+    if header.get("subtitle"):
+        bits.append(header["subtitle"])
+    if bits:
+        lines.append(f"{'measured on':<11} : " + "  ·  ".join(bits))
+    return lines
+
+
+def _draw_header(fig, header, kind):
+    """Title block: what the figure is, then the full env/model names, wrapped."""
+    width_in, height_in = fig.get_size_inches()
+    title = kind + (f"  —  {header['short']}" if header.get("short") else "")
+    y = 1.0 - 0.26 / height_in
+    fig.text(0.008, y, title, color=INK, fontsize=12.5, ha="left", va="top")
+    y -= 0.30 / height_in
+    for line in _header_detail_lines(header, width_in):
+        fig.text(0.008, y, line, color=MUTED, fontsize=8.0, ha="left", va="top",
+                 family="monospace")
+        y -= 0.16 / height_in
+    return y - 0.10 / height_in   # top of the plotting area, as a figure fraction
+
+
+def _card_rows(methods, notes, width_in):
+    """Wrapped card content plus the row count, so the figure can be sized for it.
+
+    Two columns: the method key, then how the figure is built. When the notes are much
+    longer than the method list they flow newspaper-style -- the rest of the left column
+    first, continuing at the top of the right -- rather than leaving half the card empty.
+    Splits happen between notes, never mid-sentence.
+    """
+    left = [("METHODS", None, None)]
+    for m in methods:
+        style = METHOD_STYLE.get(m, {"color": INK_2, "ls": "-"})
+        left.append((m, METHOD_BLURB.get(m, ""), style))
+
+    blocks = [_wrap(note, width_in * 0.42, 7.5) for note in notes]
+    n_notes = sum(len(b) for b in blocks)
+    heading = ("HOW IS THIS FIGURE BUILT?", True)
+
+    if 1 + n_notes <= len(left) + 2:
+        right = [heading] + [(line, False) for b in blocks for line in b]
+        return left, right, max(len(left), len(right))
+
+    # room to fill under the method key before the right column has to start
+    target = (len(left) + 2 + 1 + n_notes) // 2
+    used, first, second = len(left) + 2, [], []
+    for block in blocks:
+        # once the right column has started, everything follows it -- letting a later
+        # short note slip back into the left column would break the reading order
+        if not second and (not first or used + len(block) <= target):
+            first += block
+            used += len(block)
+        else:
+            second += block
+    left = left + [("", None, None), ("HOW IS THIS FIGURE BUILT?", None, None)]
+    left += [(line, None, "note") for line in first]
+    return left, [(line, False) for line in second], max(len(left), len(second))
+
+
+def _card_height(methods, notes, width_in):
+    return 0.16 * _card_rows(methods, notes, width_in)[2] + 0.24
+
+
+def _draw_card(fig, methods, notes, width_in, card_h):
+    """The 'what am I looking at' card: method key on the left, how-it-works on the right.
+
+    Drawn straight onto the figure in a reserved band rather than as a gridspec row --
+    a row's height is scaled down by whatever the panels spend on their decorations, so
+    the card came out shorter than the text it had to hold.
+    """
+    from matplotlib.patches import Rectangle
+
+    left, right, rows = _card_rows(methods, notes, width_in)
+    fig_h = fig.get_size_inches()[1]
+    y0, y1 = 0.09 / fig_h, (card_h - 0.14) / fig_h
+    x0, x1 = 0.035, 0.965
+
+    fig.patches.append(Rectangle((x0, y0), x1 - x0, y1 - y0, transform=fig.transFigure,
+                                 facecolor=CARD, edgecolor=GRID, linewidth=1.0, zorder=0))
+
+    step = (y1 - y0) / (rows + 0.8)
+    top = y1 - step * 0.9
+    col_l, col_r = x0 + 0.012, x0 + 0.47
+
+    for i, (name, blurb, style) in enumerate(left):
+        y = top - i * step
+        if style == "note":                     # notes that spilled over from the right
+            fig.text(col_l, y, name, color=INK_2, fontsize=7.5, va="center")
+            continue
+        if style is None:                       # column heading (or a blank spacer)
+            fig.text(col_l, y, name, color=INK_2, fontsize=7.0, va="center",
+                     family="monospace")
+            continue
+        fig.add_artist(_fig_line(fig, [col_l + 0.002, col_l + 0.030], [y, y],
+                                 style["color"], style["ls"]))
+        fig.text(col_l + 0.040, y, name, color=INK, fontsize=7.8, va="center")
+        if blurb:
+            fig.text(col_l + 0.108, y, blurb, color=INK_2, fontsize=7.5, va="center")
+
+    for i, (line, heading) in enumerate(right):
+        y = top - i * step
+        fig.text(col_r, y, line, color=INK_2, fontsize=7.0 if heading else 7.5,
+                 va="center", family="monospace" if heading else None)
+
+
+def _fig_line(fig, xs, ys, color, ls):
+    from matplotlib.lines import Line2D
+    return Line2D(xs, ys, transform=fig.transFigure, color=color, linestyle=ls,
+                  linewidth=2.4, solid_capstyle="round", zorder=3)
+
+
+def _panel_title(ax, title, note):
+    ax.set_title(title, color=INK, fontsize=10, loc="left", pad=16)
+    ax.annotate(note, xy=(0, 1.0), xycoords="axes fraction", xytext=(0, 5),
+                textcoords="offset points", color=MUTED, fontsize=7.8, ha="left",
+                va="bottom", annotation_clip=False)
 
 
 def _style_axes(ax, log=False):
@@ -243,7 +474,10 @@ def _style_axes(ax, log=False):
     for lbl in ax.get_xticklabels() + ax.get_yticklabels():
         lbl.set_color(INK_2)
     if log:
+        from matplotlib.ticker import NullFormatter
         ax.set_yscale("log")
+        # decade labels only; the default adds 2x/3x/4x minor labels on a short range
+        ax.yaxis.set_minor_formatter(NullFormatter())
 
 
 def _series(traces, method, field):
@@ -289,6 +523,11 @@ def _place_end_labels(ax, entries, x_at, min_gap=0.06):
         if placed and f - placed[-1][0] < min_gap:
             f = placed[-1][0] + min_gap
         placed.append((f, text))
+    # methods that end on the same value all get pushed up; without this they would then
+    # be clipped back onto each other at the top of the axis
+    overflow = placed[-1][0] - 0.98
+    if overflow > 0:
+        placed = [(f - overflow, t) for f, t in placed]
     for f, text in placed:
         ax.annotate(text, xy=(x_at, float(np.clip(f, 0.02, 0.98))),
                     xycoords=("data", "axes fraction"), xytext=(6, 0),
@@ -338,12 +577,31 @@ def _draw_panel(ax, traces, field, log, methods, ref_lines, aggregate_over_episo
     _place_end_labels(ax, end_labels, x_at=max_len - 1)
 
 
-def plot_trajectories(run_dir, traces, rows, title, filename="trajectories",
-                      aggregate_over_episodes=True):
+def _figure(header, kind, methods, notes, panel_h=3.6, width=11.0):
+    """A figure laid out as: title block, 2x2 panels, notes card. Sized to fit all three."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    head_h = _header_height(header, width)
+    card_h = _card_height(methods, notes, width)
+    fig_h = 2 * panel_h + head_h + card_h
+    fig = plt.figure(figsize=(width, fig_h), facecolor=SURFACE)
+    axes = [fig.add_subplot(2, 2, i + 1) for i in range(4)]
+    top = _draw_header(fig, header, kind)
+    return fig, axes, (card_h, card_h / fig_h), top, width
+
+
+def _finish(fig, card, methods, notes, width, top, run_dir, name):
+    card_h, bottom = card
+    fig.tight_layout(rect=(0, bottom, 1, top), h_pad=1.6, w_pad=2.0)
+    _draw_card(fig, methods, notes, width, card_h)
+    return _save(fig, run_dir, name)
+
+
+def plot_trajectories(run_dir, traces, rows, header, filename="trajectories",
+                      aggregate_over_episodes=True):
+    """How each method's network evolves over the run."""
     methods = [m for m in METHOD_ORDER
                if m not in ("initial", "optimal") and any(t["method"] == m for t in traces)]
     if not methods:
@@ -359,96 +617,380 @@ def plot_trajectories(run_dir, traces, rows, title, filename="trajectories",
         ref["score"] = [("optimal", float(np.mean([r["score"] for r in opt])))]
         ref["edges"] = [("optimal", float(np.mean([r["m"] for r in opt])))]
 
-    fig, axes = plt.subplots(2, 2, figsize=(11, 7.2), facecolor=SURFACE)
-    for ax, (field, label, log) in zip(axes.ravel(), PANELS):
-        _draw_panel(ax, traces, field, log, methods, ref, aggregate_over_episodes)
-        ax.set_title(label, color=INK, fontsize=9.5, loc="left", pad=8)
+    notes = [
+        "x axis: one step of the run. greedy has no step budget — it contributes one "
+        "point per edge change it applies, and stops when no single change helps.",
+        ("Each line is the mean over the networks; the shaded band is the middle 50% of them "
+         "(25th–75th percentile)." if aggregate_over_episodes else
+         "Each line is a single network — this is one episode, not an average."),
+        "A method that finishes early is held at its last network for the rest of the axis, "
+        "so the curves stay comparable.",
+        "Every method is run on the same networks from the same starting graph, so the "
+        "curves can be read against each other directly.",
+    ]
+    if ref:
+        notes.append("Dashed reference lines mark full rigidity and, where exhaustive "
+                     "search ran, the optimum it found.")
 
-    handles, labels = axes[0][0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="lower center", ncol=len(labels), frameon=False,
-               fontsize=9, labelcolor=INK_2, bbox_to_anchor=(0.5, -0.005))
-    fig.suptitle(title, color=INK, fontsize=11.5, x=0.012, ha="left", y=0.995)
-    sub = ("mean across episodes, shaded band = middle 50%"
-           if aggregate_over_episodes else "single episode")
-    fig.text(0.012, 0.955, sub, color=MUTED, fontsize=8.5, ha="left")
-    fig.tight_layout(rect=(0, 0.045, 1, 0.94))
-    return _save(fig, run_dir, filename)
+    fig, axes, card, top, width = _figure(header, "Run trajectories", methods, notes)
+    for ax, panel in zip(axes, PANELS):
+        _draw_panel(ax, traces, panel["field"], panel["log"], methods, ref,
+                    aggregate_over_episodes)
+        _panel_title(ax, panel["title"], panel["note"])
+    return _finish(fig, card, methods, notes, width, top, run_dir, filename)
 
 
-def plot_summary(run_dir, rows, title):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+# ── final / best / mean ───────────────────────────────────────────────────────────────
+def outcome_stats(traces):
+    """Per method, the three views of each run: {method: {stat: [per-episode dict]}}.
 
+    Mirrors what the environment logs per episode, so a baselines figure and a
+    tensorboard curve mean the same thing by "final", "best" and "mean".
+    """
+    per = {}
+    for t in traces:
+        per.setdefault((t["method"], t["episode"]), []).append(t)
+
+    def snapshot(p):
+        return {"score": float(p["score"]), "edges": float(p["edges"]),
+                "rigid": float(bool(p["is_IBR"])), "minimal": float(bool(p["is_MBR"])),
+                "min_eig": None if p.get("min_eig") is None else float(p["min_eig"])}
+
+    out = {}
+    for (method, _ep), pts in per.items():
+        pts = sorted(pts, key=lambda p: p["step"])
+        eig = [p["min_eig"] for p in pts if p.get("min_eig") is not None]
+        rec = out.setdefault(method, {s: [] for s in STAT_ORDER})
+        rec["final"].append(snapshot(pts[-1]))
+        rec["best"].append(snapshot(max(pts, key=lambda p: p["score"])))
+        rec["mean"].append({
+            "score": float(np.mean([p["score"] for p in pts])),
+            "edges": float(np.mean([p["edges"] for p in pts])),
+            # a fraction of the run rather than a fraction of the runs -- said so on the card
+            "rigid": float(np.mean([bool(p["is_IBR"]) for p in pts])),
+            "minimal": float(np.mean([bool(p["is_MBR"]) for p in pts])),
+            "min_eig": float(np.mean(eig)) if eig else None,
+        })
+    return out
+
+
+OUTCOME_PANELS = [
+    dict(field="score", title="Objective score  φ",
+         note="rewards rigidity, charges for every edge — higher is better",
+         log=False, scale=1.0, fmt="{:.0f}"),
+    dict(field="edges", title="Network size",
+         note="directed bearing measurements in use — fewer is better",
+         log=False, scale=1.0, fmt="{:.1f}"),
+    dict(field="rigid", title="Rigidity achieved",
+         note="% of networks (final, best) or % of the run spent rigid (mean)",
+         log=False, scale=100.0, fmt="{:.0f}"),
+    dict(field="min_eig", title="Rigidity margin",
+         note="smallest nonzero eigenvalue of BᵀB — higher survives more noise",
+         log=True, scale=1.0, fmt="{:.1e}"),
+]
+
+
+def plot_outcomes(run_dir, traces, rows, header, filename="outcomes"):
+    """final / best / mean side by side, for every method that was run."""
+    stats = outcome_stats(traces)
+    methods = [m for m in METHOD_ORDER if m in stats]
+    methods += [m for m in stats if m not in methods]
+    if not methods:
+        return None
+
+    notes = [f"{s}: {STAT_BLURB[s]}" for s in STAT_ORDER]
+    notes += [
+        "Bars are the mean over the networks; the whisker is ±1 standard deviation "
+        "across them.",
+        "For a method that never moves (initial) or only improves (greedy), final and "
+        "best are the same bar by construction.",
+        "The rigidity margin is plotted on a log axis; a non-rigid network has margin 0 "
+        "and cannot be drawn there.",
+    ]
+
+    fig, axes, card, top, width = _figure(header, "Final / best / mean outcome",
+                                             methods, notes)
+    x = np.arange(len(methods))
+    w = 0.26
+
+    for ax, panel in zip(axes, OUTCOME_PANELS):
+        field, scale = panel["field"], panel["scale"]
+        colors = [METHOD_STYLE.get(m, {}).get("color", INK_2) for m in methods]
+        # a percentage of runs has a Bernoulli spread that says nothing useful, so the
+        # rigidity panel gets bars only
+        show_err = field != "rigid"
+        drawn = []
+        for k, stat in enumerate(STAT_ORDER):
+            vals, errs = [], []
+            for m in methods:
+                got = [d[field] for d in stats[m][stat] if d.get(field) is not None]
+                vals.append(float(np.mean(got)) * scale if got else np.nan)
+                errs.append((float(np.std(got)) * scale if got else 0.0) if show_err else 0.0)
+            offset = (k - 1) * w
+            ax.bar(x + offset, np.nan_to_num(vals), w * 0.92,
+                   color=colors, alpha=STAT_ALPHA[stat], zorder=3,
+                   edgecolor=colors, linewidth=0.8)
+            if show_err:
+                ax.errorbar(x + offset, np.nan_to_num(vals), yerr=errs, fmt="none",
+                            ecolor=AXIS, elinewidth=1.0, capsize=2.5, zorder=4)
+            drawn.append((vals, errs, stat))
+
+        _style_axes(ax, log=panel["log"])
+        if panel["log"]:
+            pos = [v for vals, _e, _s in drawn for v in vals
+                   if v is not None and np.isfinite(v) and v > 0]
+            if pos:
+                # room above the tallest bar for its (rotated) value label
+                ax.set_ylim(10 ** np.floor(np.log10(min(pos))) / 2, max(pos) * 8)
+        elif field == "rigid":
+            ax.set_ylim(0, 118)
+        else:
+            hi = max((v + e for vals, errs, _s in drawn
+                      for v, e in zip(vals, errs) if np.isfinite(v)), default=1.0)
+            ax.set_ylim(0, hi * 1.20 if hi > 0 else 1.0)
+
+        # value labels, so the three alphas never have to be told apart by eye alone
+        for vals, errs, stat in drawn:
+            k = STAT_ORDER.index(stat)
+            for xi, (v, e) in enumerate(zip(vals, errs)):
+                if not np.isfinite(v):
+                    continue
+                ax.annotate(panel["fmt"].format(v), xy=(xi + (k - 1) * w, v + e),
+                            xytext=(0, 3), textcoords="offset points", ha="center",
+                            fontsize=6.5, color=INK_2, rotation=90 if panel["log"] else 0,
+                            va="bottom", zorder=6)
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(methods, fontsize=8.5)
+        # which bar is which -- one line under the axis beats a legend or a rotated
+        # label per bar, and the shading order is the same in every panel
+        ax.set_xlabel("bars in each group, left to right:   final  ·  best  ·  mean",
+                      color=MUTED, fontsize=7.5, labelpad=6)
+        _panel_title(ax, panel["title"], panel["note"])
+
+    return _finish(fig, card, methods, notes, width, top, run_dir, filename)
+
+
+def plot_summary(run_dir, rows, header):
+    """Spread across networks of the outcome each method is scored on."""
     methods = [m for m in METHOD_ORDER if any(r["method"] == m for r in rows)]
     colors = [METHOD_STYLE.get(m, {}).get("color", INK_2) for m in methods]
-    fig, axes = plt.subplots(2, 2, figsize=(11, 7.2), facecolor=SURFACE)
 
-    def box(ax, field, label):
-        data = [[r[field] for r in rows if r["method"] == m] for m in methods]
+    notes = [
+        "One value per network per method. The line is the median, the box the middle "
+        "50%, the whiskers reach 1.5x that range and the dots are networks outside it.",
+        "Scored on the best network each run visited — that is what the comparison table "
+        "reports, and it separates 'found a good topology' from 'stopped on it'.",
+        "'rigid' means the network's shape is fully determined by its bearing measurements; "
+        "'also minimal' means it does that with the fewest possible edges.",
+        "'steps to best' counts steps for the rollout methods and applied edge changes for "
+        "greedy, so compare it within a method rather than across them.",
+    ]
+
+    fig, axes, card, top, width = _figure(header, "Outcome across networks",
+                                             methods, notes)
+
+    def box(ax, data, labels, cols, title, note):
         bp = ax.boxplot(data, patch_artist=True, widths=0.55, medianprops=dict(color=INK),
                         flierprops=dict(marker="o", markersize=3, markerfacecolor=MUTED,
                                         markeredgecolor="none"))
-        for patch, c in zip(bp["boxes"], colors):
+        for patch, c in zip(bp["boxes"], cols):
             patch.set_facecolor(c)
             patch.set_alpha(0.65)
             patch.set_edgecolor(c)
         for part in ("whiskers", "caps"):
             for artist in bp[part]:
                 artist.set_color(AXIS)
-        ax.set_xticks(range(1, len(methods) + 1))
-        ax.set_xticklabels(methods, rotation=0)
+        ax.set_xticks(range(1, len(labels) + 1))
+        ax.set_xticklabels(labels, fontsize=8.5)
         _style_axes(ax)
-        ax.set_title(label, color=INK, fontsize=9.5, loc="left", pad=8)
+        _panel_title(ax, title, note)
 
-    box(axes[0][0], "m", "edges used per network\n(fewer is better)")
-    box(axes[0][1], "score", "objective score per network\n(higher is better)")
+    box(axes[0], [[r["m"] for r in rows if r["method"] == m] for m in methods],
+        methods, colors, "Network size",
+        "edges in the best network found — fewer is better")
+    box(axes[1], [[r["score"] for r in rows if r["method"] == m] for m in methods],
+        methods, colors, "Objective score  φ",
+        "score of the best network found — higher is better")
 
-    ax = axes[1][0]
+    ax = axes[2]
     rigid = [100 * np.mean([r["is_IBR"] for r in rows if r["method"] == m]) for m in methods]
     minimal = [100 * np.mean([r["is_MBR"] for r in rows if r["method"] == m]) for m in methods]
     x = np.arange(len(methods))
-    ax.bar(x - 0.19, rigid, 0.36, color=colors, alpha=0.9, label="rigid")
-    ax.bar(x + 0.19, minimal, 0.36, color=colors, alpha=0.4, label="also minimal")
+    ax.bar(x - 0.19, rigid, 0.36, color=colors, alpha=0.9, zorder=3)
+    ax.bar(x + 0.19, minimal, 0.36, color=colors, alpha=0.4, zorder=3)
     for xi, (a, b) in enumerate(zip(rigid, minimal)):
         ax.annotate(f"{a:.0f}", xy=(xi - 0.19, a), xytext=(0, 3),
                     textcoords="offset points", ha="center", fontsize=7.5, color=INK_2)
         ax.annotate(f"{b:.0f}", xy=(xi + 0.19, b), xytext=(0, 3),
                     textcoords="offset points", ha="center", fontsize=7.5, color=INK_2)
-    ax.set_xticks(x); ax.set_xticklabels(methods)
+    ax.set_xticks(x)
+    ax.set_xticklabels(methods, fontsize=8.5)
     ax.set_ylim(0, 112)
     _style_axes(ax)
-    ax.set_title("% of networks solved\n(solid = rigid, faded = also minimal)",
-                 color=INK, fontsize=9.5, loc="left", pad=8)
+    _panel_title(ax, "Networks solved",
+                 "% rigid (solid) and % also using the fewest edges (faded)")
 
-    ax = axes[1][1]
+    ax = axes[3]
     roll = [m for m in methods if m not in ("initial", "optimal")]
     if roll:
-        data = [[r.get("best_at", 0) for r in rows if r["method"] == m] for m in roll]
-        bp = ax.boxplot(data, patch_artist=True, widths=0.5, medianprops=dict(color=INK),
-                        flierprops=dict(marker="o", markersize=3, markerfacecolor=MUTED,
-                                        markeredgecolor="none"))
-        for patch, m in zip(bp["boxes"], roll):
-            c = METHOD_STYLE.get(m, {}).get("color", INK_2)
-            patch.set_facecolor(c); patch.set_alpha(0.65); patch.set_edgecolor(c)
-        for part in ("whiskers", "caps"):
-            for artist in bp[part]:
-                artist.set_color(AXIS)
-        ax.set_xticks(range(1, len(roll) + 1)); ax.set_xticklabels(roll)
-    _style_axes(ax)
-    ax.set_title("steps taken to find the best network\n(lower converges faster)",
-                 color=INK, fontsize=9.5, loc="left", pad=8)
+        box(ax, [[r.get("best_at", 0) for r in rows if r["method"] == m] for m in roll],
+            roll, [METHOD_STYLE.get(m, {}).get("color", INK_2) for m in roll],
+            "Steps to the best network",
+            "how long each method took to reach its best — lower converges sooner")
+    else:
+        _style_axes(ax)
+        _panel_title(ax, "Steps to the best network", "no rollout method was run")
 
-    fig.suptitle(title, color=INK, fontsize=11.5, x=0.012, ha="left", y=0.995)
-    fig.tight_layout(rect=(0, 0, 1, 0.95))
-    return _save(fig, run_dir, "summary")
+    return _finish(fig, card, methods, notes, width, top, run_dir, "summary")
+
+
+# ── the table, as a figure ────────────────────────────────────────────────────────────
+# Same numbers as summary.txt, laid out rather than printed: the direction of each column
+# is a subtitle instead of a "(fewer)" tag, reference rows are drawn as reference rows,
+# and it drops into a slide next to the other figures without a monospace dump.
+TABLE_COLUMNS = [
+    dict(key="method",  title="method",   unit="",                 w=1.05, align="left"),
+    dict(key="edges",   title="edges",    unit="fewer is better",  w=1.15, align="right"),
+    dict(key="score",   title="score  φ", unit="higher is better", w=1.20, align="right"),
+    dict(key="rigid",   title="rigid",    unit="% of networks",    w=0.85, align="right"),
+    dict(key="minimal", title="minimal",  unit="% of networks",    w=0.85, align="right"),
+    dict(key="margin",  title="margin",   unit="mean ± sd, higher is better",
+         w=1.50, align="right"),
+    dict(key="margin_geo", title="margin (geo)", unit="gmean ×/÷ gsd",
+         w=1.25, align="right"),
+    dict(key="work",    title="work",     unit="edits applied",    w=1.05, align="right"),
+    dict(key="best_at", title="best at",  unit="step reached",     w=1.10, align="right"),
+    dict(key="opt",     title="= best",   unit="% matched",        w=0.80, align="right"),
+]
+
+TABLE_NOTES = [
+    "edges: directed bearing measurements the network needs — each one is a sensing or "
+    "communication link, so fewer is better.",
+    "score φ: the objective every method is scored with. It rewards rigidity and charges "
+    "for each extra edge.",
+    "rigid: the network's shape is fully determined by its bearing measurements — the "
+    "property being solved for. minimal: rigid with the fewest possible edges "
+    "(a heuristic on mixed-domain networks, so it can under-report).",
+    "margin: how much room the network has before it stops being rigid. Its absolute size "
+    "depends on how far apart the agents are, so compare rows rather than the number.",
+    "margin (geo): the same quantity as a geometric mean and spread, because it ranges "
+    "over orders of magnitude — 'a ×/÷ b' means the typical network sits between a/b and "
+    "a·b. A '*' marks rows where non-rigid networks had to be left out: their margin is "
+    "exactly 0, which no geometric mean can take, so those rows describe only the "
+    "networks that came out rigid.",
+    "work: changes to the network the method actually applied. best at: the step its best "
+    "network was reached — lower means it converged sooner and the rest of the budget "
+    "added nothing.",
+    "= best: share of networks where the method tied the exhaustive optimum.",
+    "initial and optimal are reference rows, not competing methods: every method starts "
+    "from initial, and optimal is the best achievable. All methods see the same networks.",
+    "Every value is a mean over the networks and ± is the standard deviation across them. "
+    "The percentage columns carry no ±: they are already means of a yes/no outcome, whose "
+    "spread is fixed by the percentage itself.",
+]
+
+
+def plot_table(run_dir, rows, header, filename="table", width=12.0):
+    """The comparison table as a figure, so it can ship next to the plots."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+
+    agg = aggregate(rows)
+    if not agg:
+        return None
+    methods = list(agg)
+    has_opt = any(v["matches_opt_pct"] is not None for v in agg.values())
+    cols = [c for c in TABLE_COLUMNS if c["key"] != "opt" or has_opt]
+    notes = [n for n in TABLE_NOTES if has_opt or not n.startswith("= best")]
+
+    head_h = _header_height(header, width)
+    card_h = _card_height(methods, notes, width)
+    row_h, head_row_h = 0.30, 0.52
+    table_h = head_row_h + row_h * len(methods) + 0.30
+    fig_h = head_h + table_h + card_h
+    fig = plt.figure(figsize=(width, fig_h), facecolor=SURFACE)
+    top = _draw_header(fig, header, "Baseline comparison")
+
+    def cell(method, key, v):
+        ref = method in ("initial", "optimal")
+        if key == "edges":
+            return f"{v['edges_mean']:.2f} ±{v['edges_sd']:.2f}"
+        if key == "score":
+            return f"{v['score_mean']:.2f} ±{v['score_sd']:.2f}"
+        if key == "rigid":
+            return f"{v['rigid_pct']:.0f}"
+        if key == "minimal":
+            return f"{v['minimal_pct']:.0f}"
+        if key == "margin":
+            return ("—" if v["min_eig_mean"] is None
+                    else _fmt(v["min_eig_mean"], v["min_eig_sd"], ".1e", " ±"))
+        if key == "margin_geo":
+            return "—" if v["min_eig_gmean"] is None else _fmt_geo(v, times=" ×/÷")
+        if key == "work":
+            return "—" if ref else _fmt(v["work_mean"], v["work_sd"], ".1f", " ±")
+        if key == "best_at":
+            return "—" if ref else _fmt(v["best_at_mean"], v["best_at_sd"], ".1f", " ±")
+        if key == "opt":
+            return "—" if v["matches_opt_pct"] is None else f"{v['matches_opt_pct']:.0f}"
+        return ""
+
+    # column geometry, in figure fractions
+    x0, x1 = 0.035, 0.965
+    span = x1 - x0
+    total = sum(c["w"] for c in cols)
+    edges, acc = [], x0
+    for c in cols:
+        edges.append((acc, acc + span * c["w"] / total))
+        acc += span * c["w"] / total
+
+    y_top = top - 0.10 / fig_h
+    y_head = y_top - head_row_h / fig_h
+
+    for c, (cx0, cx1) in zip(cols, edges):
+        x = cx0 + 0.006 if c["align"] == "left" else cx1 - 0.006
+        ha = "left" if c["align"] == "left" else "right"
+        fig.text(x, y_top - 0.16 / fig_h, c["title"], color=INK, fontsize=9.5,
+                 ha=ha, va="center")
+        if c["unit"]:
+            fig.text(x, y_top - 0.34 / fig_h, c["unit"], color=MUTED, fontsize=7.0,
+                     ha=ha, va="center")
+
+    fig.add_artist(_fig_line(fig, [x0, x1], [y_head, y_head], AXIS, "-"))
+
+    for i, m in enumerate(methods):
+        v = agg[m]
+        ref = m in ("initial", "optimal")
+        yc = y_head - (i + 0.5) * row_h / fig_h
+        if i % 2 == 1:
+            fig.patches.append(Rectangle((x0, yc - 0.5 * row_h / fig_h), span,
+                                         row_h / fig_h, transform=fig.transFigure,
+                                         facecolor=CARD, edgecolor="none", zorder=0))
+        style = METHOD_STYLE.get(m, {"color": INK_2, "ls": "-"})
+        mx0 = edges[0][0]
+        fig.add_artist(_fig_line(fig, [mx0 + 0.006, mx0 + 0.030], [yc, yc],
+                                 style["color"], style["ls"]))
+        fig.text(mx0 + 0.038, yc, m, color=INK_2 if ref else INK, fontsize=9, va="center")
+        for c, (cx0, cx1) in list(zip(cols, edges))[1:]:
+            fig.text(cx1 - 0.006, yc, cell(m, c["key"], v), color=INK_2 if ref else INK,
+                     fontsize=9, ha="right", va="center", family="monospace")
+
+    _draw_card(fig, methods, notes, width, card_h)
+    return _save(fig, run_dir, filename)
 
 
 def _save(fig, run_dir, name):
+    """Every figure ships in both formats, filed by format: plots/pdf/ and plots/png/.
+    PDF is what goes in the thesis, PNG is what you actually look at, and mixing them in
+    one directory meant scrolling past each figure twice."""
     import matplotlib.pyplot as plt
     out = []
-    for ext in ("pdf", "png"):
-        path = os.path.join(run_dir, "plots", f"{name}.{ext}")
+    for ext in PLOT_FORMATS:
+        directory = os.path.join(run_dir, "plots", ext)
+        os.makedirs(directory, exist_ok=True)   # callers may pass a bare --out-dir
+        path = os.path.join(directory, f"{name}.{ext}")
         fig.savefig(path, facecolor=SURFACE, dpi=200, bbox_inches="tight")
         out.append(path)
     plt.close(fig)
