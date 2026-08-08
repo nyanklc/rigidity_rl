@@ -19,13 +19,8 @@ import manifest
 ######################################
 TOTAL_TIMESTEPS = int(6e5)
 NR_ENVS = 4
-# One constant for both the memory and cfg.rollouts, and they must stay equal.
-# skrl's PPO.update() runs compute_gae() over the *whole* memory ring and then
-# samples batch_size=len(memory), so a memory larger than one rollout trains on
-# stale off-policy data (7/8 of it at memory_size=8192, rollouts=1024) with
-# last_values bootstrapped at the ring's wrap point instead of the trajectory
-# end. The stale samples fall outside the ratio clip band and contribute no
-# gradient. This is what broke bigPPOSelectEquivariant3e-4lrNormalizedPositions.
+# Feeds both memory_size and cfg.rollouts, which MUST stay equal.
+# See DESIGN_NOTES.md#ppo-rollout-size
 ROLLOUT_SIZE = 256
 SEED = 0  # recorded in the manifest; training was unseeded before this
 
@@ -46,17 +41,8 @@ cfg.kl_threshold = 0.015
 cfg.value_preprocessor = RunningStandardScaler
 cfg.value_preprocessor_kwargs = {"size": 1, "device": "cuda"}
 cfg.time_limit_bootstrap = True # this is crucial since we do not want skrl to treat the final state having value=0
-# Must stay < 1. The environment's reward is potential-based (phi(s') - phi(s)),
-# so at gamma = 1 the return telescopes to phi(s_T) - phi(s_0) and the advantage
-# becomes E[phi(s_T)|s'] - E[phi(s_T)|s], which is ~0 under a near-uniform policy
-# because the walk over edge sets mixes and forgets s -- no gradient to bootstrap
-# from, which is what froze the earlier run's entropy at ~1.9 of a ~2.0 ceiling.
-# At gamma < 1, Abel summation turns the same reward into
-#     -phi(s_0) + (1 - gamma) * sum_t gamma^(t-1) phi(s_t)
-# i.e. maximize the discounted average of phi along the trajectory: converge fast
-# and stay converged. DQN uses 0.99 and solves n=8/R^3; match it.
-# (gamma = 1 used to be set so the logged return matched the optimized objective.
-#  Read Episode/ Return for that instead -- it is undiscounted by construction.)
+# MUST stay < 1: the reward is potential-based, so gamma=1 makes the advantage
+# identically zero. See DESIGN_NOTES.md#ppo-discount-factor
 cfg.discount_factor = 0.99
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

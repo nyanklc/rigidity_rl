@@ -179,19 +179,34 @@ def MBR_required_Rd(n ,d):
 
     return m_required
 
-# The smallest edge count that could possibly make *these poses* rigid -- an
-# episode constant, unlike is_MBR's m_req which is derived from whatever edges
-# the graph currently has.
-#
-# Homogeneous R^d has a closed form. Otherwise: every edge contributes at most
-# rank(B[3k:3k+3, :]) to rank(B), so taking the highest-rank blocks of the
-# fully-connected graph first and accumulating until rank_K is reached gives a
-# sound lower bound (rank subadditivity over edge blocks). The two agree exactly
-# on homogeneous R^2 and R^3, where every block has rank d-1 and the bound
-# reduces to ceil(rank_K / (d - 1)).
-#
-# Costs n(n-1) small rank computations, so call it once per episode and cache it
-# -- Environment does this in begin_episode().
+# Most rank one edge could contribute at these poses. EXACT -- makes no claim
+# about what is jointly achievable, which is why the state score normalizes with
+# it rather than with an edge count. See DESIGN_NOTES.md#max-edge-rank
+def max_edge_rank(network, brmat_K=None):
+    n = len(network.agents)
+    if n < 2:
+        return 1
+
+    domains = {agent.domain for agent in network.agents}
+    if len(domains) == 1:
+        domain = next(iter(domains))
+        if domain in ["R^2", "R^3"]:
+            return 2 if domain == "R^3" else 1
+
+    if brmat_K is None:
+        brmat_K = extended_bearing_rigidity_matrix(network.fully_connected())
+
+    m_K = brmat_K.shape[0] // 3
+    c_max = max(
+        (np.linalg.matrix_rank(brmat_K[3*k:3*(k+1), :]) for k in range(m_K)),
+        default=1,
+    )
+    return max(int(c_max), 1)
+
+# Fewest edges that could make these poses rigid.
+# LOWER BOUND, not a ground truth: keep it out of the reward, use it for
+# reporting and the MBR metric only. Costs n(n-1) rank computations -- cache it.
+# See DESIGN_NOTES.md#required-edge-count
 def required_edge_count(network, rank_K=None, brmat_K=None):
     n = len(network.agents)
     if n < 2:

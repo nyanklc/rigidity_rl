@@ -4,10 +4,8 @@ from torch_geometric.nn import GATConv, GINEConv
 from egnn_pytorch import EGNN
 
 
-# The layer count used to be hardcoded at 3 and was 2 in older runs. It is a
-# constructor argument now so that a checkpoint trained at a different depth can
-# still be loaded (see agent_loader.rebuild_backbone). Submodules keep the names
-# conv1..convN, so state dicts of 3-layer models are unaffected.
+# num_layers is a constructor argument so checkpoints trained at other depths
+# still load. See DESIGN_NOTES.md#backbone-num-layers
 class _GNNBackbone(nn.Module):
     def _register_convs(self, convs):
         self.num_layers = len(convs)
@@ -60,10 +58,7 @@ class GNNBackboneGINE(_GNNBackbone):
         batch_size, n, _ = nodes.shape
         h = nodes.reshape(-1, nodes.size(-1))
 
-        # IMPORTANT: the GIN(E) message passing adds the inward edge features
-        # to the neighbor's features during message passing. however it makes
-        # more sense for us to use outward edge
-        # ("I have this bearing to this node")
+        # aggregate outward bearings, not inward; DESIGN_NOTES.md#gine-edge-direction
         edge_index = edge_index.flip(0)
 
         # TODO: relu??

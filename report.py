@@ -15,11 +15,7 @@ from datetime import datetime
 import numpy as np
 
 # ── palette ───────────────────────────────────────────────────────────────────────────
-# From the data-viz reference palette, used unchanged and in its documented order.
-# greedy/learned/random take categorical slots 1-3, which are certified for the
-# all-pairs case (overlapping lines) in both modes. initial and optimal are *reference
-# points* rather than methods under comparison, so they take neutral inks and dashed
-# strokes instead of a categorical hue -- that also keeps the categorical count at 3.
+# Data-viz reference palette, unchanged. See DESIGN_NOTES.md#palette
 SURFACE = "#fcfcfb"
 INK = "#0b0b0b"
 INK_2 = "#52514e"
@@ -287,12 +283,8 @@ def write_summary(run_dir, text):
 
 
 # ── plots ─────────────────────────────────────────────────────────────────────────────
-# Static output for a thesis, so light mode only and no hover layer. Identity is never
-# colour alone: every series carries a direct label at its line end (or a value label on
-# its bar), and every figure ships the notes card that says what it is showing.
-#
-# Each panel is titled with *what the quantity is*, with the reading direction on a second
-# line -- "edges used" told a reader nothing about why they should care.
+# Light mode only, no hover layer, identity never by colour alone.
+# See DESIGN_NOTES.md#panel-titles
 PANELS = [
     dict(field="score", title="Objective score  φ",
          note="rewards rigidity, charges for every edge — higher is better", log=False),

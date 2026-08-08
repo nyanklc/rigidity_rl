@@ -634,11 +634,7 @@ class Environment(gym.Env):
             # cached so reset() does not re-read and re-parse the file every episode
             self.scenario_network = copy.deepcopy(self.network)
         else:
-            # Since learning with complete random number of edges gets basically impossible
-            # as the number of nodes grow, we'll sample the number of edges to
-            # be used centered around the minimum required amount for IBR.
-            # Important: We'll sample a value centered around the edge count for R^d.
-            # It should be less than the number for other domains but it should be okay I think.
+            # see DESIGN_NOTES.md#initial-edge-count
             if self.random_graph_with_mean_min_edges:
                 self.network, self.goal_network = random_scenario(
                     n, domains, edge_count=self.sample_initial_edge_count(n, domains)
@@ -694,10 +690,7 @@ class Environment(gym.Env):
         self.trace_min_eig = False
         self.last_stats = None
 
-        # Environment metrics are written once per episode, not once per step: a
-        # step-resolution scalar costs a tensorboard event per step and is then
-        # downsampled/averaged for display anyway, so the detail is paid for and
-        # never seen. See new_episode_accum() / episode_summary() / write_episode().
+        # metrics are written once per episode; see DESIGN_NOTES.md#episode-logging
         self.episode_counter = 0
         self.episode_accum = self.new_episode_accum()
         self.last_episode_stats = None
@@ -761,11 +754,8 @@ class Environment(gym.Env):
         )
 
     # -----------------------------------
-    # Uniformly random edge counts are almost always far above the number of
-    # edges rigidity actually needs (the requirement grows ~linearly in n while
-    # n^2-n grows quadratically), so the agent would only ever see graphs that
-    # need edges removed. Sample around the minimum requirement instead.
-    # NOTE: the mean is only exact for homogeneous R^d networks.
+    # Sample around the minimum requirement, not uniformly. Mean is only exact
+    # for homogeneous R^d. See DESIGN_NOTES.md#initial-edge-count
     def sample_initial_edge_count(self, n, domains):
         if isinstance(domains, str):
             domains = [domains]
@@ -776,26 +766,20 @@ class Environment(gym.Env):
         return int(np.clip(edge_count, 1, max_edges))
 
     # -----------------------------------
-    # Everything that depends on the poses but not on the edge set, computed once
-    # per episode. Both are properties of *this geometry*, so they are the natural
-    # denominators for a state score that has to mean the same thing at different
-    # n and in different domains:
-    #   rank_K -- rank of the fully-connected graph's rigidity matrix; the rank a
-    #             rigid graph must reach (3n-4 in R^3, 2n-3 in R^2)
-    #   m_req  -- the fewest edges that could possibly make these poses rigid
-    # B_K is built once and handed to both, since it is the expensive part.
+    # Pose-dependent, edge-independent; once per episode. rank_K and c_max are
+    # exact, m_req is only a lower bound and must stay out of the reward.
+    # See DESIGN_NOTES.md#episode-constants
     def compute_episode_constants(self):
         network_K = self.network.fully_connected()
         brmat_K = network_K.extended_bearing_rigidity_matrix()
         self.rank_K = np.linalg.matrix_rank(brmat_K)
+        self.c_max = max_edge_rank(self.network, brmat_K=brmat_K)
         self.m_req = required_edge_count(
             self.network, rank_K=self.rank_K, brmat_K=brmat_K
         )
 
     # -----------------------------------
-    # Running totals for the per-episode metrics. Sums and counts only -- no
-    # per-step history is kept, so an episode costs the same whether it is 100 or
-    # 2000 steps long.
+    # Sums and counts only, so episode length is free.
     def new_episode_accum(self):
         return {
             "steps": 0,
@@ -815,10 +799,8 @@ class Environment(gym.Env):
         }
 
     # -----------------------------------
-    # The whole episode as one record: where it ended up (Final ...), the best
-    # graph it visited (Best ...), and what it looked like throughout (Mean ...).
-    # Kept flat and float-valued so write_episode() can dump it without knowing
-    # what any of it means.
+    # The whole episode as one flat, float-valued record: Final / Best / Mean.
+    # See DESIGN_NOTES.md#episode-logging
     def episode_summary(self, state_score, rank_brm, is_IBR, is_MBR, min_eig,
                         terminated, truncated):
         acc = self.episode_accum
@@ -896,9 +878,8 @@ class Environment(gym.Env):
         }
 
     # -----------------------------------
-    # How good is the current graph. The reward uses the *improvement* of this
-    # value between steps, so it must be computable outside step() too (reset()
-    # needs the initial graph's score as the baseline).
+    # How good is the current graph. Callable outside step(): the reward is this
+    # value's improvement, so reset() needs a baseline. DESIGN_NOTES.md#state-score
     def compute_state_score(self, brm, is_IBR, is_MBR, rank_brm):
         state_score = 0
         if self.state_score_type == "Rigid":
@@ -987,31 +968,18 @@ class Environment(gym.Env):
             # print(f"\ntotal: {state_score}")
 
         elif self.state_score_type == "WeightedNormalized":
-            # `Weighted` measures rank and edge count in raw units, which do not
-            # mean the same thing across domains: a rigidity-matrix edge block has
-            # rank 2 in R^3 but 1 in R^2, so at (20, 10) a rank-adding edge is
-            # worth +30 in R^3 and +10 in R^2 against +10 for pruning either way.
-            # The optimum also moves with the configuration (50 at n=4/R^2, 300 at
-            # n=8/R^3), which shifts the critic's target range whenever n or the
-            # domain changes. One policy cannot span both under that score.
-            #
-            # Dividing each term by its own ceiling fixes both: rank/rank_K and
-            # m/m_req are dimensionless, the optimum is w_rank - w_edge whatever
-            # the configuration, and the rank/edge trade-off is the *ratio* of the
-            # weights rather than an accident of the domain.
-            #
-            # w_rank / w_edge = 4 reproduces R^3's current 3:1 preference for
-            # adding rank over pruning a redundant edge, now identically in every
-            # domain. That ratio is the meaningful knob here; the overall scale
-            # only sets the reward magnitude.
+            # phi = w_rank*rank/rank_K - w_edge*(m*c_max)/rank_K
+            # Dimensionless, so it means the same thing at any n and in any
+            # domain. Normalized by c_max, NOT by m_req -- m_req is only a lower
+            # bound. See DESIGN_NOTES.md#weighted-normalized
             w_rank = 100.0
             w_edge = 25.0
 
             m = np.sum(self.network.edges)
             rank_K = max(int(self.rank_K), 1)
-            m_req = max(int(self.m_req), 1)
+            c_max = max(int(self.c_max), 1)
 
-            state_score += w_rank * (rank_brm / rank_K) - w_edge * (m / m_req)
+            state_score += (w_rank * rank_brm - w_edge * m * c_max) / rank_K
 
         elif self.state_score_type == "None" or None:
             pass
@@ -1085,10 +1053,7 @@ class Environment(gym.Env):
         is_MBR, is_IBR, rank_brm = self.network.is_MBR(rank_K=self.rank_K, brm=brm)
         state_score = self.compute_state_score(brm, is_IBR, is_MBR, rank_brm)
 
-        # when tracking, this is needed for logging anyway, so compute it once here and
-        # hand it to the best-state tracker instead of letting it redo the work.
-        # trace_min_eig asks for it without a writer attached (baselines.py records the
-        # rigidity eigenvalue over time)
+        # computed once and shared; see DESIGN_NOTES.md#min-eig-caching
         tracking = self.track_data_enable and self.writer is not None
         min_eig = (rigidity_eigenvalue(self.network, rank_K=self.rank_K)
                    if (tracking or self.trace_min_eig) else None)
@@ -1239,13 +1204,8 @@ class Environment(gym.Env):
         return obs, reward, terminated, truncated, info
 
     # -----------------------------------
-    # One data point per tag per episode. Writing these every step produced tens of
-    # thousands of events that tensorboard has to downsample and average before it
-    # can draw them, so the resolution was paid for and never seen; the summary is
-    # both cheaper and closer to what the plots were showing anyway.
-    #
-    # Written against writer_counter (the global env step) rather than the episode
-    # index so the curves share an x-axis with skrl's loss/reward plots.
+    # One data point per tag per episode, against writer_counter (the global env
+    # step) so curves share skrl's x-axis. See DESIGN_NOTES.md#episode-logging
     def write_episode(self):
         stats = self.last_episode_stats
         if self.writer is None or stats is None:
@@ -1403,9 +1363,7 @@ if __name__ == "__main__":
     # STATE_SCORE_TYPE = "RigidityMatrixRank"
     # STATE_SCORE_TYPE = "RigidityMatrixRankAndEdges"
     # STATE_SCORE_TYPE = "Weighted"
-    # Dimensionless version of Weighted: rank/rank_K and m/m_req instead of raw
-    # rank and edge count. Use this for anything spanning several n or domains --
-    # Weighted's fixed weights trade rank against edges differently per dimension.
+    # dimensionless; use for anything spanning several n or domains
     STATE_SCORE_TYPE = "WeightedNormalized"
     # STATE_SCORE_TYPE = "None"
 
