@@ -97,6 +97,78 @@ dump it without knowing what any of it means.
 Scalars are written against `writer_counter` (the global env step) rather than the episode index,
 so the curves share an x-axis with skrl's loss/reward plots.
 
+### dict-observation
+
+There used to be six `Dict*` observation types differing only in which keys they populated —
+`DictNodeFeaturesAndAdj`, `...AndSelection`, `...AndEdgeProposal`, `DictEquivariant...`,
+`DictBearing...`, `DictNodeFeaturesAndEdgeFeatures...`. Every model already selects what it needs
+by string key and ignores the rest, so the split bought nothing and coupled two unrelated
+decisions: *what the environment exposes* and *which network consumes it*.
+
+They are now one type, `"Dict"`, always emitting `node_features`, `coord_features`,
+`edge_features`, `adj`, `selection` (plus `proposed_edge` when the action space is `DecideOnEdge`).
+Choosing EGNN vs GINE is now a `BACKBONE` constant in the training script, which is where a model
+hyperparameter belongs. Contents:
+
+| key | width | contents |
+|---|---|---|
+| `node_features` | 10 | domain one-hot (5), in/out degree (2), closeness, eigenvector centrality, node betweenness |
+| `coord_features` | 3 | pose-normalized positions, see [pose-normalization](#pose-normalization) |
+| `edge_features` | 7 | bearing (3), `edge_exists` (1), edge betweenness, reciprocity, common neighbours |
+| `adj` | n×n | adjacency |
+| `selection` | n | current pointer state |
+
+**The pre-merge names still work.** Each maps to a preset of the builder's flags that reproduces
+its old layout exactly — verified element-wise against the pre-merge code for the EGNN variant:
+`node_features` (10), raw un-normalized `coord_features`, and 6-channel `edge_features` with
+bearings on existing edges only. Reproducing *raw* coordinates matters as much as the shapes: a
+checkpoint trained before pose normalization would otherwise be fed differently-scaled inputs and
+quietly mis-evaluated.
+
+| legacy name | node set | coords | edge ch. | selection |
+|---|---|---|---|---|
+| `DictEquivariantNodeFeaturesAndAdjAndSelection` | graph (10) | raw | 6 | yes |
+| `DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection` | graph (10) | — | 6 | yes |
+| `DictNodeFeaturesAndAdj` | domain+sign-bearing (5+3n) | — | — | no |
+| `DictNodeFeaturesAndAdjAndSelection` | domain+sign-bearing (5+3n) | — | — | yes |
+| `DictNodeFeaturesAndAdjAndEdgeProposal` | domain+bearing (5+3n) | — | — | no (+`proposed_edge`) |
+| `DictBearingNodeFeaturesAndAdjAndSelection` | bearing (3n) | — | — | yes |
+
+`OBS_BACKBONE` records which GNN each legacy name implied, and the training scripts prefer it over
+their `BACKBONE` constant — so an old GINE config trains a GINE model even when the constant says
+`Equivariant`. An unknown `obs_type` raises listing the known ones.
+
+### all-pairs-bearings
+
+`get_bearings_explicit()` zeroes `b[i,j]` unless the edge exists, so for every edge the agent might
+*add* — the decision it is actually making — the bearing that determines whether that edge adds
+rank was invisible. All that reached the policy about a candidate pair was EGNN's internal
+`rel_dist` and `common_neighbors`. Bearing rigidity is invariant to uniform scaling and depends on
+**directions**, so distance is close to the wrong invariant. This was the first-order cause of the
+generalization failure (`ROADMAP.md` §2.2).
+
+The `Dict` observation now carries `get_all_pairs_bearings()` — every ordered pair, edge or not —
+plus an explicit binary `edge_exists` channel, so adjacency is stated rather than implied by a
+zeroed bearing.
+
+**`include_candidate_bearings` (env config, default `True`)** reverts to bearings on existing edges
+only, keeping the observation shape identical. This is not a tuning knob but a modelling one:
+candidate-edge bearings are tier-2 information (`ROADMAP.md` A.1) — an agent does not know its
+bearing to a node it has not measured. Whether a distributed version may use them depends on
+whether detection is cheaper than maintaining a link, which is an open question. The flag exists so
+that a later tier-1-only variant is a config change, not a rewrite.
+
+### pose-normalization
+
+`coord_features` are centred on the centroid and scaled to unit RMS radius. Bearings are already
+unit vectors and so scale-invariant, but EGNN's internal `rel_dist = ||x_i - x_j||^2` is not — which
+is the only reason changing `random_scenario`'s `pos_limits` from ±100 to ±1 ever mattered. It
+should not have. Normalizing per instance also makes n=8 and n=16 comparable when both are drawn
+from the same box but at different densities.
+
+Normalization is applied to the *observation* only. The rigidity maths keeps the true poses; rank
+is scale-invariant anyway, but the rigidity eigenvalue is not.
+
 ### min-eig-caching
 
 When tracking is on, the rigidity eigenvalue is needed for logging anyway, so `step()` computes it
@@ -186,7 +258,84 @@ that instead — it is undiscounted by construction.
 
 ---
 
+## policy/
+
+### model-registry
+
+`policy/registry.py` maps `(role, backbone, action_type)` to a model class, replacing the if/elif
+chains that used to select models in both training scripts (they lost ~180 and ~110 lines). Roles
+are skrl's own model-dict keys — `policy`, `value`, `q_network` — so `build_models()` output goes
+straight to the agent.
+
+Constructors differ: every model takes `n`, `node_feat_dim`, `gnn_hidden_dim`, `head_hidden_dim`,
+`observation_space`, `action_space`, `device`; the EGNN and GINE ones also take `edge_feat_dim`;
+the `SelectNodesSequentially` ones also take `allow_skip`. `instantiate()` filters a superset of
+kwargs against `inspect.signature(cls.__init__)`, so callers pass everything and each class picks
+up what it declares. `agent_loader` uses the same function, so there is one implementation of that
+rule.
+
+A `(role, backbone, None)` entry is the fallback for a role and backbone, which is how the critics
+cover every action space that has no selection stage without enumerating them.
+
 ## policy/gnn_backbone.py
+
+### egnn-dense-all-pairs
+
+`GNNBackboneEquivariant.forward` accepts `adj_mat` but does not forward it to `EGNN`. In
+`egnn_pytorch`, `adj_mat` is read *only* inside `if use_nearest:`, which needs
+`num_nearest_neighbors > 0` or `only_sparse_neighbors=True`; the backbone constructs
+`EGNN(dim, m_dim, edge_dim)` with both at their defaults. Passing it was therefore a silent no-op —
+verified, `max abs diff 0.0` between an all-zeros and an all-ones adjacency.
+
+Dense all-pairs message passing is the right choice here (the whole task is reasoning about edges
+you do not have), so the fix is to make it deliberate rather than to sparsify: the graph reaches
+the model through `edge_features`, where `edge_exists` now states adjacency explicitly. The
+argument stays in the signature so archived model sources that pass it keep working.
+
+`EGNN` also accepts a `mask` argument the backbone never passes, which is what variable-`n`
+batching will need.
+
+### gine-dense-all-pairs
+
+GINE used to build `edge_index` from `adj.nonzero()` and gather `edge_features[i][src, dst]`, i.e.
+message passing over **existing edges only** — with a comment reading "we get all possible edges'
+features from the observation but we only need existing edges'". Once the observation carried
+all-pairs bearings that became exactly backwards: the candidate-edge geometry was computed and then
+discarded, so [all-pairs-bearings](#all-pairs-bearings) reached the EGNN arm and not the GINE one.
+
+`GNNBackboneGINE.forward(nodes, edges)` now takes the dense `(B, N, N, E)` edge tensor and builds a
+complete digraph internally (no self loops, row-major so it lines up with the dense tensor
+flattened the same way, cached per `(batch_size, n, device)`). Both backbones now do dense
+all-pairs message passing and differ only in *how* they mix, which is what makes a backbone
+comparison meaningful. `edge_exists` is what distinguishes a real edge from a candidate, in both.
+
+This also removed the per-sample Python loop that had been duplicated across all seven GINE models.
+
+Verified: perturbing a **non-edge**'s features changes the GINE output (0.86 on a random init), and
+with a single layer `d(h_0)/d(edge_attr[0,1])` is nonzero while `d(h_0)/d(edge_attr[1,0])` is
+exactly zero — so the outgoing-edge direction below is preserved.
+
+### egnn-init-eps
+
+`egnn_pytorch` applies `nn.init.normal_(weight, std=init_eps)` to *every* Linear in an `EGNN` layer,
+with `init_eps=1e-3` by default — a guard against deep stacks going NaN. Stacked three deep and set
+against the node residual (`node_out = node_mlp(...) + feats`), the edge-feature path starts at
+about **1e-10** of the output. The dependence is structural, not absent — all gradient entries are
+nonzero — but the model begins effectively blind to every edge feature, bearings included, and has
+to grow those weights before geometry can matter at all.
+
+It does escape: the trained `bigDQN8SelectEquivariant3e-4lrNormalizedPositions` checkpoint has
+`edge_mlp` and `node_mlp` weight std at 1.2e-1 … 4.3e-1, up from 1e-3, and reached 98.2% minimally
+rigid. So this is a slow start, not a ceiling.
+
+It is worth knowing for two reasons. It is a plausible contributor to the policy latching onto
+node-level statistics (degree, centralities, which arrive via `feats` and the residual) instead of
+geometry. And it is an asymmetry against GINE, whose Linears use the PyTorch default, ~5e-2 … 2e-1
+— roughly where the EGNN *finishes*. So the two backbones do not start on equal footing.
+
+`GNNBackboneEquivariant` now exposes `init_eps`. The default is unchanged, because 1e-3 is what the
+working run used and changing it silently would invalidate the one result the project rests on.
+Raising it to ~1e-1 for a depth-3 stack is a cheap experiment, not a settled fix.
 
 ### backbone-num-layers
 

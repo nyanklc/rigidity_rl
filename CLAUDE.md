@@ -61,8 +61,8 @@ The repo carries a lot of history. **Currently in focus:**
 |---|---|
 | Action spaces | `SelectNodesSequentially` (pointer-network style: pick a node per step; every 2nd pick toggles the edge between the two picks — add if absent, remove if present), `AddRemoveEdgeDiscreteNoSelfLoops` |
 | GNN backbones | `GNNBackboneEquivariant` (EGNN) and `GNNBackboneGINE` (GINE) |
-| Obs types | `DictEquivariantNodeFeaturesAndAdjAndSelection` → EGNN; `DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection` → GINE |
-| State score | `Weighted` (essentially the only one now) |
+| Obs type | `Dict`. The six `Dict*` variants were merged into it and survive as flag presets that reproduce their old layouts byte-for-byte, so pre-merge configs and checkpoints still load. The backbone is a `BACKBONE` constant in the training script now, overridden by `OBS_BACKBONE` when a legacy obs type implies one. See `DESIGN_NOTES.md#dict-observation` |
+| State score | `WeightedNormalized` (dimensionless, transfers across n and domain); `Weighted` kept so old runs replay |
 | Algorithms | PPO and DQN, both via `skrl` |
 
 **Obsolete / ignore unless asked:** `main.py`, `control.py` (the gradient-based formation controllers — the thesis originally aimed at control), everything `sb3` (`train_ppo_sb3.py`, `policy_sb3.py`, `models/sb3/`), `junk/`, `runs_old*/`, `fix_train.py`, `dummy*`, the GAT backbone, and most of the older action/obs/state-score variants still present in the dispatchers.
@@ -118,6 +118,8 @@ There is no test suite, linter, or CI. `dummy/test_mbr.py` is a scratch file, no
 - `rigidity_eigenvalue` — the first nonzero eigenvalue of `B^T B` (index `6n - rank_K` into the ascending spectrum); the standard "how robustly rigid" scalar.
 - `is_MBR(network, rank_K, brmat)` — the **minimality heuristic**. Per-edge block rank `c_k = rank(B[3k:3k+3, :])`, sorted descending, greedily accumulated until `Σ c ≥ rank_K`, giving `m_req`; minimal iff IBR and `m == m_req`. See "Known issues / open questions" below for its reliability.
 - `MBR_required_Rd(n, d)` — closed-form minimum edge count, **valid only for homogeneous `R^d`**.
+- `max_edge_rank(network, brmat_K)` → `c_max`, the most rank a single edge can contribute. **Exact.** This is what `WeightedNormalized` normalizes by.
+- `required_edge_count(network, ...)` → `m_req`, fewest edges that could make these poses rigid: closed form for homogeneous `R^d`, greedy block-rank accumulation otherwise. **A lower bound, not a ground truth** — it stays out of the reward and is used for reporting and the MBR metric only. Brute force finds it tight on everything checkable (24/24 at n=4, 6/6 at n=5, all five domains), which is evidence, not proof.
 
 ### Environment (`environment.py`)
 
@@ -128,9 +130,11 @@ One `gymnasium.Env` (`Environment`) for all experiments, configured entirely by 
 - `state_score_type` → inline `if/elif` chain inside `step()`
 - `termination_condition_type` → inline `if/elif` chain inside `step()`
 
-To add a variant, add an `elif` branch in the relevant dispatcher (and a matching model in `policy/`, registered in `train_ppo.py` / `train_dqn.py`).
+To add a variant, add an `elif` branch in the relevant dispatcher, plus a matching model in `policy/` registered in `policy/registry.py`.
 
-**Reward structure** (`step()`): `reward = -time_penalty + [action_reward if action_rewards_enable] + (state_score(s') - state_score(s)) + [terminal bonus]`. The state-score term is **potential-based shaping** — the reward is how much *better* the graph got, not the absolute quality. `Weighted` is currently `20 * rank(B) - 10 * m` (the IBR and rigidity-eigenvalue weights are set to 0 in the code).
+**Model selection is a registry, not an if/else chain.** `policy/registry.py` maps `(role, backbone, action_type)` → class, where role is skrl's model-dict key (`policy`/`value`/`q_network`). `build_models(algorithm, backbone, action_type, **kwargs)` returns the dict the agent takes directly; `instantiate()` filters the kwargs superset against each constructor's signature, so classes needing `edge_feat_dim` or `allow_skip` just declare them. `agent_loader` shares the same `instantiate`. A `(role, backbone, None)` entry is the per-backbone fallback, which is how the critics cover every non-selection action space. See `DESIGN_NOTES.md#model-registry`.
+
+**Reward structure** (`step()`): `reward = -time_penalty + [action_reward if action_rewards_enable] + (state_score(s') - state_score(s)) + [terminal bonus]`. The state-score term is **potential-based shaping** — the reward is how much *better* the graph got, not the absolute quality. `WeightedNormalized` is `(w_rank·rank - w_edge·m·c_max) / rank_K` at `(100, 25)` — dimensionless, so its optimum is ~75 at any `n` and in any domain. The older `Weighted` is `20·rank(B) - 10·m` and does **not** transfer (see below); it is kept only so old runs replay.
 
 **The discount factor is not a free hyperparameter here.** With a purely potential-based reward,
 γ=1 and no stop action, the episode return telescopes to `φ(s_T) - φ(s_0)`, so the advantage is
@@ -160,7 +164,7 @@ replaces this with `w_r·rank/rank_K - w_e·m/m_req`, which is dimensionless.
 
 **Scenarios.** With `"scenario": "<name>"`, `initialize()` loads `scenarios/<name>.json` and caches it. What a scenario contributes on reset depends on `only_randomize_edges`: `false` carries over only the **domain mix** (poses and edges are redrawn each episode — use this for heterogeneous generalization experiments), `true` keeps the scenario's **actual geometry** and resamples only the edges (use this for a fixed case-study figure). Both paths honour `random_graph_with_mean_min_edges`.
 
-**Config format changed** — current configs use `state_score_type` / `skip_is_stop` / `random_graph_with_mean_min_edges`; ~80 of the 82 files in `environments/` are the older `reward_type` / `incremental_rewards_enable` format and will `KeyError` in `load()`. Only the two `...rewardWeighted_termMinimallyRigid_{n4_R2,n8_R3}.json` (EGNN) files are current. Regenerate stale ones via `uv run environment.py` rather than hand-editing.
+**Config format keeps moving — regenerate, never hand-edit.** Current keys: `state_score_type`, `skip_is_stop`, `random_graph_with_mean_min_edges`, `include_candidate_bearings`. The current files are the four `env_actionSelectNodesSequentially_rewardWeightedNormalized_termMaxSteps_{n4_R2,n8_R2,n8_R3,n16_R3}.json`; the rest of `environments/` predates one format change or another and will either `KeyError` in `load()` or raise on a merged-away `obs_type`. `uv run environment.py <n> <domain>` regenerates. Note the filename no longer carries the obs type, since there is only one.
 
 ### Policies (`policy/`)
 
@@ -172,22 +176,26 @@ Conventions that matter when writing a new model:
 - DQN Q-networks additionally override `random_act()` so epsilon-greedy exploration also respects the mask.
 - `GNNBackboneEquivariant` output width is `node_feat_dim` (EGNN preserves feature dim; `gnn_hidden_dim` only sets the internal message width `m_dim`), whereas `GNNBackboneGINE` outputs `gnn_hidden_dim`. Head input sizes differ accordingly — a common source of shape errors.
 - GINE flips `edge_index` before message passing so a node aggregates its *outgoing* bearings ("I measure this bearing to that node"), which is the semantically right direction here.
+- **Both backbones do dense all-pairs message passing.** `GNNBackboneGINE.forward(nodes, edges)` takes the dense `(B, N, N, E)` edge tensor and builds the complete digraph itself; it used to message-pass over `adj.nonzero()` only, which silently discarded the all-pairs bearings. They now differ only in *how* they mix, which is what makes a backbone comparison meaningful. See `DESIGN_NOTES.md#gine-dense-all-pairs`.
+- **The EGNN starts nearly blind to edge features.** `egnn_pytorch` inits every Linear at `std=1e-3`; three layers deep against the node residual, the edge path begins at ~1e-10 of the output. Structural, not absent — the working DQN run grew those weights to ~1e-1 and hit 98.2% minimal — but it is a slow start, and an asymmetry against GINE, which inits at the torch default (~1e-1). `init_eps` is now a `GNNBackboneEquivariant` argument, default unchanged. See `DESIGN_NOTES.md#egnn-init-eps`.
 
-**`adj_mat` is a no-op in `GNNBackboneEquivariant` — verified, `max abs diff 0.0` between an
-all-zeros and an all-ones adjacency.** In `egnn_pytorch`, `adj_mat` is read *only* inside
-`if use_nearest:`, which requires `num_nearest_neighbors > 0` or `only_sparse_neighbors=True`; the
-backbone constructs `EGNN(dim, m_dim, edge_dim)` with both at their defaults. So the EGNN runs
-**dense all-pairs** message passing and the graph structure reaches it only through the
-edge-feature channel, where `‖bearing‖ ∈ {0,1}` acts as a de-facto adjacency bit. Dense all-pairs
-is arguably right for this task — you want to reason about edges you do not have — but it is
-currently an accident, not a decision. `EGNN` also accepts a `mask` argument the backbone never
-passes, which is what variable-`n` batching would need.
+**The EGNN runs dense all-pairs message passing, deliberately.** `adj_mat` was passed to
+`GNNBackboneEquivariant` and silently ignored — `egnn_pytorch` reads it *only* in nearest-neighbour
+mode (verified: `max abs diff 0.0` between an all-zeros and an all-ones adjacency). It is no longer
+forwarded; the graph reaches the model through the edge features, where an explicit `edge_exists`
+channel states adjacency. Dense all-pairs is right for this task — you want to reason about edges
+you do not have. `EGNN` also accepts a `mask` the backbone never passes, which is what variable-`n`
+batching will need. See `DESIGN_NOTES.md#egnn-dense-all-pairs`.
 
-**Bearings are zeroed for non-edges** (`Network.get_bearings_explicit`), so *the policy cannot see
-the geometry of any edge it might add*. All that reaches it about a candidate pair is EGNN's
-internal `rel_dist = ‖x_i - x_j‖²` and `common_neighbors = A@A`. Bearing rigidity is invariant to
-uniform scaling and depends on **directions**, so distance is close to the wrong invariant. This is
-the first-order cause of the generalization failure; ROADMAP phase 3 fixes it.
+**Bearings now cover every ordered pair**, not just existing edges, so the policy can see the
+geometry of an edge it might add — previously it could not, which was the first-order cause of the
+generalization failure. `include_candidate_bearings=False` (env config) reverts to edges-only at
+the same observation shape; that is a modelling switch, not a tuning knob, because a distributed
+agent cannot know a bearing it has not measured. See `DESIGN_NOTES.md#all-pairs-bearings`.
+
+**Positions are pose-normalized** in the observation (centred, unit RMS radius). Bearings are
+already scale-invariant but EGNN's internal `rel_dist` is not, which is why `pos_limits` used to
+matter. The rigidity maths still uses the true poses.
 
 **On feeding raw bearing vectors as EGNN edge features.** The rationale was that a bearing is
 measured in the *measuring agent's local frame*, so for an agent that has a frame (`R^2xS^1`,
@@ -336,23 +344,14 @@ backbone freely without invalidating old runs. Manifests written before this car
 `backbone_source` and are replayed against the current backbone, which is only correct while it
 is unchanged; if it no longer fits, the loader reports a shape mismatch rather than guessing.
 
-**Runs older than the manifests** fall back to `load_agent_legacy()`, which reads the architecture
-back out of the checkpoint's parameter shapes (`infer_architecture()`: backbone, depth,
-`gnn_hidden_dim`, `head_hidden_dim`, feature dims) and then finds the model class by *constructing
-every candidate in `policy/` and comparing state-dict keys and shapes* — so it can never drift out
-of sync with the training scripts. It runs unattended in the normal case: the algorithm comes from
-which `models/complete/<ALGO>/` holds the file, cross-checked against the saved model roles
-(`policy`+`value` ⇒ PPO, `q_network` ⇒ DQN/DDQN). It only asks when that is genuinely undecidable —
-the same name under several algorithm directories, or roles matching no known agent — or when
-several model classes fit the checkpoint equally well. The GNN
-backbones therefore take a `num_layers` argument (older runs used 2 layers, current ones 3);
-`rebuild_backbone()` swaps the depth before loading. Submodules are still named `conv1..convN`, so
-3-layer checkpoints are unaffected.
-
-Most old checkpoints are **not** recoverable, because the observation format changed: they expect
-6–13 node features and 3 edge features where the current obs types produce 10 and 6. The loader
-reports that explicitly rather than failing on a shape error. Of the 26 manifest-less checkpoints,
-4 load (the EGNN ones from after the feature set settled).
+**A manifest is now required.** The shape-sniffing fallback that used to reconstruct a bare `.pt`
+(`load_agent_legacy`, `infer_architecture`, `match_model_class`, interactive algorithm prompts —
+~230 lines) is gone; `load_agent()` raises if `train/<name>.json` is missing. That made 26
+manifest-less checkpoints unloadable, all of them pre-dating the current observation format and
+mostly unrecoverable anyway. What survived the cut is `backbone_depth()` + `rebuild_backbone()`,
+because manifest-bearing runs at **both 2 and 3 layers** exist and `num_layers` is not a constructor
+argument of the model classes — a depth-2 checkpoint still reports
+`(archived source, backbone rebuilt at 2 layers)` on load.
 
 ### Training (`train_ppo.py`, `train_dqn.py`)
 

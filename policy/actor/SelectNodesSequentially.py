@@ -6,7 +6,6 @@ from skrl.utils.spaces.torch import unflatten_tensorized_space
 from policy.gnn_backbone import *
 
 
-# compatible with observation type "DictNodeFeaturesAndAdjAndSelection"
 class PPO_ActorModel_SelectNodesSequentially(CategoricalMixin, Model):
     def __init__(
         self,

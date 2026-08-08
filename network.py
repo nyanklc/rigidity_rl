@@ -305,10 +305,33 @@ class Network:
         features = np.asarray([agent.pose.position for agent in self.agents])
         return features
 
+    # N, 3 -- centred on the centroid and scaled to unit RMS radius.
+    # See DESIGN_NOTES.md#pose-normalization
+    def get_normalized_position_features(self, eps=1e-9):
+        p = self.get_position_features().astype(float)
+        p = p - p.mean(axis=0, keepdims=True)
+        rms = np.sqrt(np.mean(np.sum(p**2, axis=-1)))
+        return p / max(rms, eps)
+
     # N, N, 3
     def get_bearing_features(self):
         existing_bearing_features = self.get_bearings_explicit()
         return existing_bearing_features
+
+    # N, N, 3 -- every ordered pair, whether or not the edge exists.
+    # Candidate-edge geometry; see DESIGN_NOTES.md#all-pairs-bearings
+    def get_all_pairs_bearings(self):
+        n = len(self.agents)
+        b = np.zeros((n, n, 3))
+        for i in range(n):
+            for j in range(n):
+                if i != j:
+                    b[i, j] = self.agents[i].get_bearing(self.agents[j])
+        return b
+
+    # N, N, 1
+    def get_edge_exists_features(self):
+        return self.edges.astype(float)[:, :, np.newaxis]
 
     # N, N, 3
     def get_bearing_features_discrete(self):

@@ -1,4 +1,4 @@
-from environment import Environment
+from environment import Environment, OBS_BACKBONE
 import os
 import sys
 import json
@@ -25,6 +25,9 @@ MEM_SIZE = 10000
 SEED = 0  # recorded in the manifest; training was unseeded before this
 EGREEDY_STEPS = TOTAL_TIMESTEPS * 0.5
 
+# which GNN serves the model; the observation is one type now, so the backbone
+# is a model choice. One of policy.BACKBONES.
+BACKBONE = "Equivariant"
 GNN_HIDDEN_DIM = 128
 QNETWORK_HEAD_HIDDEN_DIM = 256
 
@@ -69,12 +72,14 @@ with open(filepath, "r") as f:
     obs_type = config.get("obs_type")
     # skip is opt-out: see policy/*/SelectNodesSequentially.py for why
     allow_skip = config.get("skip_enabled", True)
+    # a pre-merge obs_type implied its backbone; honour that over the constant
+    backbone = OBS_BACKBONE.get(obs_type, BACKBONE)
     n = config.get("n")
     domains_str = config.get("domains", "domain").replace("^", "").replace("(", "").replace(")", "")
     n_domains = f"n{n}_{domains_str}"
 
 if "prefix=" in sys.argv[2]:
-    model_name = model_name[7:] + f"_action{action_type}_obs{obs_type}_{scenario_name if scenario_name is not None else n_domains}"
+    model_name = model_name[7:] + f"_action{action_type}_{backbone}_{scenario_name if scenario_name is not None else n_domains}"
 
 train_dir = "./train"
 os.makedirs(train_dir, exist_ok=True)
@@ -116,115 +121,20 @@ env.observation_space.seed(SEED)
 node_features_dim = raw_env.single_observation_space["node_features"].shape[1]
 edge_features_dim = raw_env.single_observation_space["edge_features"].shape[-1]
 
-models = {}
-
-if action_type == "AddRemoveEdgeDiscreteNoSelfLoops":
-    if obs_type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
-        models["q_network"] = DQN_QNetwork_GINE_AddRemoveEdgeDiscreteNoSelfLoops(
-            n,
-            node_feat_dim=node_features_dim,
-            edge_feat_dim=edge_features_dim,
-            gnn_hidden_dim=GNN_HIDDEN_DIM,
-            head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
-            observation_space=env.observation_space,
-            action_space=env.action_space,
-            device=DEVICE,
-        )
-    elif obs_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
-        models["q_network"] = DQN_QNetwork_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(
-            n,
-            node_feat_dim=node_features_dim,
-            edge_feat_dim=edge_features_dim,
-            gnn_hidden_dim=GNN_HIDDEN_DIM,
-            head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
-            observation_space=env.observation_space,
-            action_space=env.action_space,
-            device=DEVICE,
-        )
-    else:
-        models["q_network"] = DQN_QNetwork_AddRemoveEdgeDiscreteNoSelfLoops(
-            n,
-            node_feat_dim=node_features_dim,
-            gnn_hidden_dim=GNN_HIDDEN_DIM,
-            head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
-            observation_space=env.observation_space,
-            action_space=env.action_space,
-            device=DEVICE,
-        )
-elif action_type == "AddEdgeDiscreteNoSelfLoops":
-    models["q_network"] = DQN_QNetwork_AddEdgeDiscreteNoSelfLoops(
-        n,
-        node_feat_dim=node_features_dim,
-        gnn_hidden_dim=GNN_HIDDEN_DIM,
-        head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
-        observation_space=env.observation_space,
-        action_space=env.action_space,
-        device=DEVICE,
-    )
-elif action_type == "SelectNodesSequentially":
-    if obs_type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
-        models["q_network"] = DQN_QNetwork_GINE_SelectNodesSequentially(
-            n,
-            node_feat_dim=node_features_dim,
-            edge_feat_dim=edge_features_dim,
-            gnn_hidden_dim=GNN_HIDDEN_DIM,
-            head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
-            observation_space=env.observation_space,
-            action_space=env.action_space,
-            device=DEVICE,
-            allow_skip=allow_skip,
-        )
-    elif obs_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
-        models["q_network"] = DQN_QNetwork_Equivariant_SelectNodesSequentially(
-            n,
-            node_feat_dim=node_features_dim,
-            gnn_hidden_dim=GNN_HIDDEN_DIM,
-            edge_feat_dim=edge_features_dim,
-            head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
-            observation_space=env.observation_space,
-            action_space=env.action_space,
-            device=DEVICE,
-            allow_skip=allow_skip,
-        )
-    else:
-        models["q_network"] = DQN_QNetwork_SelectNodesSequentially(
-            n,
-            node_feat_dim=node_features_dim,
-            gnn_hidden_dim=GNN_HIDDEN_DIM,
-            head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
-            observation_space=env.observation_space,
-            action_space=env.action_space,
-            device=DEVICE,
-            allow_skip=allow_skip,
-        )
-elif action_type == "AddEdgeDiscreteNoSkipNoSelfLoops":
-    if obs_type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
-        models["q_network"] = DQN_QNetwork_GINE_AddEdgeDiscreteNoSkipNoSelfLoops(
-                n,
-                node_feat_dim=node_features_dim,
-                edge_feat_dim=edge_features_dim,
-                gnn_hidden_dim=GNN_HIDDEN_DIM,
-                head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
-                observation_space=env.observation_space,
-                action_space=env.action_space,
-                device=DEVICE,
-            )
-    elif obs_type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
-        models["q_network"] = DQN_QNetwork_Equivariant_AddEdgeDiscreteNoSkipNoSelfLoops(
-            n,
-            node_feat_dim=node_features_dim,
-            edge_feat_dim=edge_features_dim,
-            gnn_hidden_dim=GNN_HIDDEN_DIM,
-            head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
-            observation_space=env.observation_space,
-            action_space=env.action_space,
-            device=DEVICE,
-        )
-    else:
-        raise Exception(f"Not implemented {action_type} {obs_type}")
-else:
-    print(f"Q network for action {action_type} / obs {obs_type} is not implemented.")
-    quit()
+models = build_models(
+    "DQN",
+    backbone=backbone,
+    action_type=action_type,
+    n=n,
+    node_feat_dim=node_features_dim,
+    edge_feat_dim=edge_features_dim,
+    gnn_hidden_dim=GNN_HIDDEN_DIM,
+    head_hidden_dim=QNETWORK_HEAD_HIDDEN_DIM,
+    observation_space=env.observation_space,
+    action_space=env.action_space,
+    device=DEVICE,
+    allow_skip=allow_skip,
+)
 
 models["target_q_network"] = copy.deepcopy(models["q_network"])
 
@@ -301,6 +211,7 @@ descriptor = {
     "nr_envs": NR_ENVS,
     "mem_size": MEM_SIZE,
     "egreedy_steps": EGREEDY_STEPS,
+    "backbone": backbone,
     "gnn_hidden_dim": GNN_HIDDEN_DIM,
     "head_hidden_dim": QNETWORK_HEAD_HIDDEN_DIM,
     "hyperparameters": make_serializable(dataclasses.asdict(cfg)),

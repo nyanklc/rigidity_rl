@@ -3,9 +3,8 @@
 The manifests in train/ embed the *source* of the actor/critic/q-network classes, so the
 architecture is recovered by name from policy/ rather than being hardcoded here.
 
-Runs from before the manifests existed have no train/<name>.json. For those, load_agent()
-falls back to an interactive path that reads the architecture straight out of the checkpoint's
-parameter shapes and confirms the guesses with the user (see load_agent_legacy).
+A run without a manifest cannot be loaded. The shape-sniffing fallback that used to
+guess the architecture out of a bare .pt was dropped once every live run carried one.
 """
 
 import contextlib
@@ -30,15 +29,6 @@ from policy.gnn_backbone import GNNBackboneEquivariant, GNNBackboneGINE, GNNBack
 
 ALGORITHMS = ("PPO", "DQN", "DDQN")
 
-# which skrl model roles each algorithm expects, and the class-name prefix that
-# implementations of that role use in policy/
-MODEL_ROLES = {
-    "PPO": {"policy": "PPO_ActorModel_", "value": "PPO_CriticModel_"},
-    "DQN": {"q_network": "DQN_QNetwork_"},
-    "DDQN": {"q_network": "DQN_QNetwork_"},
-}
-
-
 def model_path(algorithm, model_name):
     return f"./models/complete/{algorithm}/{model_name}.pt"
 
@@ -53,12 +43,6 @@ def get_class_name(architecture_lines):
         if line.startswith("class "):
             return line.split()[1].split("(")[0].rstrip(":")
     return None
-
-
-def instantiate(cls, all_kwargs):
-    sig = inspect.signature(cls.__init__)
-    valid_kwargs = {k: v for k, v in all_kwargs.items() if k in sig.parameters}
-    return cls(**valid_kwargs)
 
 
 def instantiate_model(class_name, all_kwargs):
@@ -125,7 +109,7 @@ def resolve_model(train_info, arch_key, kwargs, checkpoint_sd, role):
     if class_name and class_name in globals():
         attempts.append(("current policy/", lambda: globals()[class_name]))
 
-    arch = infer_architecture(checkpoint_sd)
+    depth = backbone_depth(checkpoint_sd)
     errors = []
     for label, get_cls in attempts:
         try:
@@ -140,7 +124,6 @@ def resolve_model(train_info, arch_key, kwargs, checkpoint_sd, role):
 
         # backbone depth is not a constructor argument of the model class, so a run from
         # when the backbone had 2 layers needs it swapped to what the weights imply
-        depth = arch.get("gnn_layers")
         if depth and depth != getattr(getattr(model, "gnn", None), "num_layers", depth):
             try:
                 rebuild_backbone(model, depth)
@@ -177,14 +160,6 @@ def _report_source_drift(class_name, class_source, backbone_source):
               f"using the archived version so the weights stay valid")
 
 
-# ---------------------------------------------------------------------------------------
-# Legacy checkpoints (no manifest): recover the architecture from parameter shapes
-# ---------------------------------------------------------------------------------------
-def find_checkpoints(model_name):
-    """Which algorithm directories hold a checkpoint with this name."""
-    return [a for a in ALGORITHMS if os.path.exists(model_path(a, model_name))]
-
-
 def list_checkpoints():
     """{algorithm: [model_name, ...]} for everything saved under models/complete/."""
     out = {}
@@ -198,45 +173,14 @@ def list_checkpoints():
     return out
 
 
-def infer_architecture(state_dict):
-    """Read back the constructor arguments a state dict was produced with.
+def shapes_of(state_dict):
+    return {k: tuple(v.shape) for k, v in state_dict.items()}
 
-    Only the values that are *not* recoverable from the environment are needed:
-    the backbone depth and the two hidden widths. The feature dims are reported
-    too, but only so a mismatch with the current observation space can be
-    explained instead of surfacing as an opaque shape error.
-    """
-    keys = list(state_dict.keys())
-    depth = len({int(m.group(1)) for k in keys if (m := re.match(r"gnn\.conv(\d+)\.", k))})
-    arch = {"gnn_layers": depth or None}
 
-    if any("edge_mlp" in k for k in keys):
-        # EGNN: edge_mlp input is [h_i, h_j, ||x_i - x_j||^2, e_ij]
-        dim = state_dict["gnn.conv1.node_mlp.3.weight"].shape[0]
-        arch["backbone"] = "Equivariant"
-        arch["node_feat_dim"] = dim
-        arch["edge_feat_dim"] = state_dict["gnn.conv1.edge_mlp.0.weight"].shape[1] - 2 * dim - 1
-        arch["gnn_hidden_dim"] = state_dict["gnn.conv1.edge_mlp.3.weight"].shape[0]
-    elif any(re.match(r"gnn\.conv1\.nn\.", k) for k in keys):
-        arch["backbone"] = "GINE"
-        arch["node_feat_dim"] = state_dict["gnn.conv1.nn.0.weight"].shape[1]
-        arch["gnn_hidden_dim"] = state_dict["gnn.conv1.nn.2.weight"].shape[0]
-        lin = [k for k in keys if k.startswith("gnn.conv1.lin")]
-        arch["edge_feat_dim"] = state_dict[lin[0]].shape[1] if lin else None
-    elif any("att_src" in k for k in keys):
-        arch["backbone"] = "GAT"
-        lin = next((k for k in keys if re.match(r"gnn\.conv1\.lin(_src)?\.weight", k)), None)
-        arch["node_feat_dim"] = state_dict[lin].shape[1] if lin else None
-        arch["edge_feat_dim"] = None
-        arch["gnn_hidden_dim"] = state_dict["gnn.conv1.att_src"].shape[-1]
-    else:
-        arch["backbone"] = "unknown"
-
-    if "head.0.weight" in state_dict:
-        arch["head_hidden_dim"] = state_dict["head.0.weight"].shape[0]
-        arch["head_in"] = state_dict["head.0.weight"].shape[1]
-    arch["has_skip_head"] = any(k.startswith("skip_head.") for k in keys)
-    return arch
+def backbone_depth(state_dict):
+    """How many conv layers the saved backbone had; None if it has no backbone."""
+    ns = {int(m) for k in state_dict for m in re.findall(r"gnn\.conv(\d+)\.", k)}
+    return max(ns) if ns else None
 
 
 def rebuild_backbone(model, num_layers):
@@ -245,188 +189,6 @@ def rebuild_backbone(model, num_layers):
     if gnn is None or not hasattr(gnn, "init_args") or num_layers in (None, gnn.num_layers):
         return
     model.gnn = type(gnn)(**gnn.init_args, num_layers=num_layers).to(model.device)
-
-
-def shapes_of(state_dict):
-    return {k: tuple(v.shape) for k, v in state_dict.items()}
-
-
-def match_model_class(prefix, checkpoint_sd, base_kwargs, arch):
-    """Every class in policy/ whose parameters match the checkpoint exactly."""
-    target = shapes_of(checkpoint_sd)
-    matches, near = [], []
-
-    kwargs = dict(base_kwargs)
-    if arch.get("gnn_hidden_dim"):
-        kwargs["gnn_hidden_dim"] = arch["gnn_hidden_dim"]
-    if arch.get("head_hidden_dim"):
-        kwargs["head_hidden_dim"] = arch["head_hidden_dim"]
-
-    for class_name in sorted(n for n in policy.__all__ if n.startswith(prefix)):
-        try:
-            model = instantiate_model(class_name, kwargs)
-            rebuild_backbone(model, arch.get("gnn_layers"))
-            got = shapes_of(model.state_dict())
-        except Exception:
-            continue
-        if got == target:
-            matches.append(class_name)
-        elif set(got) == set(target):
-            bad = [k for k in got if got[k] != target[k]]
-            near.append((class_name, bad[:3]))
-    return matches, near
-
-
-def algorithm_from_roles(checkpoint):
-    """What the saved model keys imply. PPO stores policy+value, DQN/DDQN a q_network."""
-    roles = {k for k in checkpoint if k != "optimizer"}
-    if {"policy", "value"} <= roles:
-        return "PPO"
-    if "q_network" in roles:
-        # DQN and DDQN save the same roles, so this cannot tell them apart
-        return "DQN"
-    return None
-
-
-def resolve_algorithm(model_name):
-    """(algorithm, path, checkpoint), asking only when it genuinely cannot be decided.
-
-    The directory under models/complete/ names the algorithm, and the saved model roles
-    corroborate it. Only a contradiction or the same name in several directories needs input.
-    """
-    found = find_checkpoints(model_name)
-    if not found:
-        raise FileNotFoundError(
-            f"no checkpoint named '{model_name}' under models/complete/{{{','.join(ALGORITHMS)}}}"
-        )
-
-    if len(found) > 1:
-        print(f"  '{model_name}' exists under {', '.join(found)} - these are different files.")
-        algorithm = _ask("  Which algorithm was this trained with?", found, default=found[0])
-        path = model_path(algorithm, model_name)
-        return algorithm, path, torch.load(path, map_location="cpu", weights_only=False)
-
-    algorithm = found[0]
-    path = model_path(algorithm, model_name)
-    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-    implied = algorithm_from_roles(checkpoint)
-
-    if implied is None:
-        print(f"  {path} stores {sorted(k for k in checkpoint if k != 'optimizer')}, "
-              f"which matches no known agent.")
-        algorithm = _ask("  Which algorithm was this trained with?", list(ALGORITHMS),
-                         default=algorithm)
-    elif implied == "PPO" and algorithm != "PPO":
-        # saved under the wrong directory at some point
-        print(f"  {path} is under {algorithm}/ but stores policy+value, so it is PPO.")
-        algorithm = "PPO"
-    elif implied == "DQN" and algorithm == "PPO":
-        print(f"  {path} is under PPO/ but stores a q_network, so it is DQN.")
-        algorithm = "DQN"
-    else:
-        print(f"  algorithm: {algorithm} (from models/complete/{algorithm}/, "
-              f"stores {sorted(k for k in checkpoint if k != 'optimizer')})")
-
-    return algorithm, path, checkpoint
-
-
-def _ask(prompt, options=None, default=None):
-    suffix = f" [{'/'.join(options)}]" if options else ""
-    suffix += f" (default: {default})" if default is not None else ""
-    while True:
-        raw = input(f"{prompt}{suffix}: ").strip()
-        if not raw and default is not None:
-            return default
-        if not options or raw in options:
-            return raw
-        print(f"  pick one of {options}")
-
-
-def load_agent_legacy(model_name, env, raw_env, device="cpu"):
-    """Interactive loader for checkpoints with no train/<name>.json manifest."""
-    print(f"\nNo manifest at {manifest_path(model_name)} - recovering from the checkpoint.")
-    algorithm, path, checkpoint = resolve_algorithm(model_name)
-
-    roles = MODEL_ROLES[algorithm]
-    missing = [r for r in roles if r not in checkpoint]
-    if missing:
-        raise ValueError(
-            f"{path} has {sorted(k for k in checkpoint if k != 'optimizer')}, "
-            f"but {algorithm} needs {sorted(roles)}."
-        )
-
-    node_feat_dim = raw_env.observation_space["node_features"].shape[1]
-    edge_feat_dim = raw_env.observation_space["edge_features"].shape[-1]
-    base_kwargs = {
-        "n": len(raw_env.network.agents),
-        "node_feat_dim": node_feat_dim,
-        "edge_feat_dim": edge_feat_dim,
-        "observation_space": env.observation_space,
-        "action_space": env.action_space,
-        "device": device,
-    }
-
-    models = {}
-    for role, prefix in roles.items():
-        sd = checkpoint[role]
-        arch = infer_architecture(sd)
-        print(f"\n  [{role}] recovered from parameter shapes:")
-        for k in ("backbone", "gnn_layers", "gnn_hidden_dim", "head_hidden_dim",
-                  "node_feat_dim", "edge_feat_dim"):
-            if arch.get(k) is not None:
-                print(f"      {k:16s} {arch[k]}")
-
-        matches, near = match_model_class(prefix, sd, base_kwargs, arch)
-
-        if not matches:
-            print(f"\n  No class in policy/ reproduces this {role}.")
-            # the usual cause: the observation format changed since the run
-            ck_node, ck_edge = arch.get("node_feat_dim"), arch.get("edge_feat_dim")
-            if ck_node is not None and ck_node not in (node_feat_dim, node_feat_dim + 1):
-                print(f"  The checkpoint expects {ck_node} node features but this environment "
-                      f"produces {node_feat_dim}.")
-            if ck_edge is not None and ck_edge != edge_feat_dim:
-                print(f"  The checkpoint expects {ck_edge} edge features but this environment "
-                      f"produces {edge_feat_dim}.")
-            if (ck_node is not None and ck_node not in (node_feat_dim, node_feat_dim + 1)) or (
-                ck_edge is not None and ck_edge != edge_feat_dim
-            ):
-                print("  The observation space changed after this run; it cannot be replayed "
-                      "on the current obs type without restoring the old feature set.")
-            for name, bad in near[:5]:
-                print(f"    closest: {name} differs at {bad}")
-            raise ValueError(f"could not reconstruct the {role} for '{model_name}'")
-
-        if len(matches) == 1:
-            class_name = matches[0]
-            print(f"      -> {class_name}")
-        else:
-            print(f"  Several classes fit this {role} equally well:")
-            for i, m in enumerate(matches):
-                print(f"      {i}: {m}")
-            idx = _ask("  Which one?", [str(i) for i in range(len(matches))], default="0")
-            class_name = matches[int(idx)]
-
-        kwargs = dict(base_kwargs)
-        if arch.get("gnn_hidden_dim"):
-            kwargs["gnn_hidden_dim"] = arch["gnn_hidden_dim"]
-        if arch.get("head_hidden_dim"):
-            kwargs["head_hidden_dim"] = arch["head_hidden_dim"]
-        # older runs predate the skip masking option; they always had the skip head
-        kwargs["allow_skip"] = arch.get("has_skip_head", True)
-
-        model = instantiate_model(class_name, kwargs)
-        rebuild_backbone(model, arch.get("gnn_layers"))
-        model.load_state_dict(sd)
-        models[role] = model
-
-    if algorithm != "PPO":
-        models["target_q_network"] = copy.deepcopy(models["q_network"])
-
-    agent = build_agent(algorithm, models, env, device, mem_size=2048 * 4,
-                        experiment_name=model_name)
-    print(f"\nLoaded '{model_name}' as {algorithm}.\n")
-    return agent, algorithm
 
 
 def build_agent(algorithm, models, env, device, mem_size, experiment_name):
@@ -662,8 +424,10 @@ def load_agent(model_name, env, raw_env, device="cpu"):
     """Returns (agent, algorithm). `env` is the wrapped env, `raw_env` the Environment."""
     train_json_path = manifest_path(model_name)
     if not os.path.exists(train_json_path):
-        # pre-manifest run: recover what we can from the checkpoint and ask for the rest
-        return load_agent_legacy(model_name, env, raw_env, device=device)
+        raise FileNotFoundError(
+            f"no manifest at {train_json_path}. A checkpoint cannot be loaded without one -- "
+            f"it records the model classes, hyperparameters and env config the run used."
+        )
 
     with open(train_json_path, "r") as f:
         train_info = json.load(f)

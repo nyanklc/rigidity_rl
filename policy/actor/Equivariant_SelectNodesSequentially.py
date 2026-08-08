@@ -7,7 +7,6 @@ from policy.gnn_backbone import *
 
 
 
-# compatible with observation type "DictEquivariantNodeFeaturesAndAdjAndSelection"
 class PPO_ActorModel_Equivariant_SelectNodesSequentially(CategoricalMixin, Model):
     def __init__(
         self,

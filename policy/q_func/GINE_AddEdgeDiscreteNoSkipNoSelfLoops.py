@@ -8,7 +8,6 @@ from policy.gnn_backbone import *
 
 
 
-# compatible with observation type "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection"
 class DQN_QNetwork_GINE_AddEdgeDiscreteNoSkipNoSelfLoops(TabularMixin, Model):
     def __init__(
         self,
@@ -60,19 +59,7 @@ class DQN_QNetwork_GINE_AddEdgeDiscreteNoSkipNoSelfLoops(TabularMixin, Model):
         n = node_features.shape[1]
 
         # batch
-        edge_index_list = []
-        edge_attr_list = []
-        for i in range(batch_size):
-            src, dst = adj[i].nonzero(as_tuple=True)
-            edge_index = torch.stack([src, dst], dim=0) + i * n
-            edge_index_list.append(edge_index)
-            # we get all possible edges' features from the observation
-            # but we only need existing edges'
-            edge_attr_list.append(edge_features[i][src, dst])
-        full_edge_index = torch.cat(edge_index_list, dim=1).to(self.device)
-        full_edge_attr = torch.cat(edge_attr_list, dim=0).to(self.device)
-
-        h = self.gnn(node_features, full_edge_index, full_edge_attr)
+        h = self.gnn(node_features, edge_features)
         h_i = h.unsqueeze(2).expand(-1, -1, n, -1)
         h_j = h.unsqueeze(1).expand(-1, n, -1, -1)
         exists_flag = adj.unsqueeze(-1)

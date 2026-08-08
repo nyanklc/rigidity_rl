@@ -8,7 +8,6 @@ from policy.gnn_backbone import *
 
 
 
-# compatible with observation type "DictEquivariantNodeFeaturesAndAdjAndSelection"
 class PPO_CriticModel_Equivariant(DeterministicMixin, Model):
     def __init__(
         self,

@@ -232,7 +232,7 @@ Each phase is independently testable and leaves the repository in a working stat
 `environment.py` dispatch names are kept intact throughout, so existing checkpoints keep replaying
 through the manifest system.
 
-### Phase 1 — PPO discount factor and memory sizing — **DONE** (`b14396b`)
+### Phase 1 — PPO discount factor and memory sizing — **DONE, CONFIRMED**
 *Fixes 1.2. Two lines, largest expected effect per unit of work.*
 
 - `cfg.discount_factor = 1.0` -> `0.99`.
@@ -240,9 +240,18 @@ through the manifest system.
 - Record in the source comment *why* gamma=1 is degenerate here, since the existing comment argues
   for it.
 
-**Acceptance (not yet run):** a PPO run on `...termMaxSteps_n8_R3` shows entropy falling below
-~1.4 nats and `Episode/ Best is min rigid` rising above 0.5 within 300k trainer steps. Target is
-parity with DQN's 0.98.
+**Confirmed.** `bigPPOSelectEquivariant3e-4lrNormalizedPositionsGamma`, same environment as the
+broken run, evaluated over 5 instances at a 200-step budget:
+
+| method | edges | score | rigid | minimal |
+|---|---|---|---|---|
+| initial | 11.40 | 78.0 | 40% | 0% |
+| random | 15.00 | 242.0 | 60% | 0% |
+| **learned** | **10.60** | **294.0** | **100%** | **60%** |
+
+Optimum is 10 edges / 300. The earlier gamma=1 run sat at the random baseline with entropy frozen
+near its ceiling; PPO now solves n=8/R^3. Remaining gap to DQN's 98.2% minimal is a tuning question,
+not a structural one.
 
 ### Phase 2 — dimension-normalized state score — **DONE**
 *Fixes 2.5. Prerequisite for anything multi-n or multi-domain.*
@@ -276,7 +285,7 @@ on it.
 
 Brute-force `optimal` at n=4/R^2 also returns exactly 75.00 with 5 edges. Acceptance met.
 
-### Phase 3 — all-pairs bearing observation (geometry-only ablation arm)
+### Phase 3 — all-pairs bearing observation (geometry-only ablation arm) — **DONE**
 *Fixes 2.2 and 2.1.*
 
 - `Network.get_all_pairs_bearing_features()` — bearings for every ordered pair `i != j`,
@@ -290,8 +299,111 @@ Brute-force `optimal` at n=4/R^2 also returns exactly 75.00 with 5 edges. Accept
   **tier 2** information (appendix A.1) — an agent does not know its bearing to a node it has not
   measured — so a later distributed variant needs to be able to switch them off without a rewrite.
 
-**Acceptance:** a policy trained at n=8/R^3 evaluated zero-shot at n=4/R^2 is no longer *below*
-the random baseline on `rigid %`.
+**Delivered.** Beyond the listed items, two cleanups landed with it:
+
+- **The six `Dict*` observation types merged into one, `"Dict"`.** They only ever differed in which
+  keys they populated, and every model already selects by key, so the split coupled "what the
+  environment exposes" to "which network consumes it" for no benefit. Choosing EGNN vs GINE is now
+  a `BACKBONE` constant in the training script. An unknown `obs_type` raises with a migration hint
+  instead of silently returning `None`.
+- **`policy/registry.py`** maps `(role, backbone, action_type)` → class, replacing the model
+  if/elif chains in both training scripts (`train_ppo.py` 439 → 259 lines, `train_dqn.py` 345 → 250).
+  Constructor differences are absorbed by filtering a kwargs superset against each signature;
+  `agent_loader` shares the same `instantiate()`.
+
+- **GINE was left behind by the observation change and has been brought level.** Every GINE model
+  built `edge_index` from `adj.nonzero()`, so the new all-pairs bearings were computed and then
+  thrown away — the fix reached the EGNN arm only. `GNNBackboneGINE` now takes the dense
+  `(B, N, N, E)` tensor and builds the complete digraph itself, which also deleted the per-sample
+  Python loop duplicated across seven models.
+
+Verified: observation shapes at n=4/8/16, `edge_exists` matches `adj` exactly, bearings unit-norm on
+all n(n-1) off-diagonal pairs, coordinates centred to 1e-16 with unit RMS radius,
+`include_candidate_bearings=False` restores edges-only bearings at an unchanged shape, the reference
+-method table is numerically unchanged (the reward path was untouched), and **all four
+(backbone x algorithm) combinations build, forward and train**: EGNN/GINE x PPO/DQN, at 42-63 it/s.
+GINE responds to non-edge features (0.86 on random init) and preserves the outgoing-edge direction
+(1-layer sensitivity 0.96 outgoing, exactly 0 incoming). GINE batching re-keys correctly across
+batch sizes 1/5/64.
+
+**Found while verifying, not fixed:** `egnn_pytorch` inits every Linear at `std=1e-3`, so three
+layers deep the EGNN's edge-feature path starts ~1e-10 against the node residual — structurally
+present but effectively blind to bearings until those weights grow. The working DQN checkpoint did
+grow them (1e-3 -> 1.2e-1..4.3e-1), so it is a slow start rather than a ceiling, but it is an
+asymmetry against GINE, which inits at the torch default. `init_eps` is now exposed with the default
+unchanged; raising it for a depth-3 stack is a cheap experiment worth running.
+
+**Backward compatibility.** The merge initially broke pre-merge configs outright. The six old names
+are now flag presets of the same builder that reproduce their old layouts exactly — including *raw*
+coordinates, which matters as much as the shapes, since a checkpoint trained before pose
+normalization would otherwise be silently fed differently-scaled inputs. Verified element-wise
+against the pre-merge code. `OBS_BACKBONE` also records which GNN each legacy name implied, and the
+training scripts prefer it over their `BACKBONE` constant.
+
+**The manifest-less checkpoint loader was dropped** (~230 lines: `load_agent_legacy`,
+`infer_architecture`, `match_model_class`, algorithm inference, interactive prompts). `load_agent()`
+now raises without a manifest. 26 old checkpoints become unloadable, all pre-dating the current
+observation format. `backbone_depth()` + `rebuild_backbone()` were kept: manifest-bearing runs exist
+at both 2 and 3 layers and `num_layers` is not a constructor argument, so depth-2 checkpoints still
+need the swap — verified, one still loads reporting `backbone rebuilt at 2 layers`.
+
+**Acceptance (pending a retrain at n=8/R^3):** a policy trained there and evaluated zero-shot at
+n=4/R^2 is no longer *below* the random baseline on `rigid %`.
+
+### Phase 3 evaluation — `...AllBearings`, 600k steps, all of phases 1-3
+
+Trained on `env_actionSelectNodesSequentially_rewardWeightedNormalized_termMaxSteps_n8_R3`
+(gamma 0.99, rollouts == memory, WeightedNormalized, Dict obs with all-pairs bearings).
+Training converged and plateaued from about half-way: `Best state score` 70.0 -> 74.2 (ceiling 75),
+`Best nr edges` 11.5 -> 10.3, `Best is rigid` 0.86 -> 1.00, `Best is min rigid` 0.22 -> ~0.75,
+entropy 1.0 -> 0.7 nats.
+
+**In-distribution (n=8/R^3, 200 steps, 20 instances) — no change from the previous run.**
+
+| model | edges | rigid | minimal |
+|---|---|---|---|
+| greedy | 10.65 | 100% | 40% |
+| `...Gamma` (old obs) | 10.20 | 100% | 85% |
+| `...AllBearings` | 10.25 | 100% | 85% |
+
+**Transfer (n=16/R^3, 1000 steps, 20 instances) — large gain.**
+
+| model | edges (need 22) | rigid | minimal |
+|---|---|---|---|
+| random | 54.30 | 60% | 0% |
+| `...Gamma` (old obs) | 50.80 | 80% | 10% |
+| `...AllBearings` | **32.95** | **90%** | 5% |
+
+Edge count down 35%, rigid up 10 points. Minimal 10% -> 5% is 2/20 vs 1/20, i.e. noise.
+
+This is the signature you would expect from repairing an observation deficit: **no gain where the
+policy could already fit its training configuration, a large gain where it has to generalize.**
+Phase 3's acceptance criterion (no longer below random off-distribution) is met with room to spare.
+
+**Measurement bug, since fixed.** The first n=16 evaluation reported 50.10 edges and 0% minimal.
+That run got 200 steps, not the 1000 the earlier model was given: regenerating the environment
+configs used one `MAX_STEPS = 200` constant for every n, which silently cut the n=16 budget by 5x
+while `--steps 1000` was overridden by the config. `MAX_STEPS` now scales as `4 * n * (n - 1)`
+(n=4 -> 48, n=8 -> 224, n=16 -> 960): the edits a graph needs grow with the candidate-pair count,
+so a constant starves large n. **Existing configs were left alone except n=16 (set to 1000 to match
+the earlier evaluation); regenerating n=8 would move it 200 -> 224.**
+
+**What still fails, and why.** At n=16 the policy stalls at ~33 edges against a requirement of 22,
+and only reaches rank 43.3 of 44 on average, so it is not even reliably rigid. Two measurements
+locate the failure:
+
+- *Pruning is barely directed.* Over steps 100-200 at n=8 the policy spends 980 edits for a net
+  change of 10 edges (50.5% removals, ~0.6 sigma from a coin flip). It succeeds at n=8 only because
+  the gap is 2-3 edges and best-of-100-toggles finds it. At n=16 the gap is ~30 edges and that does
+  not scale.
+- *It locks into a cycle once the graph stops being obviously over-connected.* Rolling out at n=16:
+  from 150 edges it deletes productively (150 -> 72, 85 distinct pairs touched, entropy 2.69/2.83);
+  from 51 edges it touches only **22 distinct pairs, revisits 89% of them, and entropy drops to
+  1.78** — 200 toggles for a net -10 edges.
+
+The bulk-deletion regime is learned; the last, hard deletions are not. Deciding whether a specific
+edge is redundant is exactly the judgement `rank`/`c_k` encode and the observation does not carry,
+which is the Phase 4 hypothesis stated as a measurement rather than a guess.
 
 ### Phase 4 — rigidity-feature observation (informed ablation arm)
 *Addresses 2.4 as a measured comparison.*

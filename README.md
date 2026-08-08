@@ -50,11 +50,12 @@ against a greedy hill-climber's 11 improvement steps of `n(n-1)` objective evalu
 - **Generalization across `n` and domain.** A policy trained at `n=8`/`R^3` is *worse than a random
   policy* when transferred zero-shot to `n=4`/`R^2` (45% vs 80% rigid) and no better than random at
   `n=16`. It learns an edge-count prior for its training configuration rather than a rigidity
-  criterion — the observations carry no rigidity information and no geometry for edges the graph
-  does not already have.
-- **PPO.** Currently does not learn on this task for two identified reasons (a PPO memory/rollout
-  sizing bug, and `discount_factor = 1.0` making the advantage identically zero under
-  potential-based shaping). DQN is unaffected. Both are being fixed.
+  criterion. One of the two causes is addressed — the observation now carries the geometry of
+  candidate edges — and the retrain to confirm it is pending; the other (no rigidity information in
+  the observation) is the next step, deliberately run as an ablation.
+- **PPO.** Did not learn on this task for two identified reasons — a PPO memory/rollout sizing bug,
+  and `discount_factor = 1.0` making the advantage identically zero under potential-based shaping.
+  Both are fixed; a confirming run has not been done yet. DQN was never affected.
 
 Details, evidence and the fix plan are in [ROADMAP.md](ROADMAP.md).
 
@@ -111,16 +112,16 @@ Configuration of the environment and training can be done within the source code
 uv run environment.py 4 "R^2"
 
 # 2. train
-uv run train_dqn.py env_actionSelectNodesSequentially_obs..._n4_R2 my_first_run
+uv run train_dqn.py env_actionSelectNodesSequentially_rewardWeightedNormalized_termMaxSteps_n4_R2 my_first_run
 
 # 3. watch it train
 tensorboard --logdir runs
 
 # 4. compare it against reference points
-uv run baselines.py env_actionSelectNodesSequentially_obs..._n4_R2 --model my_first_run
+uv run baselines.py env_actionSelectNodesSequentially_rewardWeightedNormalized_termMaxSteps_n4_R2 --model my_first_run
 
 # 5. step through an episode in the browser
-uv run inference.py my_first_run env_actionSelectNodesSequentially_obs..._n4_R2
+uv run inference.py my_first_run env_actionSelectNodesSequentially_rewardWeightedNormalized_termMaxSteps_n4_R2
 ```
 
 Throughout, names are **filenames without extension**: `<environment_name>` resolves to
@@ -144,7 +145,8 @@ Two derived quantities are used throughout:
   (`pos_limits`, currently `[-1, 1]`). Compare frameworks at the same scale, and plot on a log axis.
 - **Minimal Bearing Rigidity (MBR)** — whether the graph is rigid with as few edges as possible.
   Exact via a closed form for homogeneous `R^d` networks; otherwise a greedy per-edge lower bound
-  is used.
+  is used. That bound is *sound but not a ground truth* on heterogeneous networks, so it is kept out
+  of the objective and used only for reporting.
 
 ### The environment
 
@@ -155,7 +157,7 @@ module-level function:
 | Axis | Config key | Meaning |
 |---|---|---|
 | Action space | `action_type` | what a single step does to the graph |
-| Observation | `obs_type` | what the policy sees |
+| Observation | `obs_type` | what the policy sees (one type, `Dict`) |
 | State score | `state_score_type` | the scalar φ measuring how good a graph is |
 | Termination | `termination_condition_type` | when an episode ends |
 
@@ -164,16 +166,18 @@ Currently in active use:
 - **Action spaces** — `SelectNodesSequentially` (pointer-network style: pick one node per step;
   every second pick toggles the edge between the two picks) and
   `AddRemoveEdgeDiscreteNoSelfLoops` (pick an edge and an add/remove operation directly).
-- **Observation types** — `DictEquivariantNodeFeaturesAndAdjAndSelection` (feeds the EGNN
-  backbone; includes raw coordinates) and `DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection`
-  (feeds the GINE backbone). Both provide node features (domain one-hot, in/out degree,
-  closeness / eigenvector centrality, betweenness), edge features (bearing vector, edge
-  betweenness, reciprocity, common neighbours), the adjacency matrix, and the current selection.
-  **Bearings are only populated for edges that exist**, so a policy cannot currently see the
-  geometry of an edge it might add — a known limitation, see [ROADMAP.md](ROADMAP.md) §2.2.
-- **State score** — `Weighted`, currently `20 * rank(B) - 10 * |E|`. Note that a rigidity-matrix
-  edge block has rank 2 in `R^3` but 1 in `R^2`, so these fixed weights trade rank against edges
-  differently per domain and the score does not transfer — ROADMAP §2.5.
+- **Observation** — one type, `Dict`: node features (domain one-hot, in/out degree, closeness /
+  eigenvector centrality, betweenness), pose-normalized coordinates, edge features (bearing vector,
+  an explicit `edge_exists` flag, edge betweenness, reciprocity, common neighbours), the adjacency
+  matrix and the current selection. Each model reads the keys it needs, so the choice of GNN is a
+  training-script constant rather than an observation type.
+  Bearings cover **every ordered pair**, not only existing edges, so the policy can see the
+  geometry of an edge it might add. `include_candidate_bearings: false` restricts them back to
+  existing edges at the same shape — that is a modelling choice about what a distributed agent
+  could know, not a tuning knob.
+- **State score** — `WeightedNormalized`: `(w_rank·rank − w_edge·|E|·c_max) / rank_K`, dimensionless
+  so it means the same thing at any `n` and in any domain. (The older `Weighted`, `20·rank − 10·|E|`,
+  traded rank against edges differently per dimension and did not transfer — ROADMAP §2.5.)
 - **Termination** — `MaxSteps` (fixed horizon) or `MinimallyRigid`.
 
 **Reward.** Each step yields
@@ -197,12 +201,15 @@ rather than memorise one.
 per (backbone × action-space) combination, all re-exported from `policy/__init__.py`.
 
 - `GNNBackboneEquivariant` — E(n)-equivariant GNN (EGNN). Preserves the node feature width;
-  `gnn_hidden_dim` sets only the internal message width. **Caveat:** the adjacency matrix passed to
-  it is currently ignored by `egnn_pytorch` (it is only consulted in nearest-neighbour mode), so
-  message passing is dense over all pairs and the topology reaches the network only through the
-  edge features. See [ROADMAP.md](ROADMAP.md) §2.1.
+  `gnn_hidden_dim` sets only the internal message width. Message passing is dense over all pairs
+  by design — the topology reaches it through the edge features, where `edge_exists` states
+  adjacency explicitly.
 - `GNNBackboneGINE` — GINE, edge-feature aware. Outputs `gnn_hidden_dim`. Message passing is
   restricted to existing edges, so this backbone sees no geometry for candidate edges at all.
+
+`policy/registry.py` maps `(role, backbone, action space)` to a class, so the training scripts look
+a model up rather than walking an if/else chain; constructor differences are absorbed by filtering
+kwargs against each signature.
 
 Naming: `Equivariant_*` = EGNN, `GINE_*` = GINE. **Action masking happens inside the model** —
 invalid actions get `-1e9` written into their logit/Q-value; the environment does not mask. DQN
@@ -392,13 +399,14 @@ uv run manifest.py backfill [--write]    # add missing information to older mani
 `provenance.captured_at_training: false`. Runs that cannot be reconstructed are marked
 `reconstructible: false` with the reason instead.
 
-Checkpoints predating the manifest system are recovered by reading the architecture back out of
-the checkpoint's parameter shapes, then finding the matching model class in `policy/`.
+A manifest is required: a checkpoint without `train/<name>.json` cannot be loaded, since the
+manifest is what records the model classes, hyperparameters and environment config the run used.
 
 ## Repository layout
 
 ```
 ROADMAP.md              current plan: diagnosis, ranked issues, phased fixes
+DESIGN_NOTES.md         why the code is written the way it is
 environment.py          the gymnasium environment; action / observation / reward / termination dispatch
 network.py              Agent and Network; graph features used by the observations
 rigidity.py             bearing rigidity matrix, IBR / MBR tests, rigidity eigenvalue
@@ -407,6 +415,7 @@ util.py                 Pose and geometry helpers
 
 policy/
   gnn_backbone.py       EGNN and GINE backbones
+  registry.py           (role, backbone, action space) -> model class
   actor/ critic/ q_func/  one model per (backbone x action space)
 
 train_ppo.py            PPO training

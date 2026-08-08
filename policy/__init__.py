@@ -28,8 +28,16 @@ from .q_func.Equivariant_SelectNodesSequentially import *
 from .q_func.Equivariant_AddRemoveEdgeDiscreteNoSelfLoops import *
 from .q_func.Equivariant_AddEdgeDiscreteNoSkipNoSelfLoops import *
 
+from .registry import BACKBONES, MODELS, build_models, instantiate, resolve
+
 
 __all__ = [
+    "BACKBONES",
+    "MODELS",
+    "build_models",
+    "instantiate",
+    "resolve",
+
     "PPO_ActorModel_AddEdgeDiscreteNoSelfLoops",
     "PPO_ActorModel_AddEdgeDiscreteNoSkipNoSelfLoops",
     "PPO_ActorModel_AddRemoveEdgeDiscreteNoSelfLoops",

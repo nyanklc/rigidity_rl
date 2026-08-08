@@ -8,7 +8,6 @@ from policy.gnn_backbone import *
 
 
 
-# compatible with observation type "DictEquivariantNodeFeaturesAndAdjAndSelection"
 class DQN_QNetwork_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(TabularMixin, Model):
     def __init__(
         self,

@@ -45,21 +45,8 @@ class PPO_CriticModel_GINE(DeterministicMixin, Model):
         n = node_features.shape[1]
         batch_size = node_features.shape[0]
 
-        # batch
-        edge_index_list = []
-        edge_attr_list = []
-        for i in range(batch_size):
-            src, dst = adj[i].nonzero(as_tuple=True)
-
-            edge_index = torch.stack([src, dst], dim=0) + i * n
-            edge_index_list.append(edge_index)
-
-            edge_attr_list.append(edge_features[i][src, dst])
-        full_edge_index = torch.cat(edge_index_list, dim=1).to(self.device)
-        full_edge_attr = torch.cat(edge_attr_list, dim=0).to(self.device)
-
         # current graph pass
-        h = self.gnn(node_features, full_edge_index, full_edge_attr)
+        h = self.gnn(node_features, edge_features)
 
         # graph embedding
         batch_mapping = torch.arange(batch_size, device=h.device).repeat_interleave(

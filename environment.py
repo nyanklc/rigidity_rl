@@ -413,6 +413,108 @@ def action_DecideOnEdge(action, env: "Environment", reward, action_info):
     return reward, action_info
 
 
+# obs types producing the EGNN feature dict (node/coord/edge/adj/selection);
+# one set of models serves all of them
+# The one graph observation, and the flag presets that reproduce each pre-merge
+# Dict* layout exactly so old configs and checkpoints still load.
+# See DESIGN_NOTES.md#dict-observation
+def build_dict_obs(env, define_type, node_set="graph", coords=True, edges=True,
+                   selection=True, proposed_edge=None, candidate_bearings=None,
+                   edge_exists=True, normalize_positions=True):
+    network = env.network
+    n = network.n
+
+    if node_set == "graph":
+        node_features = np.concat([network.get_domain_features(),
+                                   network.get_degree_features(),
+                                   network.get_closeness_centrality_features(),
+                                   network.get_eigenvector_centrality_features(),
+                                   network.get_node_betweenness_features(),
+                                   ], axis=-1)
+    elif node_set == "domain_signbearing":
+        node_features = np.concat([network.get_domain_features(),
+                                   network.get_simplified_bearing_features().reshape(n, -1)], -1)
+    elif node_set == "domain_bearing":
+        node_features = np.concat([network.get_domain_features(),
+                                   network.get_bearing_features().reshape(n, -1)], -1)
+    elif node_set == "bearing":
+        node_features = network.get_bearing_features().reshape((n, -1))
+    else:
+        raise ValueError(f"unknown node_set {node_set!r}")
+
+    obs = {"node_features": node_features}
+    spec = {"node_features": spaces.Box(-np.inf, np.inf, node_features.shape)}
+
+    if coords:
+        c = (network.get_normalized_position_features() if normalize_positions
+             else network.get_position_features())
+        obs["coord_features"] = c
+        spec["coord_features"] = spaces.Box(-np.inf, np.inf, c.shape)
+
+    if edges:
+        want_candidates = (env.include_candidate_bearings if candidate_bearings is None
+                           else candidate_bearings)
+        parts = [network.get_all_pairs_bearings() if want_candidates
+                 else network.get_bearing_features()]
+        if edge_exists:
+            parts.append(network.get_edge_exists_features())
+        parts += [network.get_edge_betweenness_features(),
+                  network.get_edge_reciprocity_features(),
+                  network.get_common_neighbors_features()]
+        e = np.concat(parts, axis=-1)
+        obs["edge_features"] = e
+        spec["edge_features"] = spaces.Box(-np.inf, np.inf, e.shape)
+
+    adj = network.edges.astype(np.float32)
+    obs["adj"] = adj
+    spec["adj"] = spaces.Box(0, 1, adj.shape)
+
+    if selection:
+        obs["selection"] = env.selection
+        spec["selection"] = spaces.Box(0, 1, env.selection.shape, dtype=int)
+
+    if proposed_edge is None:
+        proposed_edge = env.action_space_type == "DecideOnEdge"
+    if proposed_edge:
+        env.edge_proposal = np.array([np.random.randint(0, n), np.random.randint(0, n)])
+        obs["proposed_edge"] = env.edge_proposal
+        spec["proposed_edge"] = spaces.Box(0, n, [2])
+
+    return obs, (spaces.Dict(spec) if define_type else None)
+
+
+# "Dict" is current. The rest are pre-merge names kept working; each reproduces
+# its old layout, including raw coordinates and edges-only bearings, because the
+# checkpoints trained on them depend on both.
+OBS_PRESETS = {
+    "Dict": dict(),
+    "DictEquivariantNodeFeaturesAndAdjAndSelection": dict(
+        edge_exists=False, normalize_positions=False, candidate_bearings=False),
+    "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection": dict(
+        coords=False, edge_exists=False, candidate_bearings=False),
+    "DictNodeFeaturesAndAdj": dict(
+        node_set="domain_signbearing", coords=False, edges=False, selection=False),
+    "DictNodeFeaturesAndAdjAndSelection": dict(
+        node_set="domain_signbearing", coords=False, edges=False),
+    "DictNodeFeaturesAndAdjAndEdgeProposal": dict(
+        node_set="domain_bearing", coords=False, edges=False, selection=False,
+        proposed_edge=True),
+    "DictBearingNodeFeaturesAndAdjAndSelection": dict(
+        node_set="bearing", coords=False, edges=False),
+}
+
+# a legacy obs_type implied which GNN consumed it; "Dict" does not, so the
+# training scripts fall back to their BACKBONE constant
+OBS_BACKBONE = {
+    "DictEquivariantNodeFeaturesAndAdjAndSelection": "Equivariant",
+    "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection": "GINE",
+    "DictNodeFeaturesAndAdj": "Default",
+    "DictNodeFeaturesAndAdjAndSelection": "Default",
+    "DictNodeFeaturesAndAdjAndEdgeProposal": "Default",
+    "DictBearingNodeFeaturesAndAdjAndSelection": "Default",
+}
+
+
 def obs(type: str, env: "Environment", define_type=False):
     obs_space = None
 
@@ -453,142 +555,12 @@ def obs(type: str, env: "Environment", define_type=False):
         if define_type:
             obs_n = obs.shape[0]
             obs_space = spaces.Box(-np.inf, np.inf, (obs_n,))
-    elif type == "DictNodeFeaturesAndAdj":
-        node_features = np.concat([network.get_domain_features(), network.get_simplified_bearing_features().reshape(network.n, -1)], -1)
-        adj = network.edges.astype(np.float32)
-        obs = {
-            "node_features": node_features,
-            "adj": adj
-        }
-        if define_type:
-            obs_space = spaces.Dict({
-                "node_features": spaces.Box(-np.inf, np.inf, node_features.shape), # N agents, 10 features
-                "adj": spaces.Box(0, 1, (n, n))
-            })
-    elif type == "DictNodeFeaturesAndAdjAndSelection":
-        node_features = np.concat([network.get_domain_features(), network.get_simplified_bearing_features().reshape(network.n, -1)], -1)
-        adj = network.edges.astype(np.float32)
-        obs = {
-            "node_features": node_features,
-            "adj": adj,
-            "selection": env.selection,
-        }
-        if define_type:
-            obs_space = spaces.Dict(
-                {
-                    "node_features": spaces.Box(
-                        -np.inf, np.inf, node_features.shape
-                    ),  # N agents, 10 features
-                    "adj": spaces.Box(0, 1, (n, n)),
-                    "selection": spaces.Box(0, 1, [n], dtype=int),
-                }
-            )
-    elif type == "DictNodeFeaturesAndAdjAndEdgeProposal":
-        env.edge_proposal = np.array([np.random.randint(0, env.network.n),
-                                      np.random.randint(0, env.network.n)])
-        node_features = np.concat([network.get_domain_features(), network.get_bearing_features().reshape(network.n, -1)], -1)
-        adj = network.edges.astype(np.float32)
-        obs = {
-            "node_features": node_features,
-            "adj": adj,
-            "proposed_edge": env.edge_proposal,
-        }
-        if define_type:
-            obs_space = spaces.Dict(
-                {
-                    "node_features": spaces.Box(
-                        -np.inf, np.inf, node_features.shape
-                    ),  # N agents, 10 features
-                    "adj": spaces.Box(0, 1, (n, n)),
-                    "proposed_edge": spaces.Box(0, n, [2]),
-                }
-            )
-    elif type == "DictEquivariantNodeFeaturesAndAdjAndSelection":
-        node_features = np.concat([network.get_domain_features(),
-                                   network.get_degree_features(),
-                                   network.get_closeness_centrality_features(),
-                                   network.get_eigenvector_centrality_features(),
-                                   network.get_node_betweenness_features(),
-                                   ], axis=-1)
-        coord_features = network.get_position_features()
-        edge_features = np.concat([network.get_bearing_features(),
-                                   network.get_edge_betweenness_features(),
-                                   network.get_edge_reciprocity_features(),
-                                   network.get_common_neighbors_features(),], axis=-1)
-
-        adj = network.edges.astype(np.float32)
-        obs = {
-            "node_features": node_features,
-            "coord_features": coord_features,
-            "edge_features": edge_features,
-            "adj": adj,
-            "selection": env.selection,
-        }
-        if define_type:
-            obs_space = spaces.Dict(
-                {
-                    "node_features": spaces.Box(
-                        -np.inf, np.inf, node_features.shape
-                    ),  # N agents
-                    "coord_features": spaces.Box(
-                        -np.inf, np.inf, coord_features.shape
-                    ),
-                    "edge_features": spaces.Box(
-                        -np.inf, np.inf, edge_features.shape
-                    ),
-                    "adj": spaces.Box(0, 1, adj.shape),
-                    "selection": spaces.Box(0, 1, env.selection.shape, dtype=int),
-                }
-            )
-    elif type == "DictBearingNodeFeaturesAndAdjAndSelection":
-        node_features = network.get_bearing_features().reshape((network.n, -1))
-        adj = network.edges.astype(np.float32)
-        obs = {
-            "node_features": node_features,
-            "adj": adj,
-            "selection": env.selection,
-        }
-        if define_type:
-            obs_space = spaces.Dict(
-                {
-                    "node_features": spaces.Box(
-                        -np.inf, np.inf, node_features.shape
-                    ),  # N agents, 10 features
-                    "adj": spaces.Box(0, 1, (n, n)),
-                    "selection": spaces.Box(0, 1, [n], dtype=int),
-                }
-            )
-    elif type == "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection":
-        node_features = np.concat([network.get_domain_features(),
-                                   network.get_degree_features(),
-                                   network.get_closeness_centrality_features(),
-                                   network.get_eigenvector_centrality_features(),
-                                   network.get_node_betweenness_features(),
-                                   ], axis=-1)
-        edge_features = np.concat([network.get_bearing_features(),
-                                   network.get_edge_betweenness_features(),
-                                   network.get_edge_reciprocity_features(),
-                                   network.get_common_neighbors_features(),], axis=-1)
-        adj = network.edges.astype(np.float32)
-        obs = {
-            "node_features": node_features,
-            "edge_features": edge_features,
-            "adj": adj,
-            "selection": env.selection,
-        }
-        if define_type:
-            obs_space = spaces.Dict(
-                {
-                    "node_features": spaces.Box(
-                        -np.inf, np.inf, node_features.shape
-                    ),
-                    "edge_features": spaces.Box(
-                        -np.inf, np.inf, edge_features.shape
-                    ),
-                    "adj": spaces.Box(0, 1, (n, n)),
-                    "selection": spaces.Box(0, 1, [n], dtype=int),
-                }
-            )
+    elif type in OBS_PRESETS:
+        obs, obs_space = build_dict_obs(env, define_type, **OBS_PRESETS[type])
+    else:
+        raise ValueError(
+            f"unknown obs_type {type!r}; known: {sorted(OBS_PRESETS)}"
+        )
 
     return obs, obs_space
 
@@ -616,6 +588,7 @@ class Environment(gym.Env):
         truncate_max_steps=1e4,
         truncate_penalty_value=100,
         only_randomize_edges=False,
+        include_candidate_bearings=True,
         filepath=None,
     ):
         print("initializing environment")
@@ -626,6 +599,11 @@ class Environment(gym.Env):
         self.termination_condition_type = termination_condition_type
 
         self.random_graph_with_mean_min_edges = random_graph_with_mean_min_edges
+
+        # tier-2 information: an agent cannot know a bearing it has not measured.
+        # False reverts to bearings on existing edges only, same obs shape.
+        # See DESIGN_NOTES.md#all-pairs-bearings
+        self.include_candidate_bearings = include_candidate_bearings
 
         self.filepath = filepath
         self.scenario_network = None
@@ -726,6 +704,7 @@ class Environment(gym.Env):
         TRUNCATE_MAX_STEPS = config["truncate_max_steps"]
         TRUNCATE_PENALTY_VALUE = config["truncate_penalty_value"]
         ONLY_RANDOMIZE_EDGES = config["only_randomize_edges"]
+        INCLUDE_CANDIDATE_BEARINGS = config.get("include_candidate_bearings", True)
         scenario_name = config["scenario"]
         scenario_path = (
             "scenarios/" + scenario_name + ".json"
@@ -750,6 +729,7 @@ class Environment(gym.Env):
             truncate_max_steps=TRUNCATE_MAX_STEPS,
             truncate_penalty_value=TRUNCATE_PENALTY_VALUE,
             only_randomize_edges=ONLY_RANDOMIZE_EDGES,
+            include_candidate_bearings=INCLUDE_CANDIDATE_BEARINGS,
             filepath=scenario_path,
         )
 
@@ -1343,12 +1323,8 @@ if __name__ == "__main__":
     # OBS_TYPE = "Complete"
     # OBS_TYPE = "CompleteAndEigenvalues"
     # OBS_TYPE = "AdjFlatAndEigenvalues"
-    # OBS_TYPE = "DictNodeFeaturesAndAdj"
-    # OBS_TYPE = "DictNodeFeaturesAndAdjAndSelection"
-    # OBS_TYPE = "DictNodeFeaturesAndAdjAndEdgeProposal"
-    OBS_TYPE = "DictEquivariantNodeFeaturesAndAdjAndSelection" ## Equivariant
-    # OBS_TYPE = "DictBearingNodeFeaturesAndAdjAndSelection"
-    # OBS_TYPE = "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection" ## GINE
+    # the Dict* variants were merged; the backbone is picked in the train script
+    OBS_TYPE = "Dict"
 
     # STATE_SCORE_TYPE = "Rigid"
     # STATE_SCORE_TYPE = "RigidAndMinEigenvalue"
@@ -1375,13 +1351,16 @@ if __name__ == "__main__":
     # TERMINATION_CONDITION_TYPE = "RigidMinEigAndEdgesBonus"
     # TERMINATION_CONDITION_TYPE = "Bandit"
 
-    MAX_STEPS = 200
+    MAX_STEPS = None  # set below, once n is known
 
     TRUNCATE_ENABLE = False
     TRUNCATE_MAX_STEPS = 100
     TRUNCATE_PENALTY_VALUE = 100
 
     ONLY_RANDOMIZE_EDGES = False
+
+    # False = bearings only on existing edges (tier-2 restriction)
+    INCLUDE_CANDIDATE_BEARINGS = True
     #############################################
 
     if len(sys.argv) < 3:
@@ -1424,8 +1403,13 @@ if __name__ == "__main__":
     now = datetime.now()
     now_str = now.strftime("%Y_%m_%d_%H_%M_%S")
 
+    # ~4 toggles per candidate pair. A fixed budget silently starves large n:
+    # the edits needed grow with n(n-1) while a constant does not.
+    # n=4 -> 48, n=8 -> 224, n=16 -> 960
+    MAX_STEPS = 4 * n * (n - 1)
+
     n_domains = f"n{n}_{domains_str}"
-    model_name = f"action{ACTION_TYPE}_obs{OBS_TYPE}_reward{STATE_SCORE_TYPE}_term{TERMINATION_CONDITION_TYPE}_{scenario_name if scenario_name is not None else n_domains}"
+    model_name = f"action{ACTION_TYPE}_reward{STATE_SCORE_TYPE}_term{TERMINATION_CONDITION_TYPE}_{scenario_name if scenario_name is not None else n_domains}"
     print(f"MODEL NAME: {model_name}")
 
     log_dir = "./tboard_logs/"
@@ -1457,6 +1441,7 @@ if __name__ == "__main__":
         "truncate_max_steps": TRUNCATE_MAX_STEPS,
         "truncate_penalty_value": TRUNCATE_PENALTY_VALUE,
         "only_randomize_edges": ONLY_RANDOMIZE_EDGES,
+        "include_candidate_bearings": INCLUDE_CANDIDATE_BEARINGS,
         "scenario": scenario_name,
     }
     env_filename = f"env_{model_name}.json"
