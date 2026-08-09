@@ -35,7 +35,7 @@ things in this file that *look* like design decisions are recorded there as know
 
 `thesis_skeleton.txt` has the intended chapter structure and terminology.
 
-## Current results (2026-08-07)
+## Current results (2026-08-09)
 
 **The formulation works at n=8 / R^3.** `bigDQN8SelectEquivariant3e-4lrNormalizedPositions` (DQN,
 `SelectNodesSequentially`, EGNN, `Weighted`) converges to 10.02 edges (optimum 10), 100% rigid,
@@ -166,6 +166,71 @@ replaces this with `w_r·rank/rank_K - w_e·m/m_req`, which is dimensionless.
 
 **Config format keeps moving — regenerate, never hand-edit.** Current keys: `state_score_type`, `skip_is_stop`, `random_graph_with_mean_min_edges`, `include_candidate_bearings`. The current files are the four `env_actionSelectNodesSequentially_rewardWeightedNormalized_termMaxSteps_{n4_R2,n8_R2,n8_R3,n16_R3}.json`; the rest of `environments/` predates one format change or another and will either `KeyError` in `load()` or raise on a merged-away `obs_type`. `uv run environment.py <n> <domain>` regenerates. Note the filename no longer carries the obs type, since there is only one.
 
+### Domains and scaling (measured, all five domains, n up to 64)
+
+`rank_K` follows `(DOF per agent)·n − (trivial motions)`, and the trivial count grows with how much
+of the rotation group the frames absorb (`THEORY.md` §3). Verified at n=8/16/32/64:
+
+| domain | DOF/agent | `rank_K` | trivial | `c_max` | `m_req` at n=16 |
+|---|---|---|---|---|---|
+| `R^2` | 2 | `2n − 3` | 2 transl + scale | 1 | 29 |
+| `R^3` | 3 | `3n − 4` | 3 transl + scale | 2 | 22 |
+| `R^2xS^1` | 3 | `3n − 4` | + 1 rotation | 1 | 44 |
+| `R^3xS^1` | 4 | `4n − 5` | + 1 rotation | 2 | 30 |
+| `SE(3)` | 6 | `6n − 7` | + 3 rotations | 2 | 45 |
+
+`c_max = 1` in the planar domains and `2` in the spatial ones, because a bearing is **one** angle in
+the plane and **two** in 3-space. Note the oriented domains need far denser graphs — `R^2xS^1` at
+n=16 needs 44 edges where `R^2` needs 29 — since each agent's heading must also be pinned down.
+
+**Step cost is the blocker for large n.** Roughly, per env step: ~3 ms at n=8, ~10 ms at n=16,
+25–100 ms at n=32, and **0.1–6 s at n=64**. At 600k steps that is hours at n=32 and over a week at
+n=64. Anything beyond n≈32 needs the batched torch rewrite (`gpu_environment.py`, still WIP), not
+tuning. (These timings re-randomize the graph each measurement and cost scales with `m`, so they are
+*not* a clean `graph_features` comparison — for that see the controlled measurement in
+`DESIGN_NOTES.md#graph-features`: 43.4 → 9.2 ms at n=16 on a fixed graph.)
+
+### Invariance (`THEORY.md` §3, §9; audited per channel and end-to-end)
+
+The whole point of a bearing framework is that it is defined up to a similarity transform, so the
+observation should be too. Audited by transforming the network and diffing every channel, across
+**all five domains** and both backbones.
+
+**Translation and uniform scaling: invariant everywhere.** Every channel, every domain, to 1e-14.
+Bearings are unit vectors; `coord_features` are centred and RMS-normalized; rank, flex and the
+graph statistics are all similarity invariants.
+
+**Rotation: invariant exactly in the domains that carry a frame.**
+
+| domain | `edge_features` under rotation | policy logits |
+|---|---|---|
+| `R^2`, `R^3` | **changes** (~0.7–0.9) | **rotation dependent** |
+| `R^2xS^1`, `R^3xS^1`, `SE(3)` | 1e-14 | **invariant** |
+
+The cause is `Agent.get_bearing`: for an oriented agent it returns `R_i^T p̂_ij`, which is genuinely
+invariant because the frame rotates with the world; for `R^2`/`R^3` there is no frame and it returns
+the global-frame vector. Any heterogeneous mix containing an `R^d` agent inherits the problem.
+**This is a property of the R^d testbed, not of the target domains** — see "Known issues" for what
+to do about it.
+
+**`coord_features` rotate by design** and that is fine: EGNN consumes coordinates only through
+`‖x_i − x_j‖²`, verified to give *identical* feats under a rotation of `coors` alone; GINE never
+reads them.
+
+**Two traps in measuring this.** First, a stale `env.network` reference after a second `reset()`
+silently makes everything look invariant. Second, and more insidious: at the default
+`init_eps = 1e-3` an untrained EGNN is numerically blind to edge features, so it reports
+`0.000e+00` under rotation *even in R^3 where the inputs plainly changed*. Only at trained-scale
+weights does the dependence appear:
+
+| `init_eps` | R^3 Δlogit | SE(3) Δlogit |
+|---|---|---|
+| 1e-3 (default init) | 0.0 — false negative | 0.0 |
+| 1e-2 | 1.8e-07 | 0.0 |
+| 1e-1 (trained scale) | **4.8e-03** | 6e-08 |
+
+Any invariance test on an EGNN must be run at trained-scale weights or it proves nothing.
+
 ### Policies (`policy/`)
 
 `policy/gnn_backbone.py` holds the backbones; `policy/{actor,critic,q_func}/<Name>.py` hold one model per (backbone × action-space) combination, all re-exported from `policy/__init__.py`. Naming: `Equivariant_*` = EGNN, `GINE_*` = GINE, bare name = old GAT/MLP.
@@ -192,6 +257,19 @@ geometry of an edge it might add — previously it could not, which was the firs
 generalization failure. `include_candidate_bearings=False` (env config) reverts to edges-only at
 the same observation shape; that is a modelling switch, not a tuning knob, because a distributed
 agent cannot know a bearing it has not measured. See `DESIGN_NOTES.md#all-pairs-bearings`.
+
+**`graph_features` (default `True`) toggles the expensive centralities** (closeness, eigenvector,
+node/edge betweenness). They measure *worse* than free out-degree against rigidity-relevant targets
+and cost 4.7x the step time at n=16 (43.4 -> 9.2 ms). `_lean` configs turn them off. See
+`DESIGN_NOTES.md#graph-features`.
+
+**Rigidity features are an ablation arm, off by default** (`rigidity_global` / `rigidity_flex` /
+`rigidity_edge` in the env config). They add rank deficit, `m/m_req` and `is_IBR` as node channels,
+plus per-node flex magnitude and a per-pair flex/bearing alignment derived from the rigidity
+matrix's null space. These are tier-3 quantities no distributed agent could compute, so the *gap*
+between arms is the result, not the informed arm's number. Note `c_k` (per-edge block rank) is
+constant in every homogeneous domain and so carries nothing at n=4/8/16 — it has its own flag for
+that reason. See `DESIGN_NOTES.md#rigidity-features`.
 
 **Positions are pose-normalized** in the observation (centred, unit RMS radius). Bearings are
 already scale-invariant but EGNN's internal `rel_dist` is not, which is why `pos_limits` used to
@@ -372,6 +450,18 @@ data from memory" comment was aimed at this and got it backwards.
 timesteps) gives a target-network time constant of roughly 160k timesteps — effectively a frozen
 target. It works, but if you are reasoning about DQN stability, that is the actual number.
 
+**Decision-quality metrics and the training probe.** `Best`/`Final` cannot distinguish a policy
+from a search, which is how two runs failed undetected. `Decision/ {useful,wasted,overshoot,converge}`
+share one `Decision/quality` multiline chart; `Actions/ *` give the action-kind mix plus a real
+histogram over action indices; `Steps rigid to minimal` isolates the pruning phase; `Edit efficiency`
+is 1 for monotone editing and 0 for oscillation. `probe.py` rolls the policy out deterministically on
+fixed seeded instances every `PROBE_INTERVAL` steps and logs `Probe/ argmax-sample gap` (~0 = a real
+policy, negative = a sampler), `Probe/ useful (argmax)` against a random floor, and
+`Probe/ max abs logit` (the drift detector). Calibrated: 0.00 gap and 0.725 useful for the good
+checkpoint, -16.00 gap for the known sampler, 0.080 useful and 2.5e23 logits for the collapsed one.
+The environment writer is now `torch.utils.tensorboard.SummaryWriter`, not skrl's shim, because the
+shim has `add_scalar` only. See `DESIGN_NOTES.md#training-metrics`.
+
 **Episode-level logging.** All environment metrics are written at episode end, not per step — a step-resolution scalar costs one tensorboard event per step and is then downsampled and averaged for display, so the detail was paid for and never seen. `step()` folds each step into `episode_accum` (`new_episode_accum()`: sums and counts only, so episode length is free), and on `terminated or truncated` builds `episode_summary()` → `last_episode_stats` → `write_episode()`, which dumps every entry under `Episode/ <key>`. Three views per episode: `Final *` (where it ended), `Best *` (best graph visited, plus `Best-final score gap` — 0 iff the episode ended on its own best graph), and `Mean *` / `* fraction` (the episode average). Scalars are written against `writer_counter` (global env step), *not* the episode index, so they share an x-axis with skrl's loss/reward curves; `writer_counter` therefore still advances every step. `last_episode_stats` is a plain attribute rather than an `info` key because `SyncVectorEnv` aggregates sub-env `info` dicts into arrays. `Environment.write(value, tag)` remains for custom scalars.
 
 ### Gitignored (don't assume present)
@@ -391,6 +481,23 @@ Live research questions, not things to silently "fix":
 4. **Generalization is the current blocking problem.** A policy trained at n=8/R^3 is *worse than random* zero-shot at n=4/R^2 (45% vs 80% rigid) and indistinguishable from random at n=16 (0% minimal). Root causes are identified, not mysterious: candidate-edge geometry is invisible to the policy, the observation carries no rigidity information, and `Weighted`'s weights are dimension-dependent. `ROADMAP.md` phases 2–4.
 5. `reset()` with no scenario file rebuilds the network from `agents[0].domain` only, so heterogeneous domains survive only via the `scenario` path (`randomize_scenario`).
 6. Per-step cost is dominated by pure-Python graph features in `obs()` (Floyd–Warshall closeness, Brandes betweenness) plus repeated rigidity-matrix construction: `step()` builds `B`, then calls `is_MBR` unconditionally (a full-matrix rank *plus* one rank per edge, ~25 SVDs at n=8) and `rigidity_eigenvalue` when tracking (which rebuilds `B` and does a 48×48 `eigvalsh`). **`Weighted` needs neither.** Env stepping is 8.7 ms against 2.6 ms of inference at n=8 — three times the network's cost spent on metrics that never enter the reward. Fine at `n=4–8`, the bottleneck beyond.
-7. Small correctness items, none load-bearing but all live: `action_SelectNodesSequentially` computes `didnt_exist`/`existed` *after* the branch condition, so both are always `False` (dead code); `Network.fully_connected()` sets `edges = np.ones((n,n))` **including the diagonal** and `rank_K` survives only because of the `if i == j: continue` guard in `extended_bearing_rigidity_matrix`; `rigidity.is_MBR_Rd` has an unreachable-but-broken `if brmat: is_IBR_explicit()` branch (no arguments, and `if` on an ndarray raises); `np.random.seed(SEED)` runs *after* the sub-envs are constructed and the envs use global `np.random` rather than `self.np_random`, so all sub-envs share one stream.
+7. **Bearings are not rotation-invariant in `R^d`** (see Invariance above). The task is invariant;
+   the observation is not, so the policy must learn the invariance from data. It **disappears in
+   `R^2xS^1` / `R^3xS^1` / `SE(3)`**, which are the eventual targets, so this is an artifact of the
+   `R^d` testbed rather than a defect of the formulation. It still confounds any generalization
+   conclusion drawn on `R^d`. Options, cheapest first: random global rotation at `reset()` (the task
+   is unchanged, so it is free data augmentation); per-instance frame canonicalization via the
+   position covariance (exact, but discontinuous when the covariance spectrum is near-degenerate —
+   common in symmetric configurations); replacing raw bearings with invariant pair descriptors
+   (mutual angles `p̂_ij·p̂_ik`, a redesign of the edge features); or an architecture that consumes
+   directions equivariantly (GVP / e3nn / vector neurons), which is the principled fix. Note also
+   that rigidity is invariant under **reflection**, so whether the target group is `SO(d)` or `O(d)`
+   is an open modelling choice.
+8. **Four model classes in the obsolete `Default` (GAT/MLP) backbone are broken**, and were before
+   any recent work: `AllEdges` references a missing `fc_edge_index`, `AddRemoveEdgeMultiDiscrete`
+   is missing a `global_mean_pool` import, `AddEdgeDiscreteNoSkipNoSelfLoops` uses an undefined `n`,
+   and `Default`+`SelectNodesSequentially` has a mis-sized head. They are still registered, so
+   selecting them fails with a Python error rather than a clean "not implemented".
+9. Small correctness items, none load-bearing but all live: `action_SelectNodesSequentially` computes `didnt_exist`/`existed` *after* the branch condition, so both are always `False` (dead code); `Network.fully_connected()` sets `edges = np.ones((n,n))` **including the diagonal** and `rank_K` survives only because of the `if i == j: continue` guard in `extended_bearing_rigidity_matrix`; `rigidity.is_MBR_Rd` has an unreachable-but-broken `if brmat: is_IBR_explicit()` branch (no arguments, and `if` on an ndarray raises); `np.random.seed(SEED)` runs *after* the sub-envs are constructed and the envs use global `np.random` rather than `self.np_random`, so all sub-envs share one stream.
 
 **Previously listed here and since fixed** (do not re-chase): `Environment.load()` not reading `random_graph_with_mean_min_edges` and `reset()` discarding the sampled edge count; `reset()` leaving `last_state_score = 0` instead of the initial graph's score (`begin_episode()` computes it now); `step()` binding `info` only inside the tracking branch (`info = {}` is bound before it).

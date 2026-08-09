@@ -18,6 +18,7 @@ class PPO_ActorModel_AddRemoveEdgeMultiDiscrete(MultiCategoricalMixin, Model):
         observation_space,
         action_space,
         device,
+        allow_skip=True,
     ):
         # Model.__init__(self, observation_space, action_space, device)
         Model.__init__(self, observation_space=observation_space, action_space=action_space, device=device)
@@ -41,6 +42,7 @@ class PPO_ActorModel_AddRemoveEdgeMultiDiscrete(MultiCategoricalMixin, Model):
         )
 
         # takes in global embedding (mean) and decides to add/remove/skip
+        self.allow_skip = allow_skip
         self.action_type_head = nn.Linear(gnn_hidden_dim, 3)
 
     def compute(self, inputs, role):
@@ -69,14 +71,12 @@ class PPO_ActorModel_AddRemoveEdgeMultiDiscrete(MultiCategoricalMixin, Model):
         graph_latent = global_mean_pool(h.reshape(-1, h.shape[-1]), batch_mapping)
 
         action_type_logits = self.action_type_head(graph_latent)
+        if not self.allow_skip:
+            action_type_logits = action_type_logits.clone()
+            action_type_logits[:, 2] = MASK_VALUE  # add / remove / skip
         i_logits = self.select_i_head(h).squeeze(-1)
         j_logits = self.select_j_head(h).squeeze(-1)
 
-        print(f"action_type_logits: {action_type_logits.shape}")
-        print(f"i_logits: {i_logits.shape}")
-        print(f"j_logits: {j_logits.shape}")
-
         cat = torch.cat([action_type_logits, i_logits, j_logits], dim=-1)
-        print(f"cat: {cat.shape}")
 
         return cat, {}

@@ -261,7 +261,96 @@ def required_edge_count(network, rank_K=None, brmat_K=None):
 
 #     return True, True
 
-def is_MBR(network, rank_K=None, brmat=None):
+# Rank each edge's own 3-row block. Constant (d-1) in homogeneous R^d, so it only
+# carries information on heterogeneous networks. See DESIGN_NOTES.md#rigidity-features
+def edge_block_ranks(brmat):
+    return [np.linalg.matrix_rank(brmat[3*k:3*(k+1), :]) for k in range(brmat.shape[0] // 3)]
+
+
+# Per-node flex tensor: the (n, 3, 3) diagonal blocks of the projector onto the
+# framework's non-trivial infinitesimal flex space -- the directions it cannot
+# resist (under-constrained) or resists least (rigid).
+#
+# Returns the projector block rather than a single eigenvector on purpose. The
+# flex space is usually multi-dimensional, and any individual eigenvector inside
+# a degenerate eigenspace is an arbitrary basis choice, so a per-mode feature is
+# not reproducible. G_i = sum_c v_i^(c) v_i^(c)^T is basis-independent, and it
+# transforms as a tensor, so scalars read off it are rotation-invariant.
+# See DESIGN_NOTES.md#rigidity-features
+def trivial_modes(positions):
+    """Motions every bearing framework admits: translation and uniform scaling.
+
+    These span part of B's null space, and eigh returns an *arbitrary* basis of
+    that whole space, so they have to be projected out explicitly -- taking "the
+    columns after the first few" mixes them in and gives a basis-dependent,
+    rotation-dependent answer.
+    """
+    n = len(positions)
+    T = np.zeros((3*n, 4))
+    for k in range(3):
+        T[k::3, k] = 1.0                                   # translations
+    T[:, 3] = (positions - positions.mean(axis=0)).reshape(-1)  # uniform scaling
+    q, _ = np.linalg.qr(T)
+    return q
+
+
+def flex_tensor(brmat, n, positions, tol=1e-9):
+    Bp = brmat[:, :3*n]
+    if Bp.size == 0:
+        return np.zeros((n, n, 3, 3))
+
+    w, V = np.linalg.eigh(Bp.T @ Bp)
+    scale = max(w.max(), 1.0)
+    Z = V[:, w <= scale * tol]                 # the whole null space
+
+    T = trivial_modes(positions)
+    if Z.shape[1]:
+        Z = Z - T @ (T.T @ Z)                  # strip translation and scaling
+        u, s, _ = np.linalg.svd(Z, full_matrices=False)
+        Z = u[:, s > 1e-7]
+
+    if Z.shape[1] == 0:
+        # rigid: no flex left, so use the weakest resisted direction instead
+        keep = w > scale * tol
+        if not keep.any():
+            return np.zeros((n, n, 3, 3))
+        Z = V[:, np.argmax(keep)][:, None]
+
+    # full projector, as (n, n, 3, 3) blocks: Pi[i, j] = sum_c v_ci v_cj^T.
+    # The cross blocks are needed because a bearing constrains the *relative*
+    # motion of i and j, not i alone.
+    blocks = Z.reshape(n, 3, -1)               # (n, 3, k)
+    return np.einsum("idk,jek->ijde", blocks, blocks)
+
+
+def flex_constraint_power(Pi, bearings):
+    """For every ordered pair, how much of the current flex the edge would remove.
+
+    A bearing constrains P(p_hat_ij) (v_j - v_i) = 0, i.e. the components of the
+    relative flex *perpendicular* to the bearing; the parallel component is the
+    scale freedom it cannot see. So the useful quantity is
+
+        A[i,j]^2 = sum_c || P(p_hat_ij) (v_cj - v_ci) ||^2
+                 = sum_c ||D_c||^2  -  sum_c (p_hat_ij . D_c)^2 ,   D_c = v_cj - v_ci
+
+    both terms of which come straight out of the projector blocks. Basis-
+    independent and rotation-invariant. See THEORY.md.
+    """
+    n = Pi.shape[0]
+    Gd = np.einsum("iidd->id", Pi)                     # trace(G_i) per axis
+    tr = Gd.sum(axis=1)                                # trace(G_i)
+    cross = np.einsum("ijdd->ij", Pi)                  # trace(Pi[i,j])
+    sq_norm = tr[:, None] + tr[None, :] - 2.0 * cross  # sum_c ||D_c||^2
+
+    # M[i,j] = G_i + G_j - Pi[i,j] - Pi[j,i]  is the quadratic form of D_c
+    M = Pi[np.arange(n), np.arange(n)][:, None] + Pi[np.arange(n), np.arange(n)][None, :]
+    M = M - Pi - np.swapaxes(Pi, 0, 1)
+    parallel = np.einsum("ijd,ijde,ije->ij", bearings, M, bearings, optimize=True)
+
+    return np.sqrt(np.maximum(sq_norm - parallel, 0.0))
+
+
+def is_MBR(network, rank_K=None, brmat=None, block_ranks=None):
     if int(network.edges.sum()) == 0:
         return False, False, 0
 
@@ -279,10 +368,7 @@ def is_MBR(network, rank_K=None, brmat=None):
         return False, isIBR, rank_brmat
 
     m = int(network.edges.sum())
-    c_e = []
-    for k in range(m):
-        block = brmat[3*k:3*(k+1), :]
-        c_e.append(np.linalg.matrix_rank(block))
+    c_e = edge_block_ranks(brmat) if block_ranks is None else list(block_ranks)
 
     c_e_sorted = sorted(c_e, reverse=True)
 

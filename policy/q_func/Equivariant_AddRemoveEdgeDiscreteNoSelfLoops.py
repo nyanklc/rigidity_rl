@@ -20,6 +20,7 @@ class DQN_QNetwork_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(TabularMixin, Mo
         observation_space,
         action_space,
         device,
+        allow_skip=True,
     ):
         # Model.__init__(self, observation_space, action_space, device)
         Model.__init__(self, observation_space=observation_space, action_space=action_space, device=device)
@@ -36,6 +37,7 @@ class DQN_QNetwork_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(TabularMixin, Mo
         )
 
         # input graph embedding
+        self.allow_skip = allow_skip
         self.skip_head = nn.Sequential(
             nn.Linear(node_feat_dim, head_hidden_dim),
             nn.LeakyReLU(),
@@ -54,7 +56,7 @@ class DQN_QNetwork_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(TabularMixin, Mo
         remove_mask = (adj == 1)
         remove_mask = remove_mask[:, ~torch.eye(n, dtype=torch.bool, device=adj.device)].view(batch_size, -1)
 
-        skip_mask = torch.ones((batch_size, 1), dtype=torch.bool, device=adj.device)
+        skip_mask = torch.full((batch_size, 1), self.allow_skip, dtype=torch.bool, device=adj.device)
         full_mask = torch.cat([add_mask, remove_mask, skip_mask], dim=1)
 
         actions = torch.multinomial(full_mask.float(), 1)
@@ -91,6 +93,8 @@ class DQN_QNetwork_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(TabularMixin, Mo
         add_logits = edge_logits[:, :, 0]      # (B, E)
         remove_logits = edge_logits[:, :, 1]   # (B, E)
         skip_logit = self.skip_head(torch.mean(h, dim=1))
+        if not self.allow_skip:
+            skip_logit = torch.full_like(skip_logit, MASK_VALUE)
 
         q_values = torch.cat([
             add_logits,
@@ -110,7 +114,9 @@ class DQN_QNetwork_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(TabularMixin, Mo
 
         # apply masks
         E = (q_values.shape[-1]-1)//2
-        q_values[:, :E][~add_mask] = -1e9
-        q_values[:, E:2*E][~remove_mask] = -1e9
+        q_values[:, :E][~add_mask] = MASK_VALUE
+        q_values[:, E:2*E][~remove_mask] = MASK_VALUE
+
+        q_values = unmask_if_all_masked(q_values)
 
         return q_values, {}

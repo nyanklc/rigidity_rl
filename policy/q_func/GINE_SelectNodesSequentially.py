@@ -94,7 +94,7 @@ class DQN_QNetwork_GINE_SelectNodesSequentially(TabularMixin, Model):
         if self.allow_skip:
             skip_logit = self.skip_head(torch.mean(h, dim=1))
         else:
-            skip_logit = torch.full((batch_size, 1), -1e9, device=add_remove_logits.device)
+            skip_logit = torch.full((batch_size, 1), MASK_VALUE, device=add_remove_logits.device)
         q_values = torch.cat([add_remove_logits, skip_logit], dim=-1)
 
         # mask out self loops
@@ -102,6 +102,8 @@ class DQN_QNetwork_GINE_SelectNodesSequentially(TabularMixin, Model):
         has_selected = selection.sum(dim=1) > 0
         has_selected = has_selected.unsqueeze(1).expand(-1, selected_mask.size(1))
         mask = selected_mask & has_selected   # (B, N)
-        q_values[:, :-1] = q_values[:, :-1].masked_fill(mask, -1e9) # exclude the skip action
+        q_values[:, :-1] = q_values[:, :-1].masked_fill(mask, MASK_VALUE) # exclude the skip action
+
+        q_values = unmask_if_all_masked(q_values)
 
         return q_values, {}

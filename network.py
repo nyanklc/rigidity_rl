@@ -155,11 +155,17 @@ class Network:
                 R_agent = agent.pose.rotation_mat()
                 agent.pose.set_rotation_mat(R @ R_agent)
 
+    # positions are numpy arrays; the old .x/.y/.z form raised AttributeError.
+    # Scale about the centroid, so a uniform scale is the trivial motion of
+    # THEORY.md section 3 and leaves every bearing unchanged.
     def scale_network(self, scale):
+        s = np.asarray(scale, dtype=float)
+        if s.ndim == 0:
+            s = np.repeat(s, 3)
+        positions = np.array([agent.pose.position for agent in self.agents])
+        centre = positions.mean(axis=0)
         for agent in self.agents:
-            agent.pose.position.x *= scale[0]
-            agent.pose.position.y *= scale[1]
-            agent.pose.position.z *= scale[2]
+            agent.pose.position = centre + (agent.pose.position - centre) * s
 
     def randomize_positions(self, low, high):
         for agent in self.agents:
@@ -231,12 +237,12 @@ class Network:
         return rigidity.is_IBR(self, rank_K=rank_K)
 
     # also returns is IBR
-    def is_MBR(self, rank_K=None, brm=None):
+    def is_MBR(self, rank_K=None, brm=None, block_ranks=None):
         # for agent in self.agents:
         #     if agent.domain not in ["R^2", "R^3"]:
         #         raise Exception("Minimally Bearing Rigidity is not defined for domains other than R^d.")
 
-        return rigidity.is_MBR(self, rank_K=rank_K, brmat=brm)
+        return rigidity.is_MBR(self, rank_K=rank_K, brmat=brm, block_ranks=block_ranks)
 
     def eigenvalues(self, eps=1e-10):
         brm = self.extended_bearing_rigidity_matrix()
@@ -317,6 +323,19 @@ class Network:
     def get_bearing_features(self):
         existing_bearing_features = self.get_bearings_explicit()
         return existing_bearing_features
+
+    # N, N, 3 -- every ordered pair, in the WORLD frame regardless of domain.
+    # The rigidity algebra (flex tensor, projectors) lives in world coordinates,
+    # so anything contracted against it must too. get_all_pairs_bearings() returns
+    # the body-frame *measurement* instead, which differs by R_i for oriented
+    # domains. See THEORY.md section 9.
+    def get_all_pairs_bearings_world(self):
+        n = len(self.agents)
+        p = np.array([a.pose.position for a in self.agents])
+        d = p[None, :, :] - p[:, None, :]
+        norm = np.linalg.norm(d, axis=-1, keepdims=True)
+        np.fill_diagonal(norm[:, :, 0], 1.0)
+        return d / norm
 
     # N, N, 3 -- every ordered pair, whether or not the edge exists.
     # Candidate-edge geometry; see DESIGN_NOTES.md#all-pairs-bearings

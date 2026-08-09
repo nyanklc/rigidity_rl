@@ -14,7 +14,7 @@ from util import sample_gaussian
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.vec_env import VecNormalize
-from skrl.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 import torch
 
 from visualizer import Visualizer
@@ -425,12 +425,12 @@ def build_dict_obs(env, define_type, node_set="graph", coords=True, edges=True,
     n = network.n
 
     if node_set == "graph":
-        node_features = np.concat([network.get_domain_features(),
-                                   network.get_degree_features(),
-                                   network.get_closeness_centrality_features(),
-                                   network.get_eigenvector_centrality_features(),
-                                   network.get_node_betweenness_features(),
-                                   ], axis=-1)
+        parts_n = [network.get_domain_features(), network.get_degree_features()]
+        if getattr(env, "graph_features", True):
+            parts_n += [network.get_closeness_centrality_features(),
+                        network.get_eigenvector_centrality_features(),
+                        network.get_node_betweenness_features()]
+        node_features = np.concat(parts_n, axis=-1)
     elif node_set == "domain_signbearing":
         node_features = np.concat([network.get_domain_features(),
                                    network.get_simplified_bearing_features().reshape(n, -1)], -1)
@@ -441,6 +441,19 @@ def build_dict_obs(env, define_type, node_set="graph", coords=True, edges=True,
         node_features = network.get_bearing_features().reshape((n, -1))
     else:
         raise ValueError(f"unknown node_set {node_set!r}")
+
+    # tier-3 rigidity channels, when the ablation flags ask for them.
+    # See DESIGN_NOTES.md#rigidity-features
+    rig = getattr(env, "last_rigidity", None)
+    if rig:
+        extra = []
+        if env.rigidity_global:
+            extra.append(np.tile(
+                [rig["rank_deficit"], rig["m_ratio"], rig["is_IBR"]], (n, 1)))
+        if env.rigidity_flex:
+            extra.append(rig["flex_mag"])
+        if extra:
+            node_features = np.concat([node_features] + extra, axis=-1)
 
     obs = {"node_features": node_features}
     spec = {"node_features": spaces.Box(-np.inf, np.inf, node_features.shape)}
@@ -458,9 +471,15 @@ def build_dict_obs(env, define_type, node_set="graph", coords=True, edges=True,
                  else network.get_bearing_features()]
         if edge_exists:
             parts.append(network.get_edge_exists_features())
-        parts += [network.get_edge_betweenness_features(),
-                  network.get_edge_reciprocity_features(),
+        if getattr(env, "graph_features", True):
+            parts.append(network.get_edge_betweenness_features())
+        parts += [network.get_edge_reciprocity_features(),
                   network.get_common_neighbors_features()]
+        if rig:
+            if env.rigidity_flex:
+                parts.append(rig["flex_align"])
+            if env.rigidity_edge:
+                parts.append(rig["block_rank"])
         e = np.concat(parts, axis=-1)
         obs["edge_features"] = e
         spec["edge_features"] = spaces.Box(-np.inf, np.inf, e.shape)
@@ -476,7 +495,11 @@ def build_dict_obs(env, define_type, node_set="graph", coords=True, edges=True,
     if proposed_edge is None:
         proposed_edge = env.action_space_type == "DecideOnEdge"
     if proposed_edge:
-        env.edge_proposal = np.array([np.random.randint(0, n), np.random.randint(0, n)])
+        # j != i: a self-loop proposal masks add AND remove, leaving no valid
+        # action at all (the all-masked guard then has to unmask everything)
+        i = np.random.randint(0, n)
+        j = np.random.randint(0, n - 1)
+        env.edge_proposal = np.array([i, j + 1 if j >= i else j])
         obs["proposed_edge"] = env.edge_proposal
         spec["proposed_edge"] = spaces.Box(0, n, [2])
 
@@ -589,6 +612,10 @@ class Environment(gym.Env):
         truncate_penalty_value=100,
         only_randomize_edges=False,
         include_candidate_bearings=True,
+        graph_features=True,
+        rigidity_global=False,
+        rigidity_flex=False,
+        rigidity_edge=False,
         filepath=None,
     ):
         print("initializing environment")
@@ -604,6 +631,17 @@ class Environment(gym.Env):
         # False reverts to bearings on existing edges only, same obs shape.
         # See DESIGN_NOTES.md#all-pairs-bearings
         self.include_candidate_bearings = include_candidate_bearings
+
+        # tier-3 rigidity information: an ablation arm, off by default.
+        # See DESIGN_NOTES.md#rigidity-features
+               # closeness / eigenvector / betweenness: measured to carry less
+        # rigidity-relevant signal than out-degree (which is free) while costing
+        # ~60-70% of feature building. See DESIGN_NOTES.md#graph-features
+        self.graph_features = graph_features
+        self.rigidity_global = rigidity_global
+        self.rigidity_flex = rigidity_flex
+        self.rigidity_edge = rigidity_edge
+        self.last_rigidity = None
 
         self.filepath = filepath
         self.scenario_network = None
@@ -633,6 +671,11 @@ class Environment(gym.Env):
 
         self.selection = np.zeros(self.n, dtype=np.int64)
         self.proposed_edge = np.zeros(2)
+
+        # must run before the space is defined, or the declared space is missing
+        # the rigidity channels that reset() then produces
+        is_MBR_i, is_IBR_i, rank_i = self.network.is_MBR(rank_K=self.rank_K, brm=self.brm)
+        self.compute_rigidity_features(self.brm, rank_i, is_IBR_i)
 
         _, self.observation_space = obs(obs_space_type, self, define_type=True)
         self.action_space = define_action_space(action_space_type, self)
@@ -677,7 +720,24 @@ class Environment(gym.Env):
         # self.initial_edges_writer = None
 
     def set_writer(self, experiment_name):
+        # torch's writer rather than skrl's shim: the shim has add_scalar only, and
+        # the decision-quality panel needs add_custom_scalars (one chart, four
+        # series) and add_histogram. skrl's agent keeps its own writer in the same
+        # directory; tensorboard merges them, as it already does for Loss/ vs Episode/.
         self.writer = SummaryWriter(log_dir=os.path.join("runs", experiment_name))
+        # the single plot to watch: all four converge in a policy that is learning.
+        # See DESIGN_NOTES.md#training-metrics
+        self.writer.add_custom_scalars({
+            "Decision": {"quality": ["Multiline", [
+                "Decision/ useful", "Decision/ wasted",
+                "Decision/ overshoot", "Decision/ converge",
+            ]]},
+            "Probe": {"argmax vs sample": ["Multiline", [
+                "Probe/ argmax score", "Probe/ sample score",
+            ]], "useful vs chance": ["Multiline", [
+                "Probe/ useful (argmax)", "Probe/ useful (random)",
+            ]]},
+        })
         # self.initial_edges_writer = SummaryWriter(log_dir=os.path.join("runs", experiment_name))
         self.writer_counter = 0 # don't reset this
         self.episode_counter = 0
@@ -705,6 +765,10 @@ class Environment(gym.Env):
         TRUNCATE_PENALTY_VALUE = config["truncate_penalty_value"]
         ONLY_RANDOMIZE_EDGES = config["only_randomize_edges"]
         INCLUDE_CANDIDATE_BEARINGS = config.get("include_candidate_bearings", True)
+        GRAPH_FEATURES = config.get("graph_features", True)
+        RIGIDITY_GLOBAL = config.get("rigidity_global", False)
+        RIGIDITY_FLEX = config.get("rigidity_flex", False)
+        RIGIDITY_EDGE = config.get("rigidity_edge", False)
         scenario_name = config["scenario"]
         scenario_path = (
             "scenarios/" + scenario_name + ".json"
@@ -730,6 +794,10 @@ class Environment(gym.Env):
             truncate_penalty_value=TRUNCATE_PENALTY_VALUE,
             only_randomize_edges=ONLY_RANDOMIZE_EDGES,
             include_candidate_bearings=INCLUDE_CANDIDATE_BEARINGS,
+            graph_features=GRAPH_FEATURES,
+            rigidity_global=RIGIDITY_GLOBAL,
+            rigidity_flex=RIGIDITY_FLEX,
+            rigidity_edge=RIGIDITY_EDGE,
             filepath=scenario_path,
         )
 
@@ -739,9 +807,18 @@ class Environment(gym.Env):
     def sample_initial_edge_count(self, n, domains):
         if isinstance(domains, str):
             domains = [domains]
-        d = 2 if (("R^2" in domains) or ("R^2xS^1" in domains)) else 3
-        mean = MBR_required_Rd(n, d)
+        # required_edge_count is domain-correct; the R^d closed form is not. It said
+        # 10 for SE(3) at n=8, which needs 21, so every SE(3) episode started
+        # heavily under-connected (measured: 13.1 edges, 15% of them rigid).
+        # m_req depends on n and the domain mix, not on the particular poses, so the
+        # value cached from the previous episode is the right mean here. Only the
+        # very first call (from initialize(), before a network exists) falls back.
+        mean = getattr(self, "m_req", None)
+        if mean is None:
+            d = 2 if (("R^2" in domains) or ("R^2xS^1" in domains)) else 3
+            mean = MBR_required_Rd(n, d)
         max_edges = n**2 - n
+        mean = int(np.clip(mean, 1, max_edges))
         edge_count = int(sample_gaussian(mean, (max_edges - mean)**2 / 9, n).item())
         return int(np.clip(edge_count, 1, max_edges))
 
@@ -753,10 +830,55 @@ class Environment(gym.Env):
         network_K = self.network.fully_connected()
         brmat_K = network_K.extended_bearing_rigidity_matrix()
         self.rank_K = np.linalg.matrix_rank(brmat_K)
+        # position block only; equals rank_K unless a domain contributes orientation
+        self.rank_K_pos = np.linalg.matrix_rank(brmat_K[:, :3 * self.network.n])
         self.c_max = max_edge_rank(self.network, brmat_K=brmat_K)
         self.m_req = required_edge_count(
             self.network, rank_K=self.rank_K, brmat_K=brmat_K
         )
+
+    # -----------------------------------
+    # Rigidity-derived observation features for the current graph, cached so obs()
+    # does not recompute them. Only filled when some rigidity flag is on -- these
+    # are tier-3 information, an ablation arm, not the default.
+    # See DESIGN_NOTES.md#rigidity-features
+    def compute_rigidity_features(self, brm, rank_brm, is_IBR):
+        if not self.rigidity_features_enabled():
+            self.last_rigidity = None
+            return
+
+        n = self.network.n
+        feats = {
+            "rank_deficit": (self.rank_K - rank_brm) / max(int(self.rank_K), 1),
+            "m_ratio": float(np.sum(self.network.edges)) / max(int(self.m_req), 1),
+            "is_IBR": float(is_IBR),
+        }
+
+        if self.rigidity_flex:
+            Pi = flex_tensor(brm, n, self.network.get_position_features())
+            idx = np.arange(n)
+            # how free node i is; trace of its own projector block. See THEORY.md
+            feats["flex_mag"] = np.sqrt(
+                np.einsum("iidd->i", Pi)
+            )[:, None] * np.sqrt(n)
+            # how much of the current flex the edge i->j would remove
+            # world-frame bearings: Pi is a world-frame tensor, while
+            # get_all_pairs_bearings() is the body-frame measurement
+            feats["flex_align"] = flex_constraint_power(
+                Pi, self.network.get_all_pairs_bearings_world()
+            )[:, :, None] * np.sqrt(n)
+
+        if self.rigidity_edge:
+            c = np.zeros((n, n, 1))
+            ii, jj = np.nonzero(self.network.edges)
+            for k, r in enumerate(edge_block_ranks(brm)):
+                c[ii[k], jj[k], 0] = r / max(int(self.c_max), 1)
+            feats["block_rank"] = c
+
+        self.last_rigidity = feats
+
+    def rigidity_features_enabled(self):
+        return self.rigidity_global or self.rigidity_flex or self.rigidity_edge
 
     # -----------------------------------
     # Sums and counts only, so episode length is free.
@@ -776,6 +898,13 @@ class Environment(gym.Env):
             "sum_MBR": 0.0,
             "sum_min_eig": 0.0,
             "n_min_eig": 0, # min eig is not always computed, so it needs its own count
+            # decision quality: what each step actually accomplished.
+            # See DESIGN_NOTES.md#training-metrics
+            "useful": 0,        # steps where phi strictly increased
+            "kinds": {"add": 0, "remove": 0, "noop": 0, "skip": 0, "select": 0},
+            "actions": [],      # raw action indices, for the histogram
+            "first_rigid": -1,  # step at which the graph first became IBR
+            "first_minimal": -1,
         }
 
     # -----------------------------------
@@ -787,6 +916,7 @@ class Environment(gym.Env):
         steps = max(acc["steps"], 1)
         m_final = int(self.network.edges.sum())
         m_initial = int(self.initial_m)
+        m_req = max(int(getattr(self, "m_req", 1) or 1), 1)
         n_eig = acc["n_min_eig"]
         return {
             "Episode index": self.episode_counter,
@@ -831,6 +961,30 @@ class Environment(gym.Env):
             "Rigid fraction": acc["sum_IBR"] / steps,
             "Min rigid fraction": acc["sum_MBR"] / steps,
             "Mean min eig": (acc["sum_min_eig"] / n_eig) if n_eig else None,
+
+            # Decision quality -- blind to best-state-visited, so a policy that only
+            # searches cannot score well here. DESIGN_NOTES.md#training-metrics
+            "Decision/ useful": acc["useful"] / steps,
+            "Decision/ wasted": (acc["kinds"]["noop"] + acc["kinds"]["skip"]) / steps,
+            "Decision/ overshoot": max(0.0, m_final - m_req) / m_req,
+            "Decision/ converge": self.best_step / steps,
+
+            # 1 = every edit moved the edge count the same way, 0 = pure oscillation
+            "Edit efficiency": abs(m_final - m_initial) / max(acc["edits"], 1),
+            # -1 when it never got there
+            "Steps to first rigid": acc["first_rigid"],
+            "Steps to first minimal": acc["first_minimal"],
+            # how long the *pruning* phase took, which is where n=16 stalls
+            "Steps rigid to minimal": (
+                acc["first_minimal"] - acc["first_rigid"]
+                if acc["first_minimal"] >= 0 and acc["first_rigid"] >= 0 else -1
+            ),
+
+            "Actions/ add fraction": acc["kinds"]["add"] / steps,
+            "Actions/ remove fraction": acc["kinds"]["remove"] / steps,
+            "Actions/ noop fraction": acc["kinds"]["noop"] / steps,
+            "Actions/ skip fraction": acc["kinds"]["skip"] / steps,
+            "Actions/ select fraction": acc["kinds"]["select"] / steps,
         }
 
     # -----------------------------------
@@ -1019,9 +1173,6 @@ class Environment(gym.Env):
 
         action_reward = reward - time_penalty_reward
 
-        # obs
-        obs = self._get_obs()
-
         # BRM
         brm = self.network.extended_bearing_rigidity_matrix()
 
@@ -1032,6 +1183,11 @@ class Environment(gym.Env):
         # state score, how good is the current state
         is_MBR, is_IBR, rank_brm = self.network.is_MBR(rank_K=self.rank_K, brm=brm)
         state_score = self.compute_state_score(brm, is_IBR, is_MBR, rank_brm)
+
+        # obs comes after the rigidity computation, not before: the rigidity
+        # features have to describe the graph this step produced
+        self.compute_rigidity_features(brm, rank_brm, is_IBR)
+        obs = self._get_obs()
 
         # computed once and shared; see DESIGN_NOTES.md#min-eig-caching
         tracking = self.track_data_enable and self.writer is not None
@@ -1113,6 +1269,32 @@ class Environment(gym.Env):
         acc["steps"] += 1
         acc["edits"] += int(m_now != m_before)
         acc["skips"] += int("skip" in action_info)
+
+        # What did this step accomplish? Derived centrally rather than in each of the
+        # ten action_* functions. The action_info strings are built in this same file,
+        # so the substring checks are a local convention (acc["skips"] already relies
+        # on it). "select" is the pointer's first pick: protocol, not waste.
+        if m_now > m_before:
+            kind = "add"
+        elif m_now < m_before:
+            kind = "remove"
+        elif "skip" in action_info:
+            kind = "skip"
+        elif "select" in action_info:
+            kind = "select"
+        else:
+            kind = "noop"
+        self.last_action_kind = kind
+        acc["kinds"][kind] += 1
+        acc["useful"] += int(reward_from_state_score > 0)
+        try:
+            acc["actions"].append(int(np.asarray(action).reshape(-1)[0]))
+        except (TypeError, ValueError):
+            pass
+        if is_IBR and acc["first_rigid"] < 0:
+            acc["first_rigid"] = self.step_counter
+        if is_MBR and acc["first_minimal"] < 0:
+            acc["first_minimal"] = self.step_counter
         acc["return"] += float(reward)
         acc["return_action"] += float(action_reward)
         acc["return_state"] += float(reward_from_state_score)
@@ -1193,8 +1375,16 @@ class Environment(gym.Env):
         for key, value in stats.items():
             if value is None:
                 continue
-            self.writer.add_scalar(
-                tag=f"Episode/ {key}", value=float(value), timestep=self.writer_counter
+            # keys that already name their own group (Decision/, Actions/) keep it;
+            # everything else lands under Episode/
+            tag = key if "/" in key else f"Episode/ {key}"
+            self.writer.add_scalar(tag, float(value), self.writer_counter)
+
+        actions = self.episode_accum.get("actions")
+        if actions:
+            # a collapsed policy puts all its mass on one index
+            self.writer.add_histogram(
+                "Actions/ index", np.asarray(actions), self.writer_counter
             )
 
     # Custom scalars from outside the environment; the environment's own metrics
@@ -1202,7 +1392,7 @@ class Environment(gym.Env):
     def write(self, value=None, tag=None):
         if self.writer is None or value is None or tag is None:
             return
-        self.writer.add_scalar(tag=tag, value=value, timestep=self.writer_counter)
+        self.writer.add_scalar(tag, value, self.writer_counter)
 
     # -----------------------------------
     def reset(self, seed=None, options=None):
@@ -1288,6 +1478,7 @@ class Environment(gym.Env):
         self.was_IBR = None
         self.was_MBR = None
 
+        self.compute_rigidity_features(self.brm, rank_brm_0, is_IBR_0)
         return self._get_obs(), {}
 
 
@@ -1300,8 +1491,8 @@ if __name__ == "__main__":
     # ACTION_TYPE = "AddEdgeDiscreteNoSkip"
     # ACTION_TYPE = "AddEdgeDiscreteNoSelfLoops"
     # ACTION_TYPE = "AddEdgeDiscreteNoSkipNoSelfLoops"
-    # ACTION_TYPE = "AddRemoveEdgeDiscreteNoSelfLoops"
-    ACTION_TYPE = "SelectNodesSequentially"
+    ACTION_TYPE = "AddRemoveEdgeDiscreteNoSelfLoops"
+    # ACTION_TYPE = "SelectNodesSequentially"
     # ACTION_TYPE = "DecideOnEdge"
 
     # ACTION_REWARDS_ENABLE = True
@@ -1361,6 +1552,12 @@ if __name__ == "__main__":
 
     # False = bearings only on existing edges (tier-2 restriction)
     INCLUDE_CANDIDATE_BEARINGS = True
+
+    # tier-3 rigidity information; the Phase 4 ablation arms
+    GRAPH_FEATURES = True
+    RIGIDITY_GLOBAL = True
+    RIGIDITY_FLEX = True
+    RIGIDITY_EDGE = True
     #############################################
 
     if len(sys.argv) < 3:
@@ -1409,7 +1606,12 @@ if __name__ == "__main__":
     MAX_STEPS = 4 * n * (n - 1)
 
     n_domains = f"n{n}_{domains_str}"
-    model_name = f"action{ACTION_TYPE}_reward{STATE_SCORE_TYPE}_term{TERMINATION_CONDITION_TYPE}_{scenario_name if scenario_name is not None else n_domains}"
+    # the rigidity arms differ only by these flags, so the name has to carry them
+    rig_tag = "".join(t for t, on in
+                      (("G", RIGIDITY_GLOBAL), ("F", RIGIDITY_FLEX), ("E", RIGIDITY_EDGE)) if on)
+    rig_tag = f"_rig{rig_tag}" if rig_tag else ""
+    rig_tag += "" if GRAPH_FEATURES else "_lean"
+    model_name = f"action{ACTION_TYPE}_reward{STATE_SCORE_TYPE}_term{TERMINATION_CONDITION_TYPE}{rig_tag}_{scenario_name if scenario_name is not None else n_domains}"
     print(f"MODEL NAME: {model_name}")
 
     log_dir = "./tboard_logs/"
@@ -1442,6 +1644,10 @@ if __name__ == "__main__":
         "truncate_penalty_value": TRUNCATE_PENALTY_VALUE,
         "only_randomize_edges": ONLY_RANDOMIZE_EDGES,
         "include_candidate_bearings": INCLUDE_CANDIDATE_BEARINGS,
+        "graph_features": GRAPH_FEATURES,
+        "rigidity_global": RIGIDITY_GLOBAL,
+        "rigidity_flex": RIGIDITY_FLEX,
+        "rigidity_edge": RIGIDITY_EDGE,
         "scenario": scenario_name,
     }
     env_filename = f"env_{model_name}.json"

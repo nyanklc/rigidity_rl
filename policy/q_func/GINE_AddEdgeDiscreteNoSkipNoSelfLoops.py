@@ -84,6 +84,8 @@ class DQN_QNetwork_GINE_AddEdgeDiscreteNoSkipNoSelfLoops(TabularMixin, Model):
 
         # apply masks
         E = (q_values.shape[-1])
-        q_values[:, :E][~add_mask] = -1e9
+        q_values[:, :E][~add_mask] = MASK_VALUE
+
+        q_values = unmask_if_all_masked(q_values)
 
         return q_values, {}

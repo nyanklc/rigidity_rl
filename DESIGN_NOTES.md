@@ -81,6 +81,80 @@ that need edges removed. `sample_initial_edge_count()` samples around the minimu
 instead. The mean is only exact for homogeneous R^d networks; for other domains it is below the
 true requirement, which is acceptable.
 
+### training-metrics
+
+`Best *` and `Final *` cannot tell "found a good graph" from "searched until it stumbled on one".
+Two runs died in ways those metrics never showed: a policy that scored 100% rigid / 85% minimal on
+best-state-visited but was no better than random under argmax, and two runs that reached 99.3%
+minimal and then spent 240k steps emitting invalid no-ops. These metrics are chosen to be blind to
+best-state-visited, so a searcher cannot score well on them.
+
+#### The one chart
+
+`set_writer()` registers a `Decision/quality` multiline layout over four per-episode scalars:
+
+| tag | definition | reads as |
+|---|---|---|
+| `Decision/ useful` | steps where phi strictly increased / steps | knows *which* edit helps |
+| `Decision/ wasted` | (noop + skip) / steps | is not stalling |
+| `Decision/ overshoot` | `max(0, m_final - m_req)/m_req` | is not padding edges |
+| `Decision/ converge` | `best_step / steps` | decides fast vs searches |
+
+`overshoot` is unbounded above while the others are in [0,1]; in a healthy run it sits near 0, so
+sharing the axis is fine.
+
+#### Action kinds
+
+Everything above needs to know what a step *did*. Derived centrally in `step()` rather than in each
+of the ten `action_*` functions, extending the convention `acc["skips"]` already used:
+
+```
+m increased -> add     m decreased -> remove     "skip" in info -> skip
+"select" in info -> select   (the pointer's first pick: protocol, not waste)
+otherwise -> noop            (add-existing / remove-absent)
+```
+
+The strings come from the same file, so this stays a local convention. Verified by construction on
+scripted episodes for both `SelectNodesSequentially` and `AddRemoveEdgeDiscreteNoSelfLoops`, whose
+no-op semantics differ.
+
+Logged as `Actions/ {add,remove,noop,skip,select} fraction`, plus `Actions/ index` as a real
+histogram — a collapsed policy puts all its mass on one index.
+
+#### Trajectory shape
+
+`Steps to first rigid`, `Steps to first minimal` and their difference, `Steps rigid to minimal`.
+The last isolates the n=16 failure: reaching rigidity is fine, *pruning* is where it stalls.
+
+`Edit efficiency` = `|m_final - m_initial| / edits`: 1 = every edit moved the count the same way,
+0 = pure oscillation. Measured 1.00 on a monotone deletion sequence and 0.33 on an add/remove cycle.
+
+#### The probe (`probe.py`)
+
+Every `PROBE_INTERVAL` timesteps, `PROBE_EPISODES` **fixed seeded** instances are rolled out in
+argmax, sample and uniform-random modes. Fixed instances mean the curve tracks the policy, not
+instance noise. Hooked into the `post_interaction` wrapper both training scripts already had.
+
+`Probe/ argmax-sample gap` is the headline: ~0 means a genuine decision rule, strongly negative
+means a sampling search. `Probe/ useful (argmax)` against `Probe/ useful (random)` answers "better
+than chance?" directly. `Probe/ max abs logit` catches logit drift *before* it crosses the mask.
+
+Calibrated against three known policies:
+
+| policy | argmax phi | gap | useful (argmax) | useful (random) | max abs logit |
+|---|---|---|---|---|---|
+| good checkpoint (phase4 @300k) | **75.00** (optimum) | **0.00** | **0.725** | 0.237 | 1e9 |
+| known sampler (phase3 AllBearings) | 58.50 | **-16.00** | 0.354 | 0.166 | — |
+| collapsed checkpoint (phase4 @600k) | 55.83 | 0.00 | **0.080** | 0.237 | **2.5e23** |
+
+The collapsed policy is *below* the random floor on useful-action rate, and its logits are fourteen
+orders of magnitude out. Both would have been obvious in real time.
+
+DQN has no sampling distribution, so its argmax and sample coincide; the gap is logged as 0 rather
+than faking a second mode.
+
+Cost: ~8% of training throughput at a 1.5k interval, so ~0.5% at the 25k default.
+
 ### episode-logging
 
 Environment metrics are written once per episode, not once per step. A step-resolution scalar costs
@@ -137,6 +211,102 @@ quietly mis-evaluated.
 `OBS_BACKBONE` records which GNN each legacy name implied, and the training scripts prefer it over
 their `BACKBONE` constant — so an old GINE config trains a GINE model even when the constant says
 `Equivariant`. An unknown `obs_type` raises listing the known ones.
+
+### graph-features
+
+`graph_features` (env config, default `True`) toggles closeness centrality, eigenvector centrality
+and node/edge betweenness. Domain one-hot and in/out degree are always present.
+
+Measured, and the case for turning them off is strong:
+
+| feature | corr. with flex magnitude | share of feature-build cost (n=16) |
+|---|---|---|
+| **out-degree** (free) | **-0.401** | 0.2% |
+| closeness | -0.395 | 40.0% |
+| node betweenness | -0.328 | 10.7% |
+| eigenvector | -0.309 | 5.4% |
+
+All three expensive centralities carry *less* rigidity-relevant signal than out-degree, which costs
+nothing; closeness is also 0.933-correlated with out-degree, so it is close to a rescaling of it.
+Edge betweenness predicts "removing this edge drops rank" at r = +0.146 (means 6.07 critical vs 4.59
+redundant, heavily overlapping) — near-useless for the pruning decision the policy has to make.
+
+Turning them off takes an n=16 step from **43.4 ms to 9.2 ms (4.7x)**, because closeness and
+Brandes betweenness are O(n^3) pure Python and dominate everything else in the environment.
+
+Left as a flag rather than deleted so the removal is an ablation arm (`_lean` configs) rather than
+an assumption. Correlational evidence is not proof that a GNN cannot use them nonlinearly.
+
+### rigidity-features
+
+Tier-3 information (`ROADMAP.md` A.1): quantities derived from the rigidity matrix, which no local
+decision maker could compute. Off by default — this is an **ablation arm**, and the gap between arms
+is the deliverable. Three graded flags, so several information levels can be compared:
+
+| flag | node channels | edge channels |
+|---|---|---|
+| `rigidity_global` | `(rank_K-rank)/rank_K`, `m/m_req`, `is_IBR` | — |
+| `rigidity_flex` | `flex_mag` | `flex_align` |
+| `rigidity_edge` | — | `c_k / c_max` |
+
+**`c_k` is nearly useless on its own, and that is why the flags are graded.** Per-edge block rank is
+*constant* in every homogeneous configuration — measured 2 for every edge in R^3 and 1 in R^2, at
+n=4/8/16 — so it is a dead channel in all three configurations currently trained and evaluated. It
+varies only on heterogeneous networks. It is kept as its own flag rather than bundled, so it never
+silently pads the feature vector in the runs where it means nothing.
+
+#### The flex features
+
+`B`'s position block `B_p = B[:, :3n]` has a null space whose non-trivial directions are the
+infinitesimal flexes: the motions the framework cannot resist. `flex_tensor()` returns the per-node
+`(n, 3, 3)` diagonal blocks `G_i` of the projector onto that space.
+
+Two things this must get right, both of which bit during implementation:
+
+1. **The trivial modes have to be projected out explicitly.** `eigh` returns an arbitrary
+   orthonormal basis of the *whole* null space, so "take the columns after the first `3n - rank_K`"
+   does not skip translations and scaling — it skips an arbitrary mixture containing them. The
+   symptom was a flex that failed to localise on an obviously under-constrained node and was not
+   rotation-invariant. `trivial_modes()` builds the 3 translations and the uniform scaling
+   analytically, and they are projected out before the flex space is taken.
+2. **Return the projector, not an eigenvector.** The flex space is usually multi-dimensional, and
+   any single vector inside a degenerate eigenspace is a basis artefact — not reproducible between
+   calls on the same graph. `G_i = sum_c v_i^(c) v_i^(c)^T` is basis-independent, and transforms as
+   a tensor, so scalars read off it are rotation-invariant.
+
+When the framework is already rigid the flex space is empty; the weakest resisted direction (the
+rigidity eigenvalue's eigenvector) is used instead, so the feature degrades from "where it is free"
+to "where it is nearly free".
+
+The two scalars read off `G_i` are both invariant, which is the point — a flex **vector** fed as node
+features would be rotation-*equivariant* data consumed as invariant scalars, the same error §2.3
+records for bearings:
+
+- `flex_mag = sqrt(trace(G_i)) * sqrt(n)` — how free node `i` is. The `sqrt(n)` matters: the basis
+  is globally unit-norm, so without it the feature shrinks as `n` grows, which is exactly wrong for
+  a policy meant to span several `n`.
+- `flex_align[i,j] = sqrt(p_hat_ij^T G_i p_hat_ij) * sqrt(n)` — how much of the bearing to `j` lies
+  in what `i` cannot resist, i.e. *would measuring `j` help*. This is the addition criterion, which
+  is the half of the failure the geometry-only policy is worst at. Reuses the all-pairs bearings.
+
+Verified: a detached node scores 1.58 against 0.22-0.35 for the rigid remainder; the same node held
+by one edge scores 0.88 against 0.09-0.25; rotation invariance holds to 1e-15; `flex_align` from the
+loose node averages 1.69 against 0.24 for nodes in the rigid part.
+
+#### Ordering
+
+`step()` used to build the observation *before* the rigidity matrix, so rigidity channels would have
+described the previous step's graph. `_get_obs()` now runs after the state score, and
+`compute_rigidity_features()` caches everything the observation needs from the `brm` already built.
+`initialize()` also has to populate the cache before declaring the observation space, or the space
+is missing channels that `reset()` then produces (`ValueError: Output array is the wrong shape` from
+the vector-env concatenate).
+
+#### Cost
+
+Same graph, n=8: `{}` 1.93 ms/step, `{global}` 2.16, `{global,flex}` 2.42, `{global,flex,edge}` 2.68
+(+39% for the widest arm). At n=16: 21.6 -> 23.1 ms (+7%), since the fixed graph-feature cost
+dominates there.
 
 ### all-pairs-bearings
 

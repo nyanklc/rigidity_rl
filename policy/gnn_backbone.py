@@ -1,5 +1,21 @@
 import torch
 import torch.nn as nn
+
+# Action masking value. MUST stay scale-free: a finite sentinel like -1e9 stops
+# being "minus infinity" once training drifts the real logits past it, at which
+# point argmax starts selecting *masked* actions. That happened -- logits reached
+# -1e23 against a -1e9 sentinel and the policy locked into invalid no-ops.
+# See DESIGN_NOTES.md#action-masking
+MASK_VALUE = float("-inf")
+
+
+def unmask_if_all_masked(logits):
+    """Guard against every action being masked, which would make softmax NaN.
+
+    Reachable for add-only action spaces once the graph is complete.
+    """
+    dead = torch.isinf(logits).all(dim=-1, keepdim=True)
+    return torch.where(dead, torch.zeros_like(logits), logits)
 import torch.nn.functional as F
 from torch_geometric.nn import GATConv, GINEConv
 from egnn_pytorch import EGNN

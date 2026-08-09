@@ -19,6 +19,7 @@ class DQN_QNetwork_AddEdgeDiscreteNoSelfLoops(TabularMixin, Model):
         observation_space,
         action_space,
         device,
+        allow_skip=True,
     ):
         # Model.__init__(self, observation_space, action_space, device)
         Model.__init__(self, observation_space=observation_space, action_space=action_space, device=device)
@@ -35,6 +36,7 @@ class DQN_QNetwork_AddEdgeDiscreteNoSelfLoops(TabularMixin, Model):
             nn.Linear(head_hidden_dim, 1),  # output single logit ("add")
         )
 
+        self.allow_skip = allow_skip
         self.skip_head = nn.Linear(gnn_hidden_dim, 1)
 
     def random_act(self, inputs: dict[str, Any], *, role: str = "") -> tuple[torch.Tensor, dict[str, Any]]:
@@ -46,7 +48,7 @@ class DQN_QNetwork_AddEdgeDiscreteNoSelfLoops(TabularMixin, Model):
         add_mask = (adj == 0)
         add_mask = add_mask[:, ~torch.eye(n, dtype=torch.bool, device=adj.device)].view(batch_size, -1)
 
-        skip_mask = torch.ones((batch_size, 1), dtype=torch.bool, device=adj.device)
+        skip_mask = torch.full((batch_size, 1), self.allow_skip, dtype=torch.bool, device=adj.device)
         full_mask = torch.cat([add_mask, skip_mask], dim=1)
 
         actions = torch.multinomial(full_mask.float(), 1)
@@ -90,6 +92,8 @@ class DQN_QNetwork_AddEdgeDiscreteNoSelfLoops(TabularMixin, Model):
         q_values = q_values[:, mask]  # (b, n*n - n)
 
         skip_logit = self.skip_head(torch.mean(h, dim=1))
+        if not self.allow_skip:
+            skip_logit = torch.full_like(skip_logit, MASK_VALUE)
 
         q_values = torch.cat([
             q_values,

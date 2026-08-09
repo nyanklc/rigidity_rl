@@ -15,6 +15,7 @@ import policy.gnn_backbone
 from policy import *
 import numpy as np
 import manifest
+from probe import Probe
 
 ######################################
 TOTAL_TIMESTEPS = int(6e5)
@@ -29,6 +30,11 @@ SEED = 0  # recorded in the manifest; training was unseeded before this
 BACKBONE = "Equivariant"
 GNN_HIDDEN_DIM = 128
 ACTOR_HEAD_HIDDEN_DIM = 256
+
+# Periodic deterministic evaluation during training: is the policy a decision
+# rule or only a sampler? See DESIGN_NOTES.md#training-metrics
+PROBE_INTERVAL = 25_000
+PROBE_EPISODES = 3
 CRITIC_HEAD_HIDDEN_DIM = 256
 
 cfg = PPO_CFG()
@@ -236,9 +242,13 @@ descriptor = {
 # checkpoint stays reproducible after the code moves on (see manifest.py)
 descriptor = manifest.build_manifest(descriptor, env_config_data, seed=SEED, device=device)
 
+probe = Probe(filepath, device=DEVICE,
+              interval=PROBE_INTERVAL, episodes=PROBE_EPISODES)
+
 _original_post_interaction = agent.post_interaction
 def custom_post_interaction(*args, timestep, timesteps, **kwargs):
     descriptor["timesteps_completed"] = timestep
+    probe.maybe_run(agent, timestep, raw_env.envs[0].writer)
     return _original_post_interaction(*args, timestep=timestep, timesteps=timesteps, **kwargs)
 agent.post_interaction = custom_post_interaction
 

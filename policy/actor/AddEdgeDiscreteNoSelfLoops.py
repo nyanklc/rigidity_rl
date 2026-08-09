@@ -17,6 +17,7 @@ class PPO_ActorModel_AddEdgeDiscreteNoSelfLoops(CategoricalMixin, Model):
         observation_space,
         action_space,
         device,
+        allow_skip=True,
     ):
         # Model.__init__(self, observation_space, action_space, device)
         Model.__init__(self, observation_space=observation_space, action_space=action_space, device=device)
@@ -35,6 +36,7 @@ class PPO_ActorModel_AddEdgeDiscreteNoSelfLoops(CategoricalMixin, Model):
             nn.Linear(head_hidden_dim, 1),  # output single logit ("add")
         )
 
+        self.allow_skip = allow_skip
         self.skip_head = nn.Linear(gnn_hidden_dim, 1)
 
 
@@ -75,6 +77,8 @@ class PPO_ActorModel_AddEdgeDiscreteNoSelfLoops(CategoricalMixin, Model):
         logits = logits[:, mask]  # (b, n*n - n)
 
         skip_logit = self.skip_head(torch.mean(h, dim=1))
+        if not self.allow_skip:
+            skip_logit = torch.full_like(skip_logit, MASK_VALUE)
 
         logits = torch.cat([
             logits,

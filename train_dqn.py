@@ -17,6 +17,7 @@ from skrl.trainers.torch import SequentialTrainer, SequentialTrainerCfg
 import policy.gnn_backbone
 from policy import *
 import manifest
+from probe import Probe
 
 ######################################
 TOTAL_TIMESTEPS = int(6e5)
@@ -30,6 +31,11 @@ EGREEDY_STEPS = TOTAL_TIMESTEPS * 0.5
 BACKBONE = "Equivariant"
 GNN_HIDDEN_DIM = 128
 QNETWORK_HEAD_HIDDEN_DIM = 256
+
+# Periodic deterministic evaluation during training: is the policy a decision
+# rule or only a sampler? See DESIGN_NOTES.md#training-metrics
+PROBE_INTERVAL = 25_000
+PROBE_EPISODES = 3
 
 cfg = DQN_CFG()
 cfg.experiment.directory = "runs"
@@ -228,9 +234,13 @@ descriptor = {
 # checkpoint stays reproducible after the code moves on (see manifest.py)
 descriptor = manifest.build_manifest(descriptor, env_config_data, seed=SEED, device=DEVICE)
 
+probe = Probe(filepath, device=DEVICE,
+              interval=PROBE_INTERVAL, episodes=PROBE_EPISODES)
+
 _original_post_interaction = agent.post_interaction
 def custom_post_interaction(*args, timestep, timesteps, **kwargs):
     descriptor["timesteps_completed"] = timestep
+    probe.maybe_run(agent, timestep, raw_env.envs[0].writer)
     return _original_post_interaction(*args, timestep=timestep, timesteps=timesteps, **kwargs)
 agent.post_interaction = custom_post_interaction
 

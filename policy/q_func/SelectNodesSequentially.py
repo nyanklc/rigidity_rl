@@ -89,7 +89,7 @@ class DQN_QNetwork_SelectNodesSequentially(TabularMixin, Model):
 
         # this head emits all n+1 values at once, so mask the skip column in place
         if not self.allow_skip:
-            q_values[:, -1] = -1e9
+            q_values[:, -1] = MASK_VALUE
 
         # mask out self loops
         # print(f"q_values before: {q_values}")
@@ -97,10 +97,12 @@ class DQN_QNetwork_SelectNodesSequentially(TabularMixin, Model):
         has_selected = selection.sum(dim=1) > 0
         has_selected = has_selected.unsqueeze(1).expand(-1, selected_mask.size(1))
         mask = selected_mask & has_selected   # (B, N)
-        q_values[:, :-1] = q_values[:, :-1].masked_fill(mask, -1e9) # exclude the skip action
+        q_values[:, :-1] = q_values[:, :-1].masked_fill(mask, MASK_VALUE) # exclude the skip action
         # print(f"selected_mask: {selected_mask}")
         # print(f"has_selected: {has_selected}")
         # print(f"mask: {mask}")
         # print(f"q_values after: {q_values}")
+
+        q_values = unmask_if_all_masked(q_values)
 
         return q_values, {}

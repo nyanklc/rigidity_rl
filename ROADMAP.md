@@ -405,15 +405,65 @@ The bulk-deletion regime is learned; the last, hard deletions are not. Deciding 
 edge is redundant is exactly the judgement `rank`/`c_k` encode and the observation does not carry,
 which is the Phase 4 hypothesis stated as a measurement rather than a guess.
 
-### Phase 4 — rigidity-feature observation (informed ablation arm)
+### Phase 4 — rigidity-feature observation (informed ablation arm) — **DONE, untrained**
 *Addresses 2.4 as a measured comparison.*
 
-- Same as Phase 3 plus: rank deficit `rank_K - rank(B)`, `m/m_req`, `is_IBR` as graph-level
-  features; per-edge block rank `c_k` as an edge channel.
-- `c_k` is already computed inside `is_MBR`; expose it rather than recomputing.
+Three graded flags rather than one on/off, all default `False` so every existing config is
+byte-identical:
 
-**Acceptance:** both arms train to completion at n=8/R^3 and the gap between them is measured on
-the n=4/R^2 and n=16/R^3 transfer tables. The gap is the deliverable, whichever way it points.
+| flag | node channels | edge channels |
+|---|---|---|
+| `rigidity_global` | `(rank_K-rank)/rank_K`, `m/m_req`, `is_IBR` | — |
+| `rigidity_flex` | `flex_mag` | `flex_align` |
+| `rigidity_edge` | — | `c_k / c_max` |
+
+**The originally specified edge feature was dead and had to be replaced.** Per-edge block rank `c_k`
+is *constant* in every homogeneous configuration — 2 for every edge in R^3, 1 in R^2, measured at
+n=4/8/16. It varies only on heterogeneous networks. As originally planned, Phase 4's only per-edge
+signal would have carried zero information in all three configurations we train and evaluate on. It
+survives as its own flag so it never silently pads the feature vector where it means nothing.
+
+What replaces it is derived from the rigidity matrix's **null space** — the infinitesimal flexes,
+i.e. the motions the framework cannot resist:
+
+- `flex_mag` (node) — how free node `i` is.
+- `flex_align[i,j]` (all pairs) — how much of the bearing to `j` lies in what `i` cannot resist,
+  i.e. *would measuring `j` help*. This is the **addition** criterion, and the n=16 post-mortem
+  showed adding is where the geometry-only policy fails hardest (it stalls at rank 43.3 of 44).
+
+Deliberately **not** included: leave-one-out rank drop (`rank(B) - rank(B\e)`). It is the removal
+criterion greedy uses, costs ~8.6 ms/step at n=8 (4x), and handing it over would make the arm
+measure "greedy with a learned proposal" rather than an information gap.
+
+**Two implementation traps, both hit and fixed** (details in `DESIGN_NOTES.md#rigidity-features`):
+`eigh` returns an arbitrary basis of the *whole* null space, so the trivial modes (translations,
+scaling) must be projected out analytically rather than skipped by index; and the feature must be
+the null-space **projector** per node, not an eigenvector, since any single vector in a degenerate
+eigenspace is a basis artefact. The first version failed to localise on an obviously
+under-constrained node and was not rotation-invariant.
+
+Also fixed: `step()` built the observation *before* the rigidity matrix, so rigidity channels would
+have described the previous step's graph.
+
+**Verified.** Flags off ⇒ byte-identical observations and an unchanged reference table (greedy and
+brute-force optimal still exactly 75.00 at n=4/R^2). Declared space matches `reset()` output for all
+four arms. Ordering test discriminates (steps where pre- and post-action rank differ) and matches
+post-action 6/6. Flex localises correctly (detached node 1.58 vs 0.22-0.35; one-edge node 0.88 vs
+0.09-0.25), is deterministic across repeated calls, and is rotation-invariant to 1e-15. All 16
+(4 arms x 2 backbones x 2 algorithms) train.
+
+Cost, same graph: n=8 1.93 -> 2.68 ms/step for the widest arm (+39%); n=16 21.6 -> 23.1 ms (+7%).
+
+**Also changed:** `MAX_STEPS` now scales as `4*n*(n-1)` (n=8 -> 224, n=16 -> 960), and environment
+filenames carry the arm (`_rigG`, `_rigGF`, `_rigGFE`). Regenerated n=8 configs therefore give 224
+steps where the existing `AllBearings` run was evaluated at 200 — pass `--steps 200` when comparing
+directly against it.
+
+**Acceptance (pending training):** four arms trained at n=8/R^3, each evaluated at n=8 and n=16, with
+`--policy-mode greedy` reported as the headline alongside `sample`. The Phase 3 post-mortem showed
+sampled numbers flatter the policy badly (n=8 argmax collapses to 70% rigid against 100% sampled),
+so an ablation scored only on `sample` would measure the proposal distribution rather than the
+policy.
 
 ### Phase 5 — pairwise pointer head
 *Fixes 2.6.*

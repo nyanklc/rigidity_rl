@@ -18,6 +18,7 @@ class PPO_ActorModel_AddRemoveEdgeDiscreteNoSelfLoops(CategoricalMixin, Model):
         observation_space,
         action_space,
         device,
+        allow_skip=True,
     ):
         # Model.__init__(self, observation_space, action_space, device)
         Model.__init__(self, observation_space=observation_space, action_space=action_space, device=device)
@@ -34,10 +35,13 @@ class PPO_ActorModel_AddRemoveEdgeDiscreteNoSelfLoops(CategoricalMixin, Model):
             nn.Linear(head_hidden_dim, 2),  # two logits ("add", "remove")
         )
 
-        # self.skip_head = nn.Sequential(
-        #     nn.Linear(gnn_hidden_dim, gnn_hidden_dim),
-        #     nn.Linear(gnn_hidden_dim, 1)
-        # )
+        # the action space is Discrete(2*ec - 2n + 1); without this head the model
+        # emitted 2*ec-2n logits and could never represent the last action
+        self.allow_skip = allow_skip
+        self.skip_head = nn.Sequential(
+            nn.Linear(gnn_hidden_dim, gnn_hidden_dim),
+            nn.Linear(gnn_hidden_dim, 1)
+        )
 
     def compute(self, inputs, role):
         observations = unflatten_tensorized_space(self.observation_space, inputs["observations"])
@@ -72,12 +76,14 @@ class PPO_ActorModel_AddRemoveEdgeDiscreteNoSelfLoops(CategoricalMixin, Model):
 
         add_logits = edge_logits[:, :, 0]      # (B, E)
         remove_logits = edge_logits[:, :, 1]   # (B, E)
-        # skip_logit = self.skip_head(torch.mean(h, dim=1))
+        skip_logit = self.skip_head(torch.mean(h, dim=1))
+        if not self.allow_skip:
+            skip_logit = torch.full_like(skip_logit, MASK_VALUE)
 
         logits = torch.cat([
             add_logits,
             remove_logits,
-            # skip_logit
+            skip_logit
         ], dim=1)   # (B, 2*ec - 2*n + 1)
 
         # mask invalid ADD
@@ -93,9 +99,11 @@ class PPO_ActorModel_AddRemoveEdgeDiscreteNoSelfLoops(CategoricalMixin, Model):
         # apply masks
         # effectively settings the probability of these actions to 0
         E = (logits.shape[-1])//2
-        logits[:, :E][~add_mask] = -1e9
-        logits[:, E:2*E][~remove_mask] = -1e9
+        logits[:, :E][~add_mask] = MASK_VALUE
+        logits[:, E:2*E][~remove_mask] = MASK_VALUE
 
         # print(f"probs: {torch.softmax(logits, dim=1)} -> {torch.argmax(torch.softmax(logits, dim=1))}")
+
+        logits = unmask_if_all_masked(logits)
 
         return logits, {}

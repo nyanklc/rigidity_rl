@@ -17,6 +17,7 @@ class PPO_ActorModel_DecideOnEdge(CategoricalMixin, Model):
         observation_space,
         action_space,
         device,
+        allow_skip=True,
     ):
         # Model.__init__(self, observation_space, action_space, device)
         Model.__init__(self, observation_space=observation_space, action_space=action_space, device=device)
@@ -28,6 +29,7 @@ class PPO_ActorModel_DecideOnEdge(CategoricalMixin, Model):
         self.n = n
 
         # input selected nodes' embeddings
+        self.allow_skip = allow_skip
         self.head = nn.Sequential(
             nn.Linear(2 * gnn_hidden_dim, head_hidden_dim),
             nn.Linear(head_hidden_dim, 3), # add/remove/noop
@@ -68,10 +70,15 @@ class PPO_ActorModel_DecideOnEdge(CategoricalMixin, Model):
 
         # mask self loops
         self_loops = torch.argwhere(i_idx == j_idx)
-        logits[self_loops, 0] = -1e9 # add
-        logits[self_loops, 1] = -1e9 # remove
+        logits[self_loops, 0] = MASK_VALUE # add
+        logits[self_loops, 1] = MASK_VALUE # remove
 
         # mask existing edges (or the other way)
         # TODO: maybe we shoudn't mask them out
+
+        if not self.allow_skip:
+            logits[:, 2] = MASK_VALUE  # index 2 is 'skip'
+
+        logits = unmask_if_all_masked(logits)
 
         return logits, {}

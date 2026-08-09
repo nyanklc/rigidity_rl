@@ -19,6 +19,7 @@ class PPO_ActorModel_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(CategoricalMix
         observation_space,
         action_space,
         device,
+        allow_skip=True,
     ):
         # Model.__init__(self, observation_space, action_space, device)
         Model.__init__(self, observation_space=observation_space, action_space=action_space, device=device)
@@ -36,6 +37,7 @@ class PPO_ActorModel_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(CategoricalMix
         )
 
         # input graph embedding
+        self.allow_skip = allow_skip
         self.skip_head = nn.Sequential(
             nn.Linear(node_feat_dim, head_hidden_dim),
             nn.LeakyReLU(),
@@ -73,6 +75,8 @@ class PPO_ActorModel_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(CategoricalMix
         add_logits = edge_logits[:, :, 0]      # (B, E)
         remove_logits = edge_logits[:, :, 1]   # (B, E)
         skip_logit = self.skip_head(torch.mean(h, dim=1))
+        if not self.allow_skip:
+            skip_logit = torch.full_like(skip_logit, MASK_VALUE)
 
         logits = torch.cat([
             add_logits,
@@ -92,7 +96,9 @@ class PPO_ActorModel_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(CategoricalMix
 
         # apply masks
         E = (logits.shape[-1]-1)//2
-        logits[:, :E][~add_mask] = -1e9
-        logits[:, E:2*E][~remove_mask] = -1e9
+        logits[:, :E][~add_mask] = MASK_VALUE
+        logits[:, E:2*E][~remove_mask] = MASK_VALUE
+
+        logits = unmask_if_all_masked(logits)
 
         return logits, {}
