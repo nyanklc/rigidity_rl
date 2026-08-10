@@ -219,7 +219,7 @@ class Network:
 
         if (
             domain != "SE(3)"
-            # and domain != "R^3xS^1" # TODO: rotation axis is cumbersome to support (e.g. in velocity clipping)
+            and domain != "R^3xS^1" # TODO: old todo what is this?: TODO: rotation axis is cumbersome to support (e.g. in velocity clipping)
             and domain != "R^2xS^1"
             and domain != "R^3"
             and domain != "R^2"

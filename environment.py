@@ -715,6 +715,10 @@ class Environment(gym.Env):
         self.episode_counter = 0
         self.episode_accum = self.new_episode_accum()
         self.last_episode_stats = None
+        # one scalar per episode says nothing about the sampler's spread, so the
+        # initial edge counts are buffered and emitted as a histogram
+        self.initial_edge_history = []
+        self.initial_edge_hist_every = 25
 
         self.writer = None
         # self.initial_edges_writer = None
@@ -932,6 +936,9 @@ class Environment(gym.Env):
             "Return (termination)": acc["return_termination"],
 
             "Nr initial edges": m_initial,
+            # 1.0 = the sampler starts exactly at the requirement. Dimensionless,
+            # so it is comparable across n and domain unlike the raw count.
+            "Initial edges over m_req": m_initial / m_req,
             "Final state score": float(state_score),
             "Final nr edges": m_final,
             "Final rank": int(rank_brm),
@@ -1387,6 +1394,20 @@ class Environment(gym.Env):
                 "Actions/ index", np.asarray(actions), self.writer_counter
             )
 
+        # the distribution of starting graphs the sampler actually produces.
+        # A single scalar per episode cannot show whether it is centred on m_req
+        # or merely averages there. See DESIGN_NOTES.md#initial-edge-count
+        self.initial_edge_history.append(int(self.initial_m))
+        if len(self.initial_edge_history) >= self.initial_edge_hist_every:
+            hist = np.asarray(self.initial_edge_history)
+            self.writer.add_histogram("Episode/ Initial edges", hist, self.writer_counter)
+            self.writer.add_histogram(
+                "Episode/ Initial edges over m_req",
+                hist / max(int(getattr(self, "m_req", 1) or 1), 1),
+                self.writer_counter,
+            )
+            self.initial_edge_history.clear()
+
     # Custom scalars from outside the environment; the environment's own metrics
     # go through write_episode()
     def write(self, value=None, tag=None):
@@ -1554,7 +1575,7 @@ if __name__ == "__main__":
     INCLUDE_CANDIDATE_BEARINGS = True
 
     # tier-3 rigidity information; the Phase 4 ablation arms
-    GRAPH_FEATURES = True
+    GRAPH_FEATURES = False
     RIGIDITY_GLOBAL = True
     RIGIDITY_FLEX = True
     RIGIDITY_EDGE = True

@@ -105,7 +105,23 @@ tensorboard --logdir runs
 
 Names are filenames without extension: `<environment_name>` → `environments/<name>.json`, `<scenario_name>` → `scenarios/<name>.json`.
 
-There is no test suite, linter, or CI. `dummy/test_mbr.py` is a scratch file, not a test.
+**Tests: `uv run tests/run_all.py`** (fast suite, ~30 s, 430 checks) or
+`uv run tests/run_all.py --slow` (~3 min, adds training runs, brute force and large n).
+Individual files run standalone: `uv run pytest tests/test_flex.py -v`.
+
+The suite is written against the invariants this project keeps breaking -- the scale-free
+mask sentinel, the flex tensor's frame and shape, per-domain `rank_K`/`c_max`/`m_req`,
+similarity invariance per channel across all five domains, `allow_skip` over every model,
+the legacy obs presets being byte-exact, and phi's closed form. Re-introducing any of the
+six bugs found during the last stretch of work makes a *named* test fail; that is the
+suite's acceptance criterion, not its pass rate.
+
+`environments/`, `models/`, `train/` and `scenarios/` are gitignored, so tests build
+environments programmatically and write configs to `tmp_path` -- **the fast suite passes on
+a fresh clone**, with checkpoint-dependent tests skipping rather than failing. Anything that
+writes to `runs/`/`train/`/`models/` uses the `temp_run_name` fixture and cleans up.
+
+There is no linter or CI. `dummy/test_mbr.py` is a scratch file, not a test.
 
 ## Architecture
 
