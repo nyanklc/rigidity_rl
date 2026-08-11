@@ -72,3 +72,33 @@ def test_load_run_rebuilds_a_usable_agent():
     scores, action = deterministic_action(agent, obs)
     assert scores.shape[-1] == wrapped.action_space.n
     assert 0 <= int(action.reshape(-1)[0]) < wrapped.action_space.n
+
+
+# A run whose sources match the working tree archives no environment, so load_run
+# used to demand an explicit env name even though the manifest carries the config
+# twice over. environments/ is gitignored, so the embedded copy is the reliable one.
+def test_env_name_is_optional_when_the_manifest_carries_the_config():
+    import json
+    cfg = {"n": 4, "domains": "R^2"}
+    path = agent_loader._manifest_env_config(
+        {"environment_config_raw": cfg, "environment_config": "does_not_exist"}, "m")
+    assert json.load(open(path)) == cfg
+
+
+def test_falls_back_to_the_named_config_when_no_raw_copy(tmp_path, monkeypatch):
+    import json
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "environments").mkdir()
+    (tmp_path / "environments" / "e.json").write_text(json.dumps({"n": 5}))
+    assert agent_loader._manifest_env_config({"environment_config": "e"}, "m") \
+        == "./environments/e.json"
+
+
+@pytest.mark.parametrize("info,reason", [
+    (None, "no manifest"),
+    ({}, "carries no environment_config_raw"),
+    ({"environment_config": "gone"}, "is missing"),
+])
+def test_unresolvable_environment_says_why(info, reason):
+    with pytest.raises(ValueError, match=reason):
+        agent_loader._manifest_env_config(info, "m")

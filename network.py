@@ -384,6 +384,24 @@ class Network:
         in_degree = np.sum(self.edges, axis=0)
         return np.column_stack((in_degree, out_degree))
 
+    # N, 2 -- degree relative to the mean degree of a MINIMAL graph, m_req/n.
+    # Dividing by (n-1) instead would over-correct: required edges grow linearly in
+    # n while the pair count grows quadratically, so that introduces a 1/n trend
+    # where there was none. Here a node at the target density reads ~1.
+    # See DESIGN_NOTES.md#aggregation-and-scale
+    def get_degree_features_normalized(self, m_req=None):
+        if m_req is None:
+            m_req = rigidity.required_edge_count(self)
+        return self.get_degree_features() / max(m_req / max(self.n, 1), 1e-6)
+
+    # N, N, 1 -- common neighbours per unit of mean degree. Dividing by (n-2)
+    # over-corrects: the raw count grows only mildly with n (0.9 -> 1.9 from n=8 to
+    # 32), so the pair count is the wrong yardstick.
+    def get_common_neighbors_features_normalized(self, m_req=None):
+        if m_req is None:
+            m_req = rigidity.required_edge_count(self)
+        return self.get_common_neighbors_features() / max(m_req / max(self.n, 1), 1e-6)
+
     # N, 1
     def get_closeness_centrality_features(self):
         n = self.n

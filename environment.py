@@ -420,12 +420,16 @@ def action_DecideOnEdge(action, env: "Environment", reward, action_info):
 # See DESIGN_NOTES.md#dict-observation
 def build_dict_obs(env, define_type, node_set="graph", coords=True, edges=True,
                    selection=True, proposed_edge=None, candidate_bearings=None,
-                   edge_exists=True, normalize_positions=True):
+                   edge_exists=True, normalize_positions=True,
+                   normalize_counts=True):
     network = env.network
     n = network.n
 
     if node_set == "graph":
-        parts_n = [network.get_domain_features(), network.get_degree_features()]
+        parts_n = [network.get_domain_features(),
+                   network.get_degree_features_normalized(getattr(env, "m_req", None))
+                   if normalize_counts
+                   else network.get_degree_features()]
         if getattr(env, "graph_features", True):
             parts_n += [network.get_closeness_centrality_features(),
                         network.get_eigenvector_centrality_features(),
@@ -474,7 +478,9 @@ def build_dict_obs(env, define_type, node_set="graph", coords=True, edges=True,
         if getattr(env, "graph_features", True):
             parts.append(network.get_edge_betweenness_features())
         parts += [network.get_edge_reciprocity_features(),
-                  network.get_common_neighbors_features()]
+                  network.get_common_neighbors_features_normalized(getattr(env, "m_req", None))
+                  if normalize_counts
+                  else network.get_common_neighbors_features()]
         if rig:
             if env.rigidity_flex:
                 parts.append(rig["flex_align"])
@@ -512,9 +518,9 @@ def build_dict_obs(env, define_type, node_set="graph", coords=True, edges=True,
 OBS_PRESETS = {
     "Dict": dict(),
     "DictEquivariantNodeFeaturesAndAdjAndSelection": dict(
-        edge_exists=False, normalize_positions=False, candidate_bearings=False),
+        edge_exists=False, normalize_positions=False, candidate_bearings=False, normalize_counts=False),
     "DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection": dict(
-        coords=False, edge_exists=False, candidate_bearings=False),
+        coords=False, edge_exists=False, candidate_bearings=False, normalize_counts=False),
     "DictNodeFeaturesAndAdj": dict(
         node_set="domain_signbearing", coords=False, edges=False, selection=False),
     "DictNodeFeaturesAndAdjAndSelection": dict(
@@ -823,7 +829,14 @@ class Environment(gym.Env):
             mean = MBR_required_Rd(n, d)
         max_edges = n**2 - n
         mean = int(np.clip(mean, 1, max_edges))
-        edge_count = int(sample_gaussian(mean, (max_edges - mean)**2 / 9, n).item())
+        # spread proportional to the requirement, not to the gap up to the complete
+        # graph. The old (max_edges - mean)^2/9 grows like n^4, so at n=16 the sd was
+        # 72.7 against a mean of 22 and episodes actually started around 42 edges --
+        # n=16 was a far harder pruning problem than n=8, not merely a bigger one,
+        # which confounded every transfer comparison.
+        # See DESIGN_NOTES.md#aggregation-and-scale
+        sd = max(0.5 * mean, 1.0)
+        edge_count = int(sample_gaussian(mean, sd**2, n).item())
         return int(np.clip(edge_count, 1, max_edges))
 
     # -----------------------------------
@@ -860,17 +873,26 @@ class Environment(gym.Env):
 
         if self.rigidity_flex:
             Pi = flex_tensor(brm, n, self.network.get_position_features())
-            idx = np.arange(n)
+            # sum_i tr Pi[i,i] = dim F = the rank deficit, which grows with n, so
+            # dividing by sqrt(n) alone leaves the feature scaling with BOTH n and
+            # the deficit. Normalizing by the trace makes the vector's mean square
+            # exactly 1 at any n and any deficit -- it becomes "which nodes are
+            # free", not "how free in absolute terms", which is the part that
+            # transfers. It also removes the rigid/non-rigid scale jump, since the
+            # rigid fallback is a unit eigenvector with trace 1.
+            # See DESIGN_NOTES.md#aggregation-and-scale
+            total = float(np.einsum("iidd->", Pi))
+            scale = np.sqrt(n) / np.sqrt(max(total, 1e-12))
             # how free node i is; trace of its own projector block. See THEORY.md
             feats["flex_mag"] = np.sqrt(
                 np.einsum("iidd->i", Pi)
-            )[:, None] * np.sqrt(n)
+            )[:, None] * scale
             # how much of the current flex the edge i->j would remove
             # world-frame bearings: Pi is a world-frame tensor, while
             # get_all_pairs_bearings() is the body-frame measurement
             feats["flex_align"] = flex_constraint_power(
                 Pi, self.network.get_all_pairs_bearings_world()
-            )[:, :, None] * np.sqrt(n)
+            )[:, :, None] * scale
 
         if self.rigidity_edge:
             c = np.zeros((n, n, 1))

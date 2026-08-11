@@ -42,6 +42,6 @@ uv pip install \
     torch_cluster torch_spline_conv \
     -f https://data.pyg.org/whl/torch-2.8.0+cu126.html
 
-uv pip install skrl egnn-pytorch
+uv pip install skrl egnn-pytorch pytest
 
 echo "Setup complete"

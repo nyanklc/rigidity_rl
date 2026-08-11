@@ -1,17 +1,29 @@
 """Cost budgets. Ceilings are generous; the point is to catch a regression in kind,
-not to benchmark. Actual timings always print. DESIGN_NOTES.md#graph-features."""
+not to benchmark. Actual timings always print. DESIGN_NOTES.md#graph-features.
+
+Timing is best-of-several, not the mean. A shared machine under load inflates
+any single measurement several-fold -- observed 13 ms to 38 ms for the same step
+at load average 20 -- and a gate that fails when the box is busy just teaches
+everyone to ignore it. The minimum over repeats is the least-disturbed run.
+
+Wall clock, deliberately: process_time() sums CPU across all threads, so the
+multithreaded BLAS behind the rigidity matrix reads ~15x high at n=16.
+"""
 import time
 import numpy as np
 import pytest
 
 
-def step_ms(env, iters=40, warmup=5):
+def step_ms(env, iters=40, warmup=5, repeats=3):
     for _ in range(warmup):
         env.step(env.action_space.sample())
-    t = time.perf_counter()
-    for _ in range(iters):
-        env.step(env.action_space.sample())
-    return (time.perf_counter() - t) / iters * 1e3
+    best = float("inf")
+    for _ in range(repeats):
+        t = time.perf_counter()
+        for _ in range(iters):
+            env.step(env.action_space.sample())
+        best = min(best, (time.perf_counter() - t) / iters * 1e3)
+    return best
 
 
 @pytest.mark.parametrize("n,domain,ceiling_ms", [

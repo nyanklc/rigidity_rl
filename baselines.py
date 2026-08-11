@@ -222,7 +222,7 @@ def deterministic_action(agent, obs):
     skrl's CategoricalMixin.act always *samples*, so a PPO agent asked to act behaves as it
     did during training. DQN's act already takes an argmax when no exploration scheduler is
     configured. Going through compute() directly makes both algorithms deterministic in the
-    same way, and keeps the models' -1e9 action masking intact.
+    same way, and keeps the models' action masking intact.
     """
     role = "policy" if "policy" in agent.models else "q_network"
     with torch.no_grad():

@@ -4,7 +4,6 @@
     uv run tests/run_all.py             fast suite (correctness, target < 60s)
     uv run tests/run_all.py --slow      everything: training runs, brute force, large n
     uv run tests/run_all.py -k flex     any other pytest argument is passed through
-    uv run tests/run_all.py -v          verbose
 
 Individual files stay directly runnable:
 
@@ -24,21 +23,20 @@ def main(argv=None):
     os.chdir(ROOT)                       # module imports and ./environments resolve here
 
     slow = "--slow" in argv
-    args = [HERE, "--color=yes", "-q",
-            "-W", "ignore::DeprecationWarning",
-            "-o", "console_output_style=count"]
-    if not any(a.startswith("-v") for a in argv):
-        args.append("--tb=short")
+    args = [HERE,
+            "-v",              # one line per test: name and outcome
+            "--tb=short",      # what failed and where
+            "-ra",             # closing recap of every non-pass, with its reason
+            "--no-header",
+            "--color=yes",
+            "-W", "ignore::DeprecationWarning"]
     args += argv
 
     banner = "FULL SUITE (including slow)" if slow else "FAST SUITE (--slow adds training runs)"
     print(f"\n{'=' * 72}\n  {banner}\n{'=' * 72}\n")
     code = pytest.main(args)
-    print(f"\n{'=' * 72}")
-    print("  all good" if code == 0 else f"  FAILURES (pytest exit {code})")
     if not slow and code == 0:
-        print("  slow tests were skipped -- run with --slow before trusting a release")
-    print(f"{'=' * 72}\n")
+        print("\n  slow tests were skipped -- run with --slow before trusting a release\n")
     return code
 
 

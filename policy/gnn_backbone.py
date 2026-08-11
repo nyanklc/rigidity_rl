@@ -1,24 +1,18 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch_geometric.nn import GATConv, GINEConv
+from egnn_pytorch import EGNN
 
-# Action masking value. MUST stay scale-free: a finite sentinel like -1e9 stops
-# being "minus infinity" once training drifts the real logits past it, at which
-# point argmax starts selecting *masked* actions. That happened -- logits reached
-# -1e23 against a -1e9 sentinel and the policy locked into invalid no-ops.
+# MUST stay scale-free; a finite sentinel inverts once logits drift past it.
 # See DESIGN_NOTES.md#action-masking
 MASK_VALUE = float("-inf")
 
 
 def unmask_if_all_masked(logits):
-    """Guard against every action being masked, which would make softmax NaN.
-
-    Reachable for add-only action spaces once the graph is complete.
-    """
+    """Softmax of an all-masked row is NaN; fall back to uniform."""
     dead = torch.isinf(logits).all(dim=-1, keepdim=True)
     return torch.where(dead, torch.zeros_like(logits), logits)
-import torch.nn.functional as F
-from torch_geometric.nn import GATConv, GINEConv
-from egnn_pytorch import EGNN
 
 
 # num_layers is a constructor argument so checkpoints trained at other depths
@@ -67,6 +61,11 @@ class GNNBackboneGINE(_GNNBackbone):
                     nn.Linear(128, hidden_dim),
                 ),
                 edge_dim=edge_feat_dim,
+                # mean, not the default add: with dense all-pairs passing an
+                # add-aggregate scales with n, so a policy trained at one n sees
+                # activations far out of range at another.
+                # See DESIGN_NOTES.md#aggregation-and-scale
+                aggr="mean",
             )
             for i in range(num_layers)
         ])
@@ -106,17 +105,25 @@ class GNNBackboneGINE(_GNNBackbone):
 
 
 class GNNBackboneEquivariant(_GNNBackbone):
-    # init_eps is egnn_pytorch's Linear init std. Its 1e-3 default makes the
-    # edge-feature path start ~1e-10 against the node residual, so the model is
-    # briefly blind to bearings. Kept at the default because that is what the
-    # working DQN run used. See DESIGN_NOTES.md#egnn-init-eps
-    def __init__(self, node_feat_dim, edge_dim, hidden_dim, num_layers=3, init_eps=1e-3):
+    # m_pool: "mean" rather than egnn_pytorch's "sum" default, and update_coors
+    # off. Both are needed to keep activations from scaling with n -- m_pool
+    # governs only the feature message, while the coordinate update is a
+    # hardcoded sum over j whose result re-enters the next layer through
+    # rel_dist. See DESIGN_NOTES.md#aggregation-and-scale
+    #
+    # init_eps is egnn_pytorch's Linear init std. At its 1e-3 default the
+    # edge-feature path starts ~1e-10 against the node residual, so the model is
+    # numerically blind to bearings and settles on node features instead.
+    # See DESIGN_NOTES.md#egnn-init-eps
+    def __init__(self, node_feat_dim, edge_dim, hidden_dim, num_layers=3,
+                 init_eps=1e-2, m_pool="mean", update_coors=False):
         super().__init__()
         self.init_args = dict(
             node_feat_dim=node_feat_dim, edge_dim=edge_dim, hidden_dim=hidden_dim
         )
         self._register_convs([
-            EGNN(dim=node_feat_dim, m_dim=hidden_dim, edge_dim=edge_dim, init_eps=init_eps)
+            EGNN(dim=node_feat_dim, m_dim=hidden_dim, edge_dim=edge_dim,
+                 init_eps=init_eps, m_pool_method=m_pool, update_coors=update_coors)
             for _ in range(num_layers)
         ])
 
@@ -132,7 +139,6 @@ class GNNBackboneEquivariant(_GNNBackbone):
         # nearest-neighbour mode, so passing it was a silent no-op. Message
         # passing is dense all-pairs by design here -- the graph reaches the
         # model through the edge features. See DESIGN_NOTES.md#egnn-dense-all-pairs
-        # TODO: should we recalculate bearings (edges) by using the new coordinates (c_out)?
         for conv in self.convs():
             feats, coors = conv(feats=feats, coors=coors, edges=edges)
 

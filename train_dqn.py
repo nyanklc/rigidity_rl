@@ -20,7 +20,7 @@ import manifest
 from probe import Probe
 
 ######################################
-TOTAL_TIMESTEPS = int(6e5)
+TOTAL_TIMESTEPS = int(4e5)
 NR_ENVS = 4
 MEM_SIZE = 10000
 SEED = 0  # recorded in the manifest; training was unseeded before this
@@ -28,7 +28,7 @@ EGREEDY_STEPS = TOTAL_TIMESTEPS * 0.5
 
 # which GNN serves the model; the observation is one type now, so the backbone
 # is a model choice. One of policy.BACKBONES.
-BACKBONE = "Equivariant"
+BACKBONE = "GINE"
 GNN_HIDDEN_DIM = 128
 QNETWORK_HEAD_HIDDEN_DIM = 256
 

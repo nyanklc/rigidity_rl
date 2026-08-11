@@ -307,6 +307,35 @@ def build_archived_env(train_info, sources, device="cpu"):
         return raw_env
 
 
+def _manifest_env_config(train_info, model_name):
+    """Path to a config for a run whose sources match the tree, so nothing was archived.
+
+    Prefers the manifest's embedded copy over environments/<name>.json: that directory
+    is gitignored, so the embedded copy is the only one guaranteed to exist, and it is
+    the config the run actually trained against even if the file has since been edited.
+    """
+    if train_info is None:
+        raise ValueError(
+            f"no manifest for '{model_name}' and no environment name given; "
+            f"pass one explicitly")
+
+    raw = train_info.get("environment_config_raw")
+    if raw:
+        tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        json.dump(raw, tmp)
+        tmp.close()
+        return tmp.name
+
+    name = train_info.get("environment_config")
+    if name and os.path.exists("./environments/" + name + ".json"):
+        return "./environments/" + name + ".json"
+
+    raise ValueError(
+        f"manifest for '{model_name}' carries no environment_config_raw"
+        + (f" and environments/{name}.json is missing" if name else "")
+        + "; pass an environment name explicitly")
+
+
 def load_run(model_name, env_name=None, device="cpu", prefer_archived_env=True):
     """Rebuild a run: (agent, wrapped_env, raw_env, train_info).
 
@@ -344,11 +373,12 @@ def load_run(model_name, env_name=None, device="cpu", prefer_archived_env=True):
               f" using the live environment")
 
     if raw_env is None:
-        if env_name is None:
-            raise ValueError("no archived environment available and no env_name given")
         from environment import Environment
         raw_env = Environment()
-        raw_env.load("./environments/" + env_name + ".json")
+        if env_name is not None:
+            raw_env.load("./environments/" + env_name + ".json")
+        else:
+            raw_env.load(_manifest_env_config(train_info, model_name))
         raw_env.device = device
 
     env = wrap_env(raw_env)

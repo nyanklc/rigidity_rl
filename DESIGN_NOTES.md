@@ -449,6 +449,27 @@ cover every action space that has no selection stage without enumerating them.
 
 ## policy/gnn_backbone.py
 
+### action-masking
+
+Invalid actions are masked in the model, not the environment, by writing `MASK_VALUE` into their
+logits / Q-values. `MASK_VALUE` is `-inf`, and it **must stay scale-free**.
+
+It used to be `-1e9`, which is a sentinel only while every real logit stays above it. In a collapsed
+run the logits reached `-1e23`, at which point `-1e9` became the *largest* value in the row and
+argmax started deliberately selecting masked actions — the policy locked onto invalid no-ops and the
+symptom looked like an exploration failure rather than a masking bug. `-inf` cannot invert, and it
+makes `softmax` give the masked action exactly zero probability rather than merely a small one.
+
+The cost is that `softmax` of an all-`-inf` row is NaN, which is reachable for an add-only action
+space once the graph is complete. `unmask_if_all_masked` catches that row and falls back to a
+uniform distribution over everything.
+
+DQN Q-networks mask in `random_act` as well, or epsilon-greedy exploration would propose exactly the
+actions the greedy path forbids.
+
+Regression coverage: `tests/test_masking_and_skip.py` drives real logits to `-1e12` and asserts a
+masked action still cannot win an argmax.
+
 ### egnn-dense-all-pairs
 
 `GNNBackboneEquivariant.forward` accepts `adj_mat` but does not forward it to `EGNN`. In
@@ -503,9 +524,91 @@ node-level statistics (degree, centralities, which arrive via `feats` and the re
 geometry. And it is an asymmetry against GINE, whose Linears use the PyTorch default, ~5e-2 … 2e-1
 — roughly where the EGNN *finishes*. So the two backbones do not start on equal footing.
 
-`GNNBackboneEquivariant` now exposes `init_eps`. The default is unchanged, because 1e-3 is what the
-working run used and changing it silently would invalidate the one result the project rests on.
-Raising it to ~1e-1 for a depth-3 stack is a cheap experiment, not a settled fix.
+`GNNBackboneEquivariant` exposes `init_eps`, and **the default is now 1e-2**, raised from
+`egnn_pytorch`'s 1e-3. 1e-3 is what the one working run used, so this does invalidate strict
+comparison against it — but that run is a single-configuration result that does not generalize, and
+a start where geometry is 1e-10 of the output is a direct contributor to the shortcut learning
+documented in [aggregation-and-scale](#aggregation-and-scale). Checkpoints are unaffected: this is a
+constructor default, not a shape, and manifest-bearing runs replay their archived backbone source.
+
+The same blindness is a **measurement trap**. At 1e-3 an untrained EGNN reports invariance it does
+not have, and reports sum- and mean-pooling as identical to three decimals. Any test of what an EGNN
+is sensitive to must run at trained-scale weights (`std ~= 0.15`), which is what
+`tests/test_scale_invariance.py::_trained_scale` and the invariance tests do.
+
+### aggregation-and-scale
+
+**Nothing the policy sees may scale with `n`.** A policy trained at `n=8` and evaluated at `n=16`
+was no better than random, and the first-order reason was not the task — it was that the inputs and
+the internal activations were both quantitatively different at the two sizes, so the trained
+network was being evaluated far outside the range it ever saw. Four separate places did this.
+
+**1. Message aggregation.** Both backbones do dense all-pairs message passing
+([egnn-dense-all-pairs](#egnn-dense-all-pairs), [gine-dense-all-pairs](#gine-dense-all-pairs)), so
+every node aggregates `n-1` messages. With a sum/add aggregator the pooled message is `O(n)` by
+construction. GINE now uses `aggr="mean"` and `EGNN` `m_pool_method="mean"`. Measured at
+trained-scale weights, activations relative to `n=8`:
+
+| | n=8 | n=16 | n=32 | n=64 |
+|---|---|---|---|---|
+| GINE `add` | 1.00x | 8.27x | 71.99x | 580.11x |
+| GINE `mean` | 1.00x | 0.98x | 0.99x | **1.00x** |
+
+**2. The EGNN coordinate update, which `m_pool_method` does not cover.** `m_pool_method` governs
+only the feature message `m_i`. The coordinate update is a separate and *hardcoded* sum over `j`:
+
+```python
+coors_out = einsum('b i j, b i j c -> b i c', coor_weights, rel_coors) + coors
+```
+
+That result re-enters the next layer through `rel_dist = ||x_i - x_j||^2`, which is part of
+`edge_input` — so the growth compounds across the three layers and squares each time. Mean pooling
+alone therefore fixes almost nothing on the EGNN arm:
+
+| EGNN config | n=8 | n=16 | n=32 | n=64 |
+|---|---|---|---|---|
+| `sum`, `update_coors=True` | 1.00x | 1.99e3 | 2.43e5 | 4.23e8 |
+| `mean`, `update_coors=True` | 1.00x | 1.11e3 | 6.89e4 | 6.09e7 |
+| `mean`, `coor_weights_clamp_value=1.0` | 1.00x | 20.12x | 295.70x | 6292.88x |
+| `mean`, `norm_coors=True` | 1.00x | 1.19x | 1.10x | 1.14x |
+| `sum`, `update_coors=False` | 1.00x | 5.42x | 30.85x | 307.22x |
+| **`mean`, `update_coors=False`** | 1.00x | 0.92x | 0.76x | **0.88x** |
+
+Both switches are load-bearing — the `sum, update_coors=False` row is the control. `update_coors`
+is off by default now, over the `norm_coors` alternative, because it is also the semantically right
+choice here: `coors` are pose-normalized ground-truth positions, EGNN reads them only through
+`rel_dist`, and `GNNBackboneEquivariant.forward` **discards the returned `coors`**. A layer that
+moves them just hands later layers inter-agent distances the network does not have. It is cheaper
+too — `update_coors=False` drops `coors_mlp` entirely (4 parameter tensors).
+
+This also answers the standing `TODO: should we recalculate bearings (edges) from c_out?` — no. The
+geometry is fixed within an episode; only the edge set moves.
+
+**3. Unnormalized node and edge channels.** `degree` and `common_nbrs` were raw counts, and the flex
+channels carried a `sqrt(n)` that assumed a fixed flex dimension. Degree is now divided by `m_req/n`
+(the mean degree a *minimally rigid* graph would have) rather than by `n-1`, which over-corrected —
+`n-1` is the mean degree of the complete graph, and rigid graphs are sparse, so dividing by it drove
+the channel to zero as `n` grew (0.307 -> 0.170). `common_nbrs` likewise. Flex is normalized by its
+own total power, so it is comparable across domains with different `rank_K` and different deficits.
+
+Legacy observation presets pin `normalize_counts=False`, so pre-merge checkpoints still see the
+scales they were trained on ([dict-observation](#dict-observation)).
+
+**4. The initial-graph sampler.** `sample_initial_edge_count` drew with a spread that grew like
+`n^4`, so at `n=16` the sd was 72.7 against a mean of 22 and instances actually started at ~41.6
+edges — a systematically harder and differently-distributed problem than at `n=8`. It is now
+`sd = max(0.5 * m_req, 1.0)`, making `m0/m_req` centred on 1 at every size: measured 1.04 / 1.00 /
+1.00 at n=8/16/32 in R^3 and 0.97 at n=8 in SE(3).
+
+**What this does not fix.** Scale invariance is necessary, not sufficient. The ablation that
+motivated this work — perturbing one channel at a time and reading the change in phi — showed
+degree at **+21.00** against bearings **+0.25**, `flex_mag` **-0.25** and `flex_align` **+0.00**.
+The policy was making its decisions almost entirely from a node-degree statistic and ignoring both
+the geometry and the rigidity features. Fixing the scaling removes the excuse for that shortcut; it
+does not by itself force the model to use the geometry. That is what the retraining and the mixed
+`n`/domain runs are meant to establish.
+
+Regression coverage: `tests/test_scale_invariance.py`.
 
 ### backbone-num-layers
 
