@@ -27,6 +27,13 @@ apply to every task in this repository.
   sources or from this file.
 - **State uncertainty explicitly** — both the degree of it and the reason for it — whenever you
   are not confident.
+- **NEVER commit, and never create a branch's first commit for the user.** `git add` / `git commit`
+  / `git push` are the user's job — they verify every change manually first. Leave work in the
+  working tree, say what changed, and stop there. Creating a branch is fine; committing to it is not.
+- **Keep the documentation current as you go, not at the end.** `ROADMAP.md` is the live plan and
+  work log and must be updated whenever a work package's status changes; `CLAUDE.md`, `THEORY.md`
+  and `DESIGN_NOTES.md` must be corrected in the same change that invalidates them. The test is
+  whether a *fresh session with no conversation history* can read the repo and continue the work.
 
 ## Project
 
@@ -59,11 +66,35 @@ the observations used to be missing, and are now included (see `#all-pairs-beari
 phased fix. Read it before changing the environment, the observations or the reward — several
 things in this file that *look* like design decisions are recorded there as known errors.
 
-## Current results (2026-08-11)
+## Current results
 
-**Every number in this section predates the scale fixes below**, so treat the older checkpoints as
-history rather than as a control. `generaldqnequi` is the first post-fix run; it has not been
-scored against baselines yet.
+> **`ROADMAP.md` §1 is the authoritative, current diagnosis** and supersedes anything below it that
+> disagrees. The rest of this section is the pre-2026-08-12 record, kept because the reasoning is
+> still useful; treat the numbers as history.
+
+**Post-fix summary (2026-08-12).** `generaldqngine` (DQN, GINE, `AddRemoveEdgeDiscreteNoSelfLoops`,
+`WeightedNormalized`, rigidity features on) trained at n=8/R^3, evaluated on 20 instances each:
+
+| evaluated on | edges | rigid | minimal | vs. |
+|---|---|---|---|---|
+| n=8 R^3 *(train)* | 10.05 | 100% | **95%** | greedy 10.50 / 100% / 50% |
+| n=16 R^3 | 23.85 | 95% | 10% | 20-restart constructive greedy: 23.15 |
+| n=8 R^3xS^1 | 13.95 | **25%** | 5% | random 75%, initial 40% |
+| n=8 SE(3) | 17.30 | **5%** | 0% | random 55%, **initial 35%** |
+
+The scale fixes worked (no `O(n)` activation drift left; n=16 pruning 31.6 → 23.9 edges against a
+requirement of 22), and in-distribution performance is genuinely good. **Cross-domain transfer is
+below doing nothing**, for a mechanical reason measured in the weights: training on one domain
+leaves four of the five domain one-hot columns at initialization. See `ROADMAP.md` §1.5.
+
+Two findings reframe everything below — `rank(B)` is generically a function of the graph alone, so
+the current reward contains no geometry at all (`ROADMAP.md` §1.1), and the heterogeneous rigidity
+matrix was wrong until WP1 (`THEORY.md` §12).
+
+### Historical record (pre-2026-08-12)
+
+**Every number in the rest of this section predates the scale fixes**, so treat those checkpoints as
+history rather than as a control.
 
 **The formulation works at n=8 / R^3.** `bigDQN8SelectEquivariant3e-4lrNormalizedPositions` (DQN,
 `SelectNodesSequentially`, EGNN, `Weighted`) converges to 10.02 edges (optimum 10), 100% rigid,
@@ -183,8 +214,8 @@ There is no linter or CI. `dummy/test_mbr.py` is a scratch file, not a test.
 ### Rigidity core (`rigidity.py`, `network.py`, `util.py`)
 
 - `Agent` — pose (position + quaternion) + `domain`. `Network` — list of agents + `edges`, an `(n, n)` boolean adjacency matrix (row = measuring agent).
-- `rigidity.bearing_DOFs(agent_i, agent_j)` returns the `(U_ij, V_ij)` projection matrices encoding **which DOFs the bearing `i -> j` actually constrains, as a function of both agents' domains**. This is the one place heterogeneity is handled, and everything else depends on it.
-- `extended_bearing_rigidity_matrix(network)` → `B`, shape `(3m, 6n)`, built as `[D_p U E^T | D_a V E_o^T]`. Rows come in **3-row blocks, one block per directed edge**, in `np.nonzero(edges)` order — this per-edge block structure is what `is_MBR` exploits.
+- `rigidity.node_dof_projectors(agent)` returns `(S_i, P_i)`, the **per-node** translational and rotational DOF projectors — `S = diag(1,1,0)` for a planar agent, `P = v vᵀ` for `R^dxS^1`, and so on. This is where heterogeneity is handled. **The restriction belongs to the node, not to the edge**: `bearing_DOFs`'s per-edge `U_ij` (Michieletto Table III) re-enables a planar agent's z DOF whenever it measures a spatial one, which made `rank_K` exceed the system's own DOF count on mixed networks. See `THEORY.md` §12 and `ROADMAP.md` §1.2. `bearing_DOFs` is retained, unused by the matrix, as the reference implementation of Table I that the homogeneous-equivalence test compares against.
+- `extended_bearing_rigidity_matrix(network)` → `B`, shape `(3m, 6n)`, built as `[D_p E^T S | D_a E_o^T P]` with `S`, `P` block-diagonal over nodes. Rows come in **3-row blocks, one block per directed edge**, in `np.nonzero(edges)` order — this per-edge block structure is what `is_MBR` exploits. Homogeneous output is bit-identical to the previous per-edge construction; a coordinate an agent cannot vary is now an exactly-zero column, which is what Michieletto's nullity accounting requires. Validated against its own definition by central differences (`tests/test_rigidity_matrix.py`).
 - `is_IBR` — Infinitesimally Bearing Rigid iff `rank(B) == rank(B_K)`, where `B_K` is the rigidity matrix of the fully-connected graph on the same poses. `rank_K` is cached on the env per episode; always pass it through rather than recomputing.
 - `rigidity_eigenvalue` — the first nonzero eigenvalue of `B^T B` (index `6n - rank_K` into the ascending spectrum); the standard "how robustly rigid" scalar.
 - `is_MBR(network, rank_K, brmat)` — the **minimality heuristic**. Per-edge block rank `c_k = rank(B[3k:3k+3, :])`, sorted descending, greedily accumulated until `Σ c ≥ rank_K`, giving `m_req`; minimal iff IBR and `m == m_req`. See "Known issues / open questions" below for its reliability.
@@ -597,10 +628,10 @@ Because every output directory is ignored, **a fresh clone has none of them**, a
 
 Live research questions, not things to silently "fix":
 
-1. **Termination condition.** There is no way to know the true optimal topology. The only sound stopping test is minimal bearing rigidity: exact via `MBR_required_Rd` for homogeneous `R^d`, otherwise the greedy `is_MBR` heuristic. The heuristic is a *sound lower bound* (rank subadditivity over edge blocks ⇒ no proper subset of the current edges can be rigid with fewer than `m_req` edges), and it reproduces the closed form exactly for homogeneous `R^2` and `R^3`. It can produce **false negatives** in heterogeneous networks, where the greedy sum over the highest-rank blocks may not be jointly realizable — a truly minimal graph is then never recognized and the episode never terminates.
+1. **Termination condition.** There is no way to know the true optimal topology. The only sound stopping test is minimal bearing rigidity: exact via `MBR_required_Rd` for homogeneous `R^d`, otherwise the greedy `is_MBR` heuristic. The heuristic is a *sound lower bound* (rank subadditivity over edge blocks ⇒ no proper subset of the current edges can be rigid with fewer than `m_req` edges), and it reproduces the closed form exactly for homogeneous `R^2` and `R^3`. It can produce **false negatives** in heterogeneous networks, where the greedy sum over the highest-rank blocks may not be jointly realizable — a truly minimal graph is then never recognized and the episode never terminates. **Note the two `m_req`s**: `required_edge_count` accumulates block ranks of the *complete* graph (the true lower bound, and what `env.m_req` holds), while `is_MBR` recomputes from the *current* graph's blocks — which on a heterogeneous network can also **false-positive**, reporting a non-minimal graph as minimal. They coincide in every homogeneous domain, and the false positive does not fire on the `mixed` scenario (0 in 122 rigid graphs), but `is_MBR` should take `env.m_req` instead. WP7 hygiene.
 2. **Initial-graph difficulty.** With `random_graph_with_mean_min_edges` the initial edge count is drawn around `m_req` with `sd = 0.5·m_req`, so `m0/m_req` is centred on 1 at every `n` and domain. With the flag *off* it falls back to `m ~ Uniform{0, …, n²-n}`, which over-constrains badly (~2.8× the requirement at n=8/R^3) and teaches deletion only — so leave it on unless you specifically want that.
 3. **Constructive vs. editing formulation.** Starting from the empty graph and only adding edges is under consideration; the open worry is whether a purely constructive agent can reach *optimal* topologies rather than merely feasible ones. This is also the natural bridge to a distributed protocol (Henneberg-style vertex addition attaches each new agent with `d` edges, which is exactly what `MBR_required_Rd` counts) — see `ROADMAP.md` appendix A.
-4. **Generalization is the blocking problem, and the fixes are unmeasured.** A policy trained at n=8/R^3 was *worse than random* zero-shot at n=4/R^2 and indistinguishable from random at n=16. Every root cause identified so far has been addressed — dimensionless score, candidate-edge bearings, optional rigidity channels, mean aggregation, `update_coors` off, normalized counts, proportional sampler — but **no post-fix run has been scored against baselines yet**, so whether any of it helped is currently unknown. The one finding those fixes do *not* touch is the shortcut learning itself: nothing forces the policy to read the geometry, it only removes the excuse not to.
+4. **Generalization is the blocking problem, and it is now diagnosed rather than open.** The scale/observation fixes are measured and they helped *within* R^d (n=16: 31.6 → 23.9 edges) and not at all *across* domains (n=8/SE(3): 5% rigid against 35% for the untouched initial graph). Three causes, all in `ROADMAP.md` §1: the reward contains no geometry so nothing forces the policy to read it (§1.1); the domain one-hot columns for unseen domains never receive a gradient, so the domain identity can only inject noise at evaluation (§1.5); and until WP1 the heterogeneous physics was wrong anyway (§1.2). The plan is WP3 (margin in the reward) and WP7 (train across domains); neither is a tuning change.
 5. `reset()` with no scenario file rebuilds the network from `agents[0].domain` only, so heterogeneous domains survive only via the `scenario` path (`randomize_scenario`).
 6. Per-step cost is dominated by pure-Python graph features in `obs()` (Floyd–Warshall closeness, Brandes betweenness) plus repeated rigidity-matrix construction: `step()` builds `B`, then calls `is_MBR` unconditionally (a full-matrix rank *plus* one rank per edge, ~25 SVDs at n=8) and `rigidity_eigenvalue` when tracking (which rebuilds `B` and does a 48×48 `eigvalsh`). **`Weighted` needs neither.** Env stepping is several times the network's own cost at n=8, spent on metrics that never enter the reward. `graph_features=False` removes the centralities (4.7x at n=16); the rigidity-matrix work remains. Fine at `n=4–8`, the bottleneck beyond.
 7. **Bearings are not rotation-invariant in `R^d`** (see Invariance above). The task is invariant;

@@ -3,6 +3,53 @@ import numpy as np
 import copy
 
 
+# Per-node DOF projectors: which of agent i's 3 translational and 3 rotational
+# coordinates it can actually vary. This is a property of the NODE, not of the
+# edge -- see THEORY.md#12 and ROADMAP.md#WP1 for why that distinction is the
+# whole heterogeneous story.
+#
+#   S_i  (3, 3)  translational: the identity for a spatial agent, diag(1,1,0)
+#                for a planar one (no z motion).
+#   P_i  (3, 3)  rotational: the identity for SE(3), the projector v v^T onto the
+#                single controllable axis for R^dxS^1, zero for R^d.
+#
+# Michieletto's framework requires an infeasible variation to show up as a NULL
+# COLUMN of B (Definition 13 and Theorem 2 both count nullity that way), which is
+# exactly what right-multiplying by these gives.
+def node_dof_projectors(agent):
+    domain = agent.domain
+
+    S = np.eye(3)
+    if domain in ("R^2", "R^2xS^1"):
+        S = np.diag([1.0, 1.0, 0.0])
+
+    P = np.zeros((3, 3))
+    if domain in ("SE(3)", "R^3xSO(3)", "", None):
+        P = np.eye(3)
+    elif domain == "R^3xS^1":
+        # projector onto the controllable axis, NOT a row/column placement: the
+        # old [0; 0; rax] form only coincides with this at rax = e3, which is the
+        # only value ever used in practice but is not the only legal one.
+        v = agent.rotation_axis
+        v = np.array([0.0, 0.0, 1.0]) if v is None else np.asarray(v, dtype=float)
+        v = v / np.linalg.norm(v)
+        P = np.outer(v, v)
+    elif domain == "R^2xS^1":
+        e3 = np.array([0.0, 0.0, 1.0])
+        P = np.outer(e3, e3)
+
+    return S, P
+
+
+# Michieletto Table I (homogeneous) and Table III (their heterogeneous case
+# study), kept verbatim for reference and for the equivalence test in
+# tests/test_rigidity_matrix.py. NOT used to build the matrix any more.
+#
+# Table III attaches the translational restriction to the EDGE: for a planar i
+# measuring a spatial j it returns Uij = I_3, which re-enables the planar agent's
+# z column and lets the matrix resist a motion that agent cannot make. That is
+# correct for homogeneous networks (where U_ij = S_i = S_j) and wrong for every
+# mixed one. See ROADMAP.md#1.2 for the measurements.
 def bearing_DOFs(agent_i, agent_j):
     domain_i = agent_i.domain
     domain_j = agent_j.domain
@@ -42,6 +89,19 @@ def bearing_DOFs(agent_i, agent_j):
 
     return Uij, Vij
 
+# B = [ Dp E_bar^T S_bar | Da Eo_bar^T P_bar ], shape (3m, 6n).
+#
+# Dp / Da are the per-edge measurement Jacobians (unrestricted -- an agent's
+# bearing to another really does depend on all three components of the relative
+# position). The DOF restriction is applied on the COLUMN side, per node, by
+# S_bar = blkdiag(S_1..S_n) and P_bar = blkdiag(P_1..P_n), so a coordinate the
+# agent cannot vary becomes an exactly-zero column.
+#
+# This reproduces Michieletto Table I exactly on homogeneous networks (verified:
+# identical rank on 20 random graphs in each of the five domains) and fixes the
+# heterogeneous case, where the old per-edge U_ij gave planar agents three
+# position DOFs -- on the `mixed` scenario, rank_K = 36 = sum(DOF), i.e. zero
+# trivial motions, which is impossible. See ROADMAP.md#1.2 and THEORY.md#12.
 def extended_bearing_rigidity_matrix(network):
     p = [agent.pose.position for agent in network.agents]
     R = [agent.pose.rotation_mat() for agent in network.agents]
@@ -52,28 +112,29 @@ def extended_bearing_rigidity_matrix(network):
 
     E = np.zeros((n, m))
     Eo = np.zeros((n, m))
-    U = np.zeros((3*m, 3*m))
-    V = np.zeros((3*m, 3*m))
 
     i_indices, j_indices = np.nonzero(edges)
-    # TODO: there should be a more efficient implementation using the adjacency mat, i was lazy
     for k, (i, j) in enumerate(zip(i_indices, j_indices)):
         E[i, k] = -1
         E[j, k] = +1
+        # only the measuring agent's attitude enters its own bearing
         Eo[i, k] = -1
-        # Uij, Vij
-        U[3*k:3*(k+1), 3*k:3*(k+1)], V[3*k:3*(k+1), 3*k:3*(k+1)] = bearing_DOFs(
-            network.agents[i], network.agents[j]
-            )
 
     E_bar = np.kron(E, np.eye(3))
     Eo_bar = np.kron(Eo, np.eye(3))
 
+    S_bar = np.zeros((3*n, 3*n))
+    P_bar = np.zeros((3*n, 3*n))
+    for i, agent in enumerate(network.agents):
+        S_bar[3*i:3*(i+1), 3*i:3*(i+1)], P_bar[3*i:3*(i+1), 3*i:3*(i+1)] = (
+            node_dof_projectors(agent)
+        )
+
     Dp = np.zeros((3*m, 3*m))
     Da = np.zeros((3*m, 3*m))
     for k, (i, j) in enumerate(zip(i_indices, j_indices)):
-
-        # TODO: not sure if we should do this
+        # self loops carry no bearing; Network never stores one, but the guard is
+        # what keeps fully_connected() honest
         if i == j:
             continue
 
@@ -83,17 +144,13 @@ def extended_bearing_rigidity_matrix(network):
 
         Ri = R[i]
 
-        P = orthogonal_projection_matrix(p_bar)
+        Proj = orthogonal_projection_matrix(p_bar)
 
-        Dp_k = s * Ri.T @ P
-        Da_k = -Ri.T @ skew_symmetric(p_bar)
+        Dp[3*k:3*(k+1), 3*k:3*(k+1)] = s * Ri.T @ Proj
+        Da[3*k:3*(k+1), 3*k:3*(k+1)] = -Ri.T @ skew_symmetric(p_bar)
 
-        Dp[3*k:3*(k+1), 3*k:3*(k+1)] = Dp_k
-
-        Da[3*k:3*(k+1), 3*k:3*(k+1)] = Da_k
-
-    Bp = Dp @ U @ E_bar.T
-    Ba = Da @ V @ Eo_bar.T
+    Bp = Dp @ E_bar.T @ S_bar
+    Ba = Da @ Eo_bar.T @ P_bar
     B = np.hstack([Bp, Ba]) # (3m, 6n)
 
     return B

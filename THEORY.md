@@ -69,19 +69,27 @@ Dp_k   = s · R_iᵀ P(p̂_ij)
 Da_k   = -R_iᵀ [p̂_ij]×
 ```
 
-and assembles `B = [ Dp U Ēᵀ | Da V Ē_oᵀ ]` with incidence `E[i,k] = -1, E[j,k] = +1` and
-`E_o[i,k] = -1`.
+and assembles
+
+```
+B = [ Dp Ēᵀ S̄ | Da Ē_oᵀ P̄ ]
+```
+
+with incidence `E[i,k] = -1, E[j,k] = +1` and `E_o[i,k] = -1`, and with
+`S̄ = blkdiag(S_1 … S_n)`, `P̄ = blkdiag(P_1 … P_n)` the **per-node** DOF projectors of §12.
 
 The signs work out: the position half contracts `E` to give `(ṗ_j - ṗ_i)`, matching (2.1); the
 orientation half picks up `E_o`'s `-1`, so `Da_k · (-1) = +R_iᵀ [p̂]×`, matching (2.2). The apparent
 minus in `Da_k` is cancelled by the incidence matrix, not an error. **Only rank and null space are
 ever used, so an overall sign would be immaterial anyway.**
 
-`U_ij` and `V_ij` (`rigidity.bearing_DOFs`) mask out the degrees of freedom a domain does not have —
-`V = 0` for `R^2`/`R^3` (no orientation), `U = diag(1,1,0)` when both endpoints are planar.
-
 `B` is `(3m × 6n)`: **one 3-row block per directed edge**, in `np.nonzero(edges)` order. Everything
 below exploits that block structure.
+
+The construction is checked against its own definition by central differences —
+`tests/test_rigidity_matrix.py::test_matrix_is_the_numerical_jacobian_of_the_bearings` asserts
+`B δ = d/dt bearings` to 1e-6 relative for random admissible `δ`, in all five domains and eight
+heterogeneous mixes. That validates `Dp`, `Da`, both incidence signs and both projectors at once.
 
 ---
 
@@ -130,18 +138,24 @@ from (3.1), so heterogeneous networks are handled without a closed form.
 
 ## 4. Per-edge block rank `c_k`, and why it is constant
 
-Edge `k`'s block is `s·R_iᵀ P(p̂_ij) U_ij`. `R_iᵀ` is orthogonal, so
+Edge `k`'s 3-row block touches only its two endpoints' columns. `R_iᵀ` is orthogonal, so
 
 ```
-c_k = rank( P(p̂_ij) U_ij )
+c_k = rank [ P(p̂_ij) S_i | P(p̂_ij) S_j | [p̂_ij]× P_i ]
 ```
 
-- **R³**: `U = I`, so `c_k = rank P(p̂) = 2` for every edge.
-- **R²**: all positions are coplanar, so `p̂_ij` lies in the plane. `U = diag(1,1,0)` restricts to
+In a homogeneous domain `S_i = S_j = S` and the first two terms have the same range, which recovers
+the old `c_k = rank(P(p̂_ij) U_ij)` with `U = S`:
+
+- **R³**: `S = I`, `P_i = 0`, so `c_k = rank P(p̂) = 2` for every edge.
+- **R²**: all positions are coplanar, so `p̂_ij` lies in the plane. `S = diag(1,1,0)` restricts to
   that 2-D plane; `P(p̂)` kills `p̂`, which is *in* the plane. A 2-D space minus one direction leaves
   **1**. So `c_k = 1` for every edge.
 
-Generally `c_k = d - 1` in homogeneous `R^d`, for **every** edge, independent of geometry.
+Generally `c_k = d - 1` in homogeneous `R^d`, for **every** edge, independent of geometry. In a mix
+the three terms differ and `c_k` genuinely varies — on the `mixed` scenario the complete graph's
+block ranks are `{1: 12, 2: 78}`, the 12 being the ordered pairs whose measurer *and* target are
+both planar.
 
 This is why `rigidity_edge` is nearly useless on its own: as an observation channel `c_k` is a
 constant in every homogeneous configuration. It varies only in heterogeneous networks, where the
@@ -447,3 +461,109 @@ relative motion has a component perpendicular to the new bearing.
    *measurement* `R_iᵀ p̂_ij`, which coincides with the world frame only when `R_i = I`, i.e. only in
    `R^d`. Using it made `flex_align` rotation-dependent in `R^3xS^1`, `SE(3)` and any heterogeneous
    mix — invisible in every `R^d` test. `get_all_pairs_bearings_world()` exists for this.
+
+---
+
+## 12. The DOF restriction is a property of the node, not of the edge
+
+This section records why `extended_bearing_rigidity_matrix` looks the way it does, and what was
+wrong with the previous version. It only matters for **heterogeneous** networks; every homogeneous
+result is bit-identical under both constructions.
+
+### 12.1 The requirement
+
+Michieletto embeds every domain `D_i ⊆ SE(3)` into `SE(3)^n` and pads the variation vector with
+zeros for the coordinates an agent cannot vary (Definition 13, eq. (8)). The rank identity that
+Theorem 2 rests on,
+
+```
+rk(B⁺_G) = 6n - q_v - q_i ,
+```
+
+counts `q_v`, the *virtual* variations, as the **number of null columns** of `B⁺`. So the framework
+requires: **a coordinate an agent cannot vary must correspond to an identically-zero column.**
+
+### 12.2 What Table III does, and why it is not enough
+
+Table I gives `U_ij`, `V_ij` per manifold for *homogeneous* formations, and there it satisfies the
+requirement: for `R^2`, `U_ij = [e₁ e₂ 0]` for every edge, so the z columns are zero.
+
+Table III is their heterogeneous case study (three `R^2xS^1` terrestrial robots, one `R^3xS^2`
+aerial platform) and sets
+
+```
+U_(1,4) = U_(2,4) = U_(3,4) = I₃          # planar robot measuring the aerial platform
+```
+
+`U_ij` multiplies the whole relative displacement `(p_j - p_i)`, so this reactivates the *planar*
+agent's z column as well as the aerial one's. The paper's own accounting notices the consequence —
+it reports `q_v = 6` (only the terrestrial robots' unfeasible x/y rotations) and then has to
+classify the planar agents' z columns as *linearly dependent on the rest* rather than as null. That
+happens to hold for their particular four-agent configuration. It is not a general fact.
+
+### 12.3 What goes wrong
+
+Measured on random configurations (`ROADMAP.md` §1.2):
+
+| mix | Σ dim D_i | `rank_K` under Table III | corrected | IBR verdicts differing |
+|---|---|---|---|---|
+| 2 of each of the five domains | 36 | **36** | 33 | 2.0% of 300 graphs |
+| 5×`R^2` + 1×`R^3` | 13 | **14** | 10 | **40%** |
+| 3×`R^3` + 3×`SE(3)` | 27 | 23 | 23 | 0% (no planar agent) |
+
+`rank_K = Σ dim D_i` means *zero* trivial motions, and `rank_K > Σ dim D_i` is outright impossible:
+the matrix cannot have more independent columns than the system has coordinates. Directly: for
+4×`R^2` + 4×`R^3`, a pure `+z` motion of a planar agent gives `‖B v‖ = 2.1` — the framework resists
+a motion the agent cannot make, and spends rank doing it.
+
+The cause is structural rather than a typo. The true derivative is
+
+```
+ḃ_ij = Dp_k (ṗ_j - ṗ_i)  with  ṗ_i ∈ range(S_i) , ṗ_j ∈ range(S_j)
+```
+
+and a single `U_ij` applied to the difference cannot express two different restrictions. It
+coincides with the truth exactly when `S_i = S_j`, i.e. in the homogeneous case.
+
+### 12.4 The construction in use
+
+`rigidity.node_dof_projectors(agent)` returns, per node:
+
+| domain | `S_i` (translational) | `P_i` (rotational) |
+|---|---|---|
+| `R^2` | `diag(1,1,0)` | `0` |
+| `R^3` | `I₃` | `0` |
+| `R^2xS^1` | `diag(1,1,0)` | `e₃e₃ᵀ` |
+| `R^3xS^1` | `I₃` | `v vᵀ` |
+| `SE(3)` | `I₃` | `I₃` |
+
+and the matrix applies them on the column side, `B = [Dp Ēᵀ S̄ | Da Ē_oᵀ P̄]`. Every infeasible
+coordinate is then an exactly-zero column, which is what §12.1 asks for.
+
+Two notes.
+
+- **`P_i` is a projector, not a placement.** For `R^3xS^1` the previous code used
+  `V_ij = [0; 0; rax]` read as *rows*, where Table I's `[0_{3x2} v]` is a *column*. The two agree
+  only at `v = e₃` — the only axis ever used, so nothing measured depended on it — but `v vᵀ` is
+  right for any axis, and it is the form that survives the numerical-Jacobian test with
+  `v = (1, 2, -0.5)/‖·‖`.
+- **`bearing_DOFs` is retained**, unused by the matrix, as the reference implementation of Table I.
+  `test_matches_michieletto_table_I_on_homogeneous_networks` asserts the two constructions produce
+  the *same matrix* (max abs difference 0.0, 60 graphs per domain), which is what guarantees no
+  homogeneous result moved.
+
+### 12.5 Consequences for the trivial space
+
+§3's table stays correct for homogeneous domains. For a mix the trivial dimension is no longer read
+off a table: the z-translation is trivial only when no agent is planar, and a coordinated rotation
+only when *every* agent carries a frame (an `R^d` agent measures in the global frame, so rotating
+the world changes what it sees). The robust statement is
+
+```
+rank_K  ≤  Σ_i dim D_i  −  (3 if any agent is planar else 4)
+```
+
+which is what `tests/conftest.py::max_rank_K` asserts, and the exact trivial space is just an
+orthonormal basis of `ker(B_K)` — by Theorem 1 that *is* the trivial variation set. `trivial_modes`
+still hardcodes three translations plus scaling and is therefore wrong for mixes; it is replaced by
+the `ker(B_K)` basis in WP2, together with the rest of the flex rework.

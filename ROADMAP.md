@@ -1,500 +1,642 @@
-# Roadmap — formulation overhaul
+# Roadmap — margin and heterogeneity
 
-Branch: `formulation-overhaul`. Started 2026-08-07.
+**Branch:** `margin-and-heterogeneity` (from `formulation-overhaul` @ `cb074cd`)
+**Started:** 2026-08-12
 
-This document is the working plan and the record of *why* each change is being made. It is
-tracked in git so it can be reviewed at any point. `CLAUDE.md` describes what the code **is**;
-this file describes what is **wrong with it and what is being done about it**.
+This file is the live plan *and* the work log. It is written so that a session with **no
+conversation history** can read it and continue. If you are picking this up cold, read
+§0 first.
+
+> **Never commit.** See `CLAUDE.md`. Work stays in the tree; the user reviews and commits.
 
 ---
 
-## 1. Where the project actually stands
+## Status board
 
-### 1.1 The formulation works at n=8 / R^3
-
-`bigDQN8SelectEquivariant3e-4lrNormalizedPositions` (DQN, `SelectNodesSequentially`, EGNN,
-`Weighted` score, 600k trainer steps x 4 envs) converges to essentially the optimum. Training
-curves in eighths:
-
-| metric | start | end | optimum |
+| WP | Title | Tier | State |
 |---|---|---|---|
-| Best state score | 257.0 | **299.8** | 300 |
-| Best nr edges | 13.75 | **10.02** | 10 |
-| Best is rigid | 0.795 | **1.000** | 1 |
-| Best is min rigid | 0.013 | **0.982** | 1 |
-| Final nr edges | 23.45 | 10.94 | 10 |
-
-`Final` tracking `Best` matters: the policy converges *and* roughly holds, despite having no skip
-action. In `baselines.py` it reaches its best graph at step ~15.5, i.e. about 8 edge toggles —
-against `greedy`'s 11 hill-climbing steps, each of which costs `n(n-1)` full phi evaluations.
-
-**This is the result the thesis currently rests on, and it is a good one.**
-
-### 1.2 PPO is broken, for two identifiable reasons
-
-`bigPPOSelectEquivariant3e-4lrNormalizedPositions` (same environment) learns nothing in 127k
-steps: Best score 251 -> 248, Best is rigid 0.64 -> 0.72, Best is min rigid ~1%. Entropy loss sits
-at -0.017..-0.019, i.e. entropy ~1.7-1.9 nats against a ceiling of ~2.0 (8 nodes on the first
-pick, 7 on the second, skip masked). The policy never leaves uniform. Policy loss ~= -0.001.
-
-**(a) `memory_size != cfg.rollouts`.** At commit `809f13a`:
-
-```python
-MEM_SIZE = 2048 * 4          # 8192
-cfg.rollouts = 1024
-memory = RandomMemory(memory_size=MEM_SIZE, num_envs=env.num_envs, device=device)
-```
-
-skrl's `PPO.update()` runs `compute_gae` over the whole `memory.get_tensor_by_name("rewards")`
-ring and then `memory.sample(batch_size=len(self.memory))`. With `rollouts=1024` every update
-trains on 8192 steps of which **7/8 are up to eight rollouts stale**, and `last_values` bootstraps
-at the ring's wrap point rather than at the true trajectory end. Stale samples land outside the
-`[0.8, 1.2]` ratio band, get clipped, and contribute no gradient. Every commit before `809f13a`
-had `cfg.rollouts = MEM_SIZE`; the mismatch was introduced in that one commit, which is exactly
-the commit this run was trained at.
-
-**(b) `discount_factor = 1.0` makes the MDP degenerate.** With gamma=1, `time_penalty=0`, no stop
-action and a purely potential-based reward, the episode return is
-
-    sum_t ( phi(s_{t+1}) - phi(s_t) )  =  phi(s_200) - phi(s_0)
-
-so the advantage is
-
-    A^pi(s,a) = E[ phi(s_200) | s' ] - E[ phi(s_200) | s ]
-
-Under a near-uniform policy the 200-step random walk over edge sets mixes and forgets `s`, so
-**A ~= 0 everywhere at initialisation**. There is no gradient to bootstrap from. This is not a
-tuning problem — it is the reason PPO cannot start.
-
-DQN escapes it because it uses **gamma = 0.99**, and that is not incidental. With
-`r_t = phi_{t+1} - phi_t` and gamma < 1, Abel summation gives
-
-    sum_t gamma^t r_t  =  -phi_0 + (1 - gamma) * sum_{t>=1} gamma^{t-1} phi_t
-
-so **gamma < 1 silently converts potential-based shaping into "maximise the discounted average of
-phi along the trajectory"** — get good fast and stay good. That is precisely why DQN's final edge
-count tracks its best edge count while PPO's does not (PPO's `Best-final score gap` ~= 100, about
-ten spurious edges).
-
-### 1.3 Generalization is where it actually fails
-
-Both trained policies collapse off-distribution. `baselines.py`, 20 instances, seed 0:
-
-| model | env | edges | rigid | minimal | required |
-|---|---|---|---|---|---|
-| DQN(n8/R^3) | n8/R^3 | 12.95 | 100% | 75% | 10 |
-| DQN(n8/R^3) | **n4/R^2** | 4.20 | **45%** | 40% | 5 |
-| DQN(n8/R^3) | **n16/R^3** | 53.9 | **65%** | **0%** | 22 |
-| PPO(old, n8/R^3) | n8/R^3 | 10.60 | 100% | 70% | 10 |
-| PPO(old, n8/R^3) | **n4/R^2** | 4.00 | **35%** | 35% | 5 |
-| *random* | n4/R^2 | 5.50 | *80%* | 25% | |
-| *random* | n16/R^3 | 54.3 | *60%* | 0% | |
-
-At n=4/R^2 the learned policy is **worse than uniform random** (45% vs 80% rigid): it deletes down
-to ~4 edges when 5 are required. At n=16 it is indistinguishable from random. The policy learned
-*an edge-count prior for n=8 / R^3*, not a rigidity criterion — which is exactly what you would
-expect given sections 2.2 and 2.4 below.
-
-**Target claim (decided): one policy, any n, any domain mix.** That makes this the blocking
-problem, not a nice-to-have.
+| WP1 | Per-node DOF restriction in the rigidity matrix | 0 | **done** (2026-08-12) |
+| WP6 | Cut the horizon, restore the stop action | 0 | not started |
+| WP12 | Freeze benchmark instances to disk | 0 | not started |
+| WP11 | Random global rotation at reset | 0 | not started |
+| — | `mixed5` scenario as the ground-truth debug case | 0 | **done** (user-provided) |
+| WP2 | Null-space features: fix flex, add the exact addition oracle | 1 | not started |
+| WP5 | Pairwise action head (level 2 default, level 3 arm) | 1 | not started |
+| WP10 | Input embedder for the EGNN | 1 | not started |
+| WP13 | DQN hygiene: target time constant, DDQN, seeding | 1 | not started |
+| WP7 | Heterogeneous training (phase A / phase B) | 2 | not started |
+| WP3 | Rigidity margin in the reward (κ = 0.9) | 2 | not started |
+| WP4 | Margin-aware observation (softest mode) | 2 | not started |
+| WP8 | Baselines: constructive restart greedy | 3 | not started |
+| WP9 | Multi-n training | parked | — |
+| — | UCT / model-based planning | future work | deferred by decision |
+| — | Sensing range, degree budgets, geometric limits | future work | deferred by decision |
 
 ---
 
-## 2. Conceptual errors, ranked
+## §0 Picking this up cold
 
-### 2.1 `adj_mat` is a no-op in the EGNN backbone — verified
+**What the project is.** See `CLAUDE.md`. Master's thesis: choose the edge set of a directed
+multi-agent network so it is bearing rigid with as few edges as possible, via deep RL + GNNs, for
+any `n` and any mix of agent domains.
 
-```
-adj all-zeros vs all-ones identical: True     max abs diff: 0.0
-```
+**Where it stood before this branch.** The formulation worked at n=8/R^3 (95% minimally rigid,
+against 50% for phi-greedy) and failed everywhere else. `CLAUDE.md`'s "Current results" section
+records the pre-branch numbers; they are still accurate for what they measure.
 
-In `egnn_pytorch`, `adj_mat` is read **only inside `if use_nearest:`**, which requires
-`num_nearest_neighbors > 0` or `only_sparse_neighbors=True`. `GNNBackboneEquivariant` constructs
-`EGNN(dim, m_dim, edge_dim)` with both at their defaults, so the adjacency passed at
-`policy/gnn_backbone.py` is silently discarded. The EGNN runs **dense all-pairs** message passing;
-topology reaches the network only through the edge-feature channel, where `||bearing|| in {0,1}`
-acts as a de-facto adjacency bit.
+**The two findings that motivated this branch:**
 
-For this task dense all-pairs is arguably the *right* choice — you want to reason about edges you
-do not have — but it must be deliberate, and the adjacency must then be an explicit feature rather
-than an accident of zero-padding.
+1. **`rank(B)` is generically a function of the graph alone, so the current reward contains no
+   geometry** — and therefore neither the bearings nor the equivariant backbone have anything to
+   do. See §1.1. The fix is to put the rigidity margin into the reward (WP3), which is also what
+   the thesis wants scientifically.
+2. **The heterogeneous rigidity matrix is wrong.** The DOF restriction is attached to the edge
+   rather than the node, so a planar agent gets three position DOFs whenever it is adjacent to a
+   spatial one. See §1.2. Everything heterogeneous rests on this, including the new `mixed` and
+   `mixed5` scenarios. This is WP1 and it blocks the rest.
 
-### 2.2 The policy cannot see the geometry of candidate edges
+**Evidence.** Every number quoted in §1 was measured on this machine on 2026-08-11/12. The
+one-off scripts live in the session scratchpad and are *not* committed; §1 records the numbers and
+the method so they can be reproduced. Where a claim is inference rather than measurement it says so.
 
-`Network.get_bearings_explicit()` writes `b[i,j] = 0` unless `edges[i,j]`. So for every edge the
-agent might *add*, the bearing — the quantity that decides whether that edge adds rank — is zeroed
-out. What remains is EGNN's internal `rel_dist = ||x_i - x_j||^2` (all-pairs) and
-`common_neighbors = A@A` (topological). But bearing rigidity is **invariant to uniform scaling**
-and depends only on **directions**; pairwise distance is close to the wrong invariant.
-
-The GINE path is worse: `GINE_SelectNodesSequentially` builds `edge_index` from `adj.nonzero()`,
-so it message-passes only over existing edges, and `DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection`
-carries **no geometric node feature at all** (domain one-hot, in/out degree, three centralities).
-A GINE policy is structurally blind to the geometry of any edge it does not already have.
-
-**This is the first-order cause of 1.3.**
-
-### 2.3 The EGNN's invariance is broken by its own inputs
-
-Raw bearing vectors are fed as `edges`, i.e. as **invariant scalar edge features**, when they are
-rotation-*equivariant* quantities.
-
-The original rationale was sound and is worth keeping in the record: a bearing is measured in the
-**measuring agent's local frame**, so for a node that *has* a local frame (`R^2xS^1`, `R^3xS^1`,
-`SE(3)`) the measurement is genuinely invariant to a global rotation of the network — rotating the
-world rotates the agent's frame with it, and `R_i^T p_hat_ij` is unchanged. That reasoning does
-**not** hold for `R^2` / `R^3` agents, where `Agent.get_bearing` returns the global-frame vector
-(`network.py`, the `if self.domain not in ["R^3", "R^2"]` branch). Since every current experiment
-is homogeneous `R^d`, in practice the features are global-frame vectors consumed as invariants:
-rotate the whole network and the policy output changes.
-
-Scale has the same problem from the other direction. Rigidity rank is invariant to uniform
-scaling, `rel_dist` is not — which is the only reason changing `pos_limits` from +-100 to +-1
-mattered at all. It should not have.
-
-### 2.4 phi is built from `rank(B)`, which the network has no way to compute
-
-`phi = 20*rank(B) - 10*m`. Rank of a `3m x 6n` matrix is a global algebraic property; a 3-layer
-MPNN over 8 nodes will not recover it from positions and centralities. **The observation contains
-no rigidity information whatsoever.** Meanwhile the environment already computes, every step:
-`rank_brm`, `rank_K`, `is_IBR`, and — inside `is_MBR` — the per-edge block ranks `c_k`.
-
-**Decision: run this as an ablation, not as a default.** Two observation variants that differ
-*only* in whether rigidity-derived features are present, so the gap between them is itself the
-result: *how much rigidity structure a GNN recovers from geometry alone.* Given the n=4/R^2 number
-(45% rigid, below random's 80%) the gap is expected to be large, which makes it a better figure
-than either arm on its own. See appendix A for why this also matters for the long-term
-distributed formulation — these features are tier 3, unavailable to any local decision maker.
-
-### 2.5 phi's weights are dimension-dependent, so nothing transfers
-
-Verified: an edge's rigidity-matrix block has rank **2 in R^3** and **1 in R^2** (the orthogonal
-projection `P` has rank 2 in 3D, and rank 1 once `U_ij` restricts it to the plane). With
-`w_rank=20, w_edge=10`:
-
-| | rank-adding edge | pruning a redundant edge |
-|---|---|---|
-| R^3 | **+30** | +10 |
-| R^2 | **+10** | +10 |
-
-So in R^3 the score is three times more eager to add than to prune, and in R^2 the two are
-symmetric. phi's optimum also moves with the configuration — 50 at n=4/R^2, 300 at n=8/R^3 — so
-the critic's target range shifts whenever n or the domain changes. A single policy cannot span
-both under this phi.
-
-### 2.6 The pointer head has no pairwise term
-
-```python
-add_remove_logits = self.head(torch.cat([h, selected_repeated], -1))
-```
-
-The logit for target `j` given selected `i` is `MLP([h_j, h_i])` — no `e_ij`, no `adj_ij`, no
-`p_hat_ij`, and no flag distinguishing the first pick from the second. "Nothing selected" is
-encoded as `h_sel = 0`, which is ambiguous with a genuinely-zero embedding, and the *same* MLP
-scores both picks from two quite different input distributions.
-
-### 2.7 The forced-action / no-stop design
-
-With `skip_enabled: false`, `skip_is_stop: false`, `time_penalty: 0`, `max_steps: 200`, the agent
-**must** toggle an edge every second step for 200 steps. It can only hold a good graph by learning
-a 4-step add/remove oscillation. DQN essentially managed it (final 10.94 vs best 10.02); PPO did
-not. 200 steps is also ~10x more budget than needed — DQN's `best@` is 15.5. Once gamma < 1 the
-"hold" problem largely dissolves (1.2), but the horizon should still come down.
-
-### 2.8 Unnormalized, largely redundant features
-
-`degree` (0-7), `betweenness` (0-~30), `common_neighbors = A@A` (0-8) all scale with density and
-n, and `observation_preprocessor` is `null`. The three centralities are also things a GNN can
-compute for itself, and they are pure-Python Floyd-Warshall plus Brandes on every step.
-
-### 2.9 Smaller correctness items
-
-- `environment.py`, `action_SelectNodesSequentially`: `didnt_exist` / `existed` are computed
-  *after* the branch condition, so both are always `False`. Dead code in a live path.
-- `network.py`, `fully_connected()`: sets `edges = np.ones((n, n))` **including the diagonal**.
-  `rank_K` survives only because `extended_bearing_rigidity_matrix` has an `if i == j: continue`
-  and because `E[i,k]` gets `-1` then `+1`. Fragile.
-- `rigidity.py`, `is_MBR_Rd`: `if brmat: isIBR, rank = is_IBR_explicit()` calls with no arguments,
-  and `if brmat` on an ndarray raises. Unused path, but broken.
-- **Per-step cost**: `step()` calls `is_MBR` unconditionally (a full-matrix rank *plus* one rank
-  per edge — ~25 SVDs at n=8) and, when tracking, `rigidity_eigenvalue` (which rebuilds `B` and
-  does a 48x48 `eigvalsh`). `Weighted` needs **neither**. Env stepping is 8.7 ms against 2.6 ms of
-  inference: three times the network's cost spent on metrics that do not enter the reward.
-- Seeding: `np.random.seed(SEED)` runs *after* the sub-envs are constructed, and the envs use
-  global `np.random` rather than `self.np_random`, so all four sub-envs share one stream.
-- `CLAUDE.md`'s "Known issues" 4, 5 and 6 were already fixed in code and have been corrected.
+**Reading order for a fresh session:** this file §0–§2 → `THEORY.md` §3 and §12 → `CLAUDE.md`
+"Architecture" → `DESIGN_NOTES.md` for whichever component you are touching.
 
 ---
 
-## 3. Phased plan
+## §1 Corrected diagnosis
 
-Each phase is independently testable and leaves the repository in a working state. Old
-`environment.py` dispatch names are kept intact throughout, so existing checkpoints keep replaying
-through the manifest system.
+### 1.1 The objective is combinatorial; the geometry is not in it
 
-### Phase 1 — PPO discount factor and memory sizing — **DONE, CONFIRMED**
-*Fixes 1.2. Two lines, largest expected effect per unit of work.*
+`B` is the Jacobian of the bearing function and does depend on the configuration. **`rank(B)` does
+not**, generically: every entry of `B(χ)` is rational in χ, so `rank(B(χ))` is lower
+semi-continuous and drops only on the zero set of a minor determinant — a proper algebraic subset,
+measure zero. For χ from any continuous distribution, `rank(B(χ))` equals its generic value almost
+surely, and that generic value is a function of the graph and the domain assignment alone.
 
-- `cfg.discount_factor = 1.0` -> `0.99`.
-- `memory_size == cfg.rollouts` (already in the working tree as `ROLLOUT_SIZE`).
-- Record in the source comment *why* gamma=1 is degenerate here, since the existing comment argues
-  for it.
+Michieletto's noncollinearity assumption (Definition 2, and §VII, which treats collinear
+formations separately) is exactly the assumption that puts us in the generic set.
 
-**Confirmed.** `bigPPOSelectEquivariant3e-4lrNormalizedPositionsGamma`, same environment as the
-broken run, evaluated over 5 instances at a 200-step budget:
+*Measured:* 30 graphs × 5 domains × 100 pose resamples each — rank never moved once. Repeated for
+heterogeneous mixes with the same result.
 
-| method | edges | score | rigid | minimal |
+**Consequence.** Both state scores are pure functions of the edge set: `Weighted` is
+`20·rank − 10·m` (its `w_ibr` and `w_eig` terms are hardcoded to 0) and `WeightedNormalized` is
+`(100·rank − 25·m·c_max)/rank_K`. Neither reads anything but rank and edge count. This is why the
+ablation shows every geometric channel costing exactly 0.00 phi: **the policy is not failing to use
+the geometry, the reward is not asking it to.**
+
+**What does *not* follow.** Geometry is not useless as an *input*:
+
+- It is the computational route to the combinatorial answer. The exact test for "does adding
+  `i -> j` raise the rank" is `‖b_ij · Z‖ > 0` with `Z` spanning `ker(B)` — a geometric computation
+  returning a combinatorial fact. Measured AUC 1.000 with a clean separation in all five domains.
+- The **margin** (the rigidity eigenvalue) is not combinatorial at all. It spans 10^5 across
+  equally-optimal minimal graphs on the *same* poses.
+
+**The reframing that drives this branch:** the problem splits into a combinatorial half (which
+graph is rigid — what the GNN and the action space solve) and a geometric half (which of the rigid
+graphs is *good* — what bearings and equivariance are for). The reward currently contains only the
+first. WP3 adds the second.
+
+### 1.2 The heterogeneous rigidity matrix
+
+Michieletto's framework requires an infeasible variation to appear as a **null column** of `B⁺` —
+that is what makes `rk(B⁺) = 6n − q_v − q_i` and Theorem 2 work. Table I delivers that for
+homogeneous manifolds. Table III (the heterogeneous case study) sets `U_(1,4) = I₃` for a planar
+robot measuring the aerial platform, which reactivates the planar agent's z-column; the paper
+handles it by observing those columns come out linearly dependent *in their particular 4-agent
+example*. That is configuration-specific. `rigidity.bearing_DOFs` implements Table III faithfully
+and inherits the gap.
+
+*Measured:*
+
+| mix | Σ DOF | `rank_K` as built | corrected | IBR verdict disagreement |
 |---|---|---|---|---|
-| initial | 11.40 | 78.0 | 40% | 0% |
-| random | 15.00 | 242.0 | 60% | 0% |
-| **learned** | **10.60** | **294.0** | **100%** | **60%** |
+| `mixed` (2 of each of the five) | 36 | **36** | 33 | 2.0% of 300 random graphs |
+| 3×R^2 + 1×SE(3) | 15 | 11 | 9 | 13.0% |
+| 4×R^2 + 2×R^3 | 14 | 14 | 11 | 14.0% |
+| 5×R^2 + 1×R^3 | 13 | **14** | 10 | **40.0%** |
+| 3×R^3 + 3×SE(3) | 27 | 23 | 23 | 0.0% (no planar agents) |
 
-Optimum is 10 edges / 300. The earlier gamma=1 run sat at the random baseline with entropy frozen
-near its ceiling; PPO now solves n=8/R^3. Remaining gap to DQN's 98.2% minimal is a tuning question,
-not a structural one.
+`rank_K = Σ DOF` on `mixed` means **zero trivial motions are being counted**, which is impossible
+for any framework. Direct check on 4×R^2 + 4×R^3: a pure +z motion of a planar agent gives
+`‖B v‖ = 2.1` — the model resists a motion the agent cannot make, and spends rank doing it.
 
-### Phase 2 — dimension-normalized state score — **DONE**
-*Fixes 2.5. Prerequisite for anything multi-n or multi-domain.*
+Homogeneous networks are unaffected: the corrected construction reproduces the current rank exactly
+on 20 random graphs in each of the five domains.
 
-- New `state_score_type = "WeightedNormalized"`:
-  `phi = w_rank * rank/rank_K - w_edge * m/m_req` at `(100, 25)`. Both terms are O(1), the optimum
-  is `w_rank - w_edge = 75` regardless of n and domain, and the rank/edge trade-off is the weight
-  *ratio* rather than an accident of the dimension. 4:1 reproduces R^3's existing 3:1 preference
-  for adding rank over pruning a redundant edge, now identically in every domain.
-- `rigidity.required_edge_count(network, rank_K, brmat_K)` gives `m_req`: the closed form for
-  homogeneous `R^d`, otherwise a greedy accumulation over the *fully-connected* graph's sorted
-  per-edge block ranks. Verified to reproduce `MBR_required_Rd` exactly on every homogeneous case
-  tested (n=4..16, R^2 and R^3) — unlike `is_MBR`'s `m_req`, which is derived from the current
-  edge set and therefore is not an episode constant.
-- `Environment.compute_episode_constants()` builds `B_K` once and derives both `rank_K` and
-  `m_req` from it, called from `initialize()` and `begin_episode()`.
-- `Network.fully_connected()` no longer sets the diagonal (pulled forward from phase 6): the
-  zero blocks it produced would otherwise have to be special-cased by anything iterating `B_K`'s
-  per-edge blocks. `rank_K` is unchanged, `B_K` is now `(3n(n-1), 6n)`.
-- `Weighted` is untouched, so existing runs replay unchanged.
+### 1.3 The margin: two facts that constrain the reward
 
-**Result:** phi's ceiling is now identical across configurations, and the reference methods land
-on it.
+**λ is monotone increasing in edges** (Weyl: adding rows cannot decrease any eigenvalue). Measured
+at n=8/R^3 on pose-normalized coordinates, from a minimal graph outward:
 
-| config | rank_K | m_req | greedy phi | greedy edges | old `Weighted` phi |
+```
+m  = 12    16     20     24     28     32     36
+λ  = .001  .005   .218   .259   .365   .620   .701       ~700x over the range
+```
+
+So "maximize λ" alone has the complete graph as its optimum and is not a sparsity objective at all.
+It must be bounded against the edge term — which is what κ = 0.9 does (WP3).
+
+**λ decays with n and no fixed normalizer fixes it.** On greedy-minimal graphs, pose-normalized,
+median of 10 instances:
+
+| domain | n=4 | n=6 | n=8 | n=12 | n=16 |
 |---|---|---|---|---|---|
-| n=4 / R^2 | 5 | 5 | **75.00** (= optimum) | 5.00 | 50 |
-| n=8 / R^3 | 20 | 10 | **73.00** | 10.80 | 270 |
-| n=8 / R^2 | 13 | 13 | — | — | 130 |
-| n=16 / R^3 | 44 | 22 | — | — | 590 |
+| R^3 | 1.5e-01 | 2.4e-02 | 1.2e-02 | 3.9e-03 | 1.3e-03 |
+| R^2 | 1.0e-01 | 2.6e-02 | 2.8e-03 | 9.5e-04 | 4.0e-05 |
+| SE(3) | 3.6e-02 | 1.7e-02 | 3.9e-03 | 1.7e-04 | 7.1e-04 |
 
-Brute-force `optimal` at n=4/R^2 also returns exactly 75.00 with 5 edges. Acceptance met.
+Dividing by λ of the complete graph removes the length-scale dependence but not the n-dependence
+(0.32 at n=4 → 1.0e-3 at n=12 in R^3). **But the spread is n-stable** — the p10–p90 band of
+log10 λ among minimal graphs is 1.1–1.9 decades at every n measured. Since the reward is
+potential-based, the n-dependent *level* cancels and only the spread enters the return. That is
+what makes a log-λ term viable, and it dictates the `λ_ref` normalizer in WP3.
 
-### Phase 3 — all-pairs bearing observation (geometry-only ablation arm) — **DONE**
-*Fixes 2.2 and 2.1.*
+### 1.4 Where the combinatorial difficulty actually is
 
-- `Network.get_all_pairs_bearing_features()` — bearings for every ordered pair `i != j`,
-  regardless of whether the edge exists.
-- Explicit binary `edge_exists` channel in the edge features.
-- Resolve the `adj_mat` no-op: either enable `only_sparse_neighbors` or drop the argument and
-  document that message passing is dense all-pairs by design.
-- Per-instance pose normalization (centre, scale by RMS radius) so the policy stops depending on
-  `pos_limits`.
-- Keep candidate-bearing inclusion behind a flag rather than hardcoding it: candidate bearings are
-  **tier 2** information (appendix A.1) — an agent does not know its bearing to a node it has not
-  measured — so a later distributed variant needs to be able to switch them off without a rewrite.
+Randomized constructive greedy (start empty, add any rank-raising edge, stop at `rank_K`),
+25 runs per configuration:
 
-**Delivered.** Beyond the listed items, two cleanups landed with it:
+| domain | n | `c_max` | `m_req` | min | max | mean | reading |
+|---|---|---|---|---|---|---|---|
+| R^2 | 8 | 1 | 13 | 13 | 13 | 13.00 | matroid |
+| R^2xS^1 | 8 | 1 | 20 | 20 | 20 | 20.00 | matroid |
+| R^3 | 8 | 2 | 10 | 10 | 13 | 11.72 | order matters |
+| R^3xS^1 | 8 | 2 | 14 | 14 | 17 | 15.28 | order matters |
+| SE(3) | 8 | 2 | 21 | 21 | 23 | 21.96 | order matters |
 
-- **The six `Dict*` observation types merged into one, `"Dict"`.** They only ever differed in which
-  keys they populated, and every model already selects by key, so the split coupled "what the
-  environment exposes" to "which network consumes it" for no benefit. Choosing EGNN vs GINE is now
-  a `BACKBONE` constant in the training script. An unknown `obs_type` raises with a migration hint
-  instead of silently returning `None`.
-- **`policy/registry.py`** maps `(role, backbone, action_type)` → class, replacing the model
-  if/elif chains in both training scripts (`train_ppo.py` 439 → 259 lines, `train_dqn.py` 345 → 250).
-  Constructor differences are absorbed by filtering a kwargs superset against each signature;
-  `agent_loader` shares the same `instantiate()`.
+In the `c_max = 1` domains every run terminates at exactly `m_req`: the independent sets behave as
+a matroid and the problem is trivially solved by any greedy. **R^2 is therefore a control and a
+debugging case with ground truth, never a headline result.** The `c_max = 2` domains are not a
+matroid, and that gap is the substance of the task.
 
-- **GINE was left behind by the observation change and has been brought level.** Every GINE model
-  built `edge_index` from `adj.nonzero()`, so the new all-pairs bearings were computed and then
-  thrown away — the fix reached the EGNN arm only. `GNNBackboneGINE` now takes the dense
-  `(B, N, N, E)` tensor and builds the complete digraph itself, which also deleted the per-sample
-  Python loop duplicated across seven models.
+Darvariu et al. (2024) make the same point structurally: their survey's inclusion criterion is that
+no satisfactory exact or approximate algorithm exists, and only the `c_max = 2` and heterogeneous
+regimes qualify.
 
-Verified: observation shapes at n=4/8/16, `edge_exists` matches `adj` exactly, bearings unit-norm on
-all n(n-1) off-diagonal pairs, coordinates centred to 1e-16 with unit RMS radius,
-`include_candidate_bearings=False` restores edges-only bearings at an unchanged shape, the reference
--method table is numerically unchanged (the reward path was untouched), and **all four
-(backbone x algorithm) combinations build, forward and train**: EGNN/GINE x PPO/DQN, at 42-63 it/s.
-GINE responds to non-edge features (0.86 on random init) and preserves the outgoing-edge direction
-(1-layer sensitivity 0.96 outgoing, exactly 0 incoming). GINE batching re-keys correctly across
-batch sizes 1/5/64.
+### 1.5 The baseline that has to be beaten
 
-**Found while verifying, not fixed:** `egnn_pytorch` inits every Linear at `std=1e-3`, so three
-layers deep the EGNN's edge-feature path starts ~1e-10 against the node residual — structurally
-present but effectively blind to bearings until those weights grow. The working DQN checkpoint did
-grow them (1e-3 -> 1.2e-1..4.3e-1), so it is a slow start rather than a ceiling, but it is an
-asymmetry against GINE, which inits at the torch default. `init_eps` is now exposed with the default
-unchanged; raising it for a depth-3 stack is a cheap experiment worth running.
+Constructive restart greedy — ten lines, no learning, no geometry — against the best checkpoint
+(`generaldqngine`, trained at n=8/R^3), 20 instances, % solved at exactly `m_req`:
 
-**Backward compatibility.** The merge initially broke pre-merge configs outright. The six old names
-are now flag presets of the same builder that reproduce their old layouts exactly — including *raw*
-coordinates, which matters as much as the shapes, since a checkpoint trained before pose
-normalization would otherwise be silently fed differently-scaled inputs. Verified element-wise
-against the pre-merge code. `OBS_BACKBONE` also records which GNN each legacy name implied, and the
-training scripts prefer it over their `BACKBONE` constant.
+| config | `m_req` | k=1 | k=5 | k=20 | mean m (k=20) | learned |
+|---|---|---|---|---|---|---|
+| n=8 R^3 | 10 | 5% | 25% | 65% | 10.35 | **10.05 · 95% min** |
+| n=12 R^3 | 16 | 0% | 0% | 20% | 16.80 | — |
+| n=16 R^3 | 22 | — | — | — | **23.15** | 23.85 · 10% min |
+| n=8 R^3xS^1 | 14 | 15% | 75% | **100%** | 14.00 | 13.95 · **25% rigid** |
+| n=8 SE(3) | 21 | 40% | 85% | **100%** | 21.00 | 17.30 · **5% rigid** |
+| n=8 R^2 | 13 | **100%** | 100% | 100% | 13.00 | — |
 
-**The manifest-less checkpoint loader was dropped** (~230 lines: `load_agent_legacy`,
-`infer_architecture`, `match_model_class`, algorithm inference, interactive prompts). `load_agent()`
-now raises without a manifest. 26 old checkpoints become unloadable, all pre-dating the current
-observation format. `backbone_depth()` + `rebuild_backbone()` were kept: manifest-bearing runs exist
-at both 2 and 3 layers and `num_layers` is not a constructor argument, so depth-2 checkpoints still
-need the swap — verified, one still loads reporting `backbone rebuilt at 2 layers`.
+The learned policy wins in exactly one configuration: the one it was trained on. Cross-domain it is
+below the *untouched initial graph* (5% vs 35% rigid on SE(3)). Mechanism, measured in the weights:
+training in R^3 leaves four of the five domain one-hot columns identically zero, so their
+first-layer weights never receive a gradient and stay at initialization —
+`generaldqnequi`'s `gnn.conv1.edge_mlp.0.weight` has mean |w| 0.007–0.009 on the four unseen domain
+columns against 0.074 on the trained one. Evaluating in SE(3) flips the one-hot onto an untrained
+column: the domain identity cannot inform the policy, only inject noise. **No observation or
+architecture change fixes this; only training across domains does** (WP7).
 
-**Acceptance (pending a retrain at n=8/R^3):** a policy trained there and evaluated zero-shot at
-n=4/R^2 is no longer *below* the random baseline on `rigid %`.
+### 1.6 Checked and found fine — do not spend time here
 
-### Phase 3 evaluation — `...AllBearings`, 600k steps, all of phases 1-3
+- **Observation channel scales are all O(1)** on `mixed` (domain 0.20±0.40, degree 1.18±0.81,
+  rig_glob 0.52±0.61, flex_mag 0.79±0.61, bearings 0.01±0.55, flex_align 0.70±0.79, max |·| 3.47).
+  `observation_preprocessor = None` is defensible; no `RunningStandardScaler` needed.
+- **Near-coincident agents do not confound λ.** Correlation between log min-pairwise-distance and
+  log λ is +0.23 at n=8/R^3 and +0.09 on `mixed`, against a λ spread of 3–5 decades. No
+  minimum-separation sampler needed.
+- **The action index ↔ (i,j) mapping is consistent** between
+  `action_AddRemoveEdgeDiscreteNoSelfLoops` and the models' boolean masks (both row-major over
+  off-diagonal entries).
+- **PPO's config is genuinely fixed**: one `ROLLOUT_SIZE` for memory and rollouts, γ = 0.99,
+  `time_limit_bootstrap = True`.
+- **`is_MBR`'s false-positive path does not fire on `mixed`** — 0 in 122 rigid graphs. The mechanism
+  is real (it derives `m_req` from the current graph's blocks rather than the complete graph's) but
+  you cannot build a rigid graph out of rank-1 edges on that mix. Fixed as hygiene in WP7.
 
-Trained on `env_actionSelectNodesSequentially_rewardWeightedNormalized_termMaxSteps_n8_R3`
-(gamma 0.99, rollouts == memory, WeightedNormalized, Dict obs with all-pairs bearings).
-Training converged and plateaued from about half-way: `Best state score` 70.0 -> 74.2 (ceiling 75),
-`Best nr edges` 11.5 -> 10.3, `Best is rigid` 0.86 -> 1.00, `Best is min rigid` 0.22 -> ~0.75,
-entropy 1.0 -> 0.7 nats.
+---
 
-**In-distribution (n=8/R^3, 200 steps, 20 instances) — no change from the previous run.**
+## §2 Work packages
 
-| model | edges | rigid | minimal |
+### Tier 0 — before anything else
+
+#### WP1 — per-node DOF restriction in the rigidity matrix
+
+*Why:* §1.2. Blocks WP2, WP3, WP7 and every heterogeneous result.
+
+*What:* build the position block with the true measurement Jacobian and restrict per endpoint,
+rather than applying a per-edge `U_ij` to the relative displacement:
+
+```
+B[3k:3k+3, 3j:3j+3] += Dp_k @ S_j        # S_i = diag(1,1,0) planar, I_3 spatial
+B[3k:3k+3, 3i:3i+3] -= Dp_k @ S_i        # per endpoint, NOT per edge
+B[3k:3k+3, 3n+3i:3n+3i+3] += Da_k @ P_i  # P_i = I_3 SE(3), v vᵀ for R^dxS^1, 0 for R^d
+```
+
+Also repairs `V_ij` for `R^3xS^1`, currently `[0; 0; rax]` as *rows* where Michieletto's
+`[0_{3x2} v]` is a *column*; they coincide only at `rax = e₃`, the only value ever used. The
+projector form `v vᵀ` is right for any axis.
+
+*Acceptance:* (i) rank identical to today on all five homogeneous domains — already verified on 20
+random graphs each; (ii) `rank_K ≤ Σ_i DOF_i − |trivial|` asserted for every mix; (iii) IBR verdict
+unchanged by appending an all-zero column; (iv) a planar agent's z-column is exactly zero.
+
+*Not in this WP:* `trivial_modes` is also wrong for mixes (it hardcodes three translations plus
+scaling; a mixed planar/spatial framework admits only two plus scaling). It is fixed in WP2,
+because the correct replacement — an orthonormal basis of `ker(B_K)` — changes the shape from
+`R^{3n}` to `R^{6n}` and only makes sense together with the full-null-space flex rework.
+
+#### WP6 — cut the horizon, restore the stop action
+
+*Why:* the horizon governs **instance diversity**, not just wall clock. Instances seen in 400k
+steps is `total_timesteps / max_steps`; instances held in the replay buffer is
+`memory_size × num_envs / max_steps` (skrl buffers are `(memory_size, num_envs, …)`, so 10000 × 4).
+
+| config | `max_steps` | instances seen in 400k | instances in the buffer |
 |---|---|---|---|
-| greedy | 10.65 | 100% | 40% |
-| `...Gamma` (old obs) | 10.20 | 100% | 85% |
-| `...AllBearings` | 10.25 | 100% | 85% |
+| n=8 R^3 | 224 | 1785 | 178 |
+| `mixed` n=10 | 360 | 1111 | **111** |
+| n=16 R^3 | 960 | 416 | 41 |
+| `mixed` at `4·m_req+10` = 78 | 78 | **5128** | **513** |
 
-**Transfer (n=16/R^3, 1000 steps, 20 instances) — large gain.**
+Raising `memory_size` is not the alternative: each transition stores a 1050-float observation
+twice, so the buffer already costs ~336 MB at n=10.
 
-| model | edges (need 22) | rigid | minimal |
-|---|---|---|---|
-| random | 54.30 | 60% | 0% |
-| `...Gamma` (old obs) | 50.80 | 80% | 10% |
-| `...AllBearings` | **32.95** | **90%** | 5% |
+The horizon is oversized 20–30×: measured `best@` across every run is 6.6–12.8 steps, and
+`Edit efficiency` ends training at 0.018 ≈ 1/56 — the policy reaches its answer around step 7 and
+runs a two-cycle for the remaining ~217 because `skip_enabled: false` forces an edit every step.
 
-Edge count down 35%, rigid up 10 points. Minimal 10% -> 5% is 2/20 vs 1/20, i.e. noise.
+*What:* `max_steps = 4·m_req + 10`; re-enable the stop action with a small time penalty (the reason
+it was disabled — `select→skip` as an absorbing zero-reward 2-cycle — was a γ=1 problem, and γ is
+0.99 now); keep the constructive (empty-start) formulation as an arm, not a replacement.
 
-This is the signature you would expect from repairing an observation deficit: **no gain where the
-policy could already fit its training configuration, a large gain where it has to generalize.**
-Phase 3's acceptance criterion (no longer below random off-distribution) is met with room to spare.
+*Acceptance:* no quality change at n=8/R^3 at 1/4 the horizon. If quality drops, that tells you the
+reported numbers were relying on best-of-N search rather than on the policy.
 
-**Measurement bug, since fixed.** The first n=16 evaluation reported 50.10 edges and 0% minimal.
-That run got 200 steps, not the 1000 the earlier model was given: regenerating the environment
-configs used one `MAX_STEPS = 200` constant for every n, which silently cut the n=16 budget by 5x
-while `--steps 1000` was overridden by the config. `MAX_STEPS` now scales as `4 * n * (n - 1)`
-(n=4 -> 48, n=8 -> 224, n=16 -> 960): the edits a graph needs grow with the candidate-pair count,
-so a constant starves large n. **Existing configs were left alone except n=16 (set to 1000 to match
-the earlier evaluation); regenerating n=8 would move it 200 -> 224.**
+#### WP12 — freeze benchmark instances to disk
 
-**What still fails, and why.** At n=16 the policy stalls at ~33 edges against a requirement of 22,
-and only reaches rank 43.3 of 44 on average, so it is not even reliably rigid. Two measurements
-locate the failure:
+*Why:* this already cost one comparison. The two n=16 evaluations ran against initial graphs of
+52.25 ± 46.53 and 23.70 ± 10.64 edges because the config was regenerated with the fixed sampler in
+between, so "31.60 → 23.85 edges" conflates a better policy with an easier instance distribution.
+WP1 changes `m_req` and WP6 changes the horizon, so every config is about to be regenerated.
 
-- *Pruning is barely directed.* Over steps 100-200 at n=8 the policy spends 980 edits for a net
-  change of 10 edges (50.5% removals, ~0.6 sigma from a coin flip). It succeeds at n=8 only because
-  the gap is 2-3 edges and best-of-100-toggles finds it. At n=16 the gap is ~30 edges and that does
-  not scale.
-- *It locks into a cycle once the graph stops being obviously over-connected.* Rolling out at n=16:
-  from 150 edges it deletes productively (150 -> 72, 85 distinct pairs touched, entropy 2.69/2.83);
-  from 51 edges it touches only **22 distinct pairs, revisits 89% of them, and entropy drops to
-  1.78** — 200 toggles for a net -10 edges.
+*What:* `benchmarks/<name>.npz` holding N instances (positions, orientations, domains, initial
+edges). `baselines.py --benchmark <name>` loads them instead of sampling. Record the benchmark name
+and a hash in `meta.json`; refuse to plot two runs with different hashes on one axis.
 
-The bulk-deletion regime is learned; the last, hard deletions are not. Deciding whether a specific
-edge is redundant is exactly the judgement `rank`/`c_k` encode and the observation does not carry,
-which is the Phase 4 hypothesis stated as a measurement rather than a guess.
+#### WP11 — random global rotation at reset
 
-### Phase 4 — rigidity-feature observation (informed ablation arm) — **DONE, untrained**
-*Addresses 2.4 as a measured comparison.*
+*Why:* bearings for `R^2`/`R^3` agents are returned in the global frame, so the policy's output
+changes under a global rotation although the task does not. Free data augmentation; on `mixed`,
+four of ten agents are frameless.
 
-Three graded flags rather than one on/off, all default `False` so every existing config is
-byte-identical:
+*What:* one call to `Network.rotate_network` in `reset()`. It already rotates orientations for
+oriented agents, so it is correct as-is. **Constraint: when any planar agent is present only
+rotations about z are admissible** — an arbitrary axis would lift them out of the plane.
 
-| flag | node channels | edge channels |
+### Tier 1 — observation and architecture
+
+#### WP2 — null-space features
+
+*Why:* `flex_tensor` takes `Bp = brmat[:, :3n]`, the position block only, so the flex space ignores
+that agents can rotate. In `R^d` that is the whole space; in the oriented domains it is the wrong
+subspace, and `flex_align` — the feature designed to answer "would this edge help" — degrades
+exactly where the project fails:
+
+| domain | `flex_align` (current) | `‖b_ij Z‖`, Z = ker(B) of the full matrix |
 |---|---|---|
-| `rigidity_global` | `(rank_K-rank)/rank_K`, `m/m_req`, `is_IBR` | — |
-| `rigidity_flex` | `flex_mag` | `flex_align` |
-| `rigidity_edge` | — | `c_k / c_max` |
+| R^2 | 1.000 | **1.000** clean split |
+| R^3 | 1.000 | **1.000** clean split |
+| R^2xS^1 | 0.748 | **1.000** clean split |
+| R^3xS^1 | 0.847 | **1.000** clean split |
+| SE(3) | **0.632** | **1.000** clean split |
 
-**The originally specified edge feature was dead and had to be replaced.** Per-edge block rank `c_k`
-is *constant* in every homogeneous configuration — 2 for every edge in R^3, 1 in R^2, measured at
-n=4/8/16. It varies only on heterogeneous networks. As originally planned, Phase 4's only per-edge
-signal would have carried zero information in all three configurations we train and evaluate on. It
-survives as its own flag so it never silently pads the feature vector where it means nothing.
+(AUC for predicting "adding i→j raises rank(B)", ~250 candidate pairs per domain.)
 
-What replaces it is derived from the rigidity matrix's **null space** — the infinitesimal flexes,
-i.e. the motions the framework cannot resist:
+*What:*
+1. **One SVD replaces three decompositions.** `step()` currently does `matrix_rank(B)`, `is_MBR`
+   (one rank per edge) and `eigvalsh(BᵀB)`. A single `svd(B)` gives the rank, an orthonormal `Z`
+   spanning `ker(B)` from the trailing right singular vectors, *and* the rigidity eigenvalue as
+   `σ_r²`. Prerequisite for WP3/WP4 being affordable.
+2. `add_gain[i,j] = ‖b_ij Z‖` and `add_rank[i,j] = rank(b_ij Z)/c_max`, **all ordered pairs**.
+3. Fix `flex_mag` to use the full null space, projected against `ker(B_K)` (which also replaces
+   `trivial_modes`).
+4. `block_rank` from the **complete graph, all pairs**. Today `compute_rigidity_features`
+   (`environment.py:897`) fills it only for existing edges, so every candidate reads 0 —
+   indistinguishable from "contributes nothing". On `mixed` the complete graph's block ranks are
+   `{1: 12, 2: 78}`, so the channel is finally informative and currently blind on exactly the pairs
+   the agent chooses between. The values are already computed inside `required_edge_count`.
 
-- `flex_mag` (node) — how free node `i` is.
-- `flex_align[i,j]` (all pairs) — how much of the bearing to `j` lies in what `i` cannot resist,
-  i.e. *would measuring `j` help*. This is the **addition** criterion, and the n=16 post-mortem
-  showed adding is where the geometry-only policy fails hardest (it stalls at rank 43.3 of 44).
+*Honest framing:* `add_gain` makes the informed arm approximately
+constructive-greedy-with-learned-ordering. Say so explicitly. It is still the right arm: a
+20-restart constructive greedy reaches the optimum only 65% of the time at n=8/R^3 and 20% at n=12,
+so a perfect one-step oracle is demonstrably **not** sufficient, and the arm isolates "can RL learn
+the non-myopic part". The uninformed arm stays the headline.
 
-Deliberately **not** included: leave-one-out rank drop (`rank(B) - rank(B\e)`). It is the removal
-criterion greedy uses, costs ~8.6 ms/step at n=8 (4x), and handing it over would make the arm
-measure "greedy with a learned proposal" rather than an information gap.
+#### WP5 — pairwise action head
 
-**Two implementation traps, both hit and fixed** (details in `DESIGN_NOTES.md#rigidity-features`):
-`eigh` returns an arbitrary basis of the *whole* null space, so the trivial modes (translations,
-scaling) must be projected out analytically rather than skipped by index; and the feature must be
-the null-space **projector** per node, not an eigenvector, since any single vector in a degenerate
-eigenspace is a basis artefact. The first version failed to localise on an obviously
-under-constrained node and was not rotation-invariant.
+*Why:* held-out linear probes on the trained GINE backbone, predicting "does adding i→j raise the
+rank":
 
-Also fixed: `step()` built the observation *before* the rigidity matrix, so rigidity channels would
-have described the previous step's graph.
+| head input | R^3 | R^2xS^1 | SE(3) |
+|---|---|---|---|
+| `[h_i, h_j]` — what the head sees today | 0.955 | 0.956 | 0.972 |
+| `[h_i, h_j, e_ij]` | 0.998 | 0.948 | 0.977 |
+| `[e_ij]` alone | **1.000** | 0.892 | 0.759 |
 
-**Verified.** Flags off ⇒ byte-identical observations and an unchanged reference table (greedy and
-brute-force optimal still exactly 75.00 at n=4/R^2). Declared space matches `reset()` output for all
-four arms. Ordering test discriminates (steps where pre- and post-action rank differ) and matches
-post-action 6/6. Flex localises correctly (detached node 1.58 vs 0.22-0.35; one-edge node 0.88 vs
-0.09-0.25), is deterministic across repeated calls, and is rotation-invariant to 1e-15. All 16
-(4 arms x 2 backbones x 2 algorithms) train.
+The backbone carries most of it — an earlier claim that the head was structurally blind was too
+strong. The real loss is narrower and still matters: a perfect pairwise signal exists in `e_ij` and
+reaches the head degraded to 0.955, and that gap is where the hard end-game decisions live. In
+SE(3) the pair feature is currently the *worse* source, but only because `flex_align` is broken
+there. **WP5 without WP2 is half-pointless; WP2 without WP5 is half-used.** (Linear probes
+lower-bound what an MLP head could extract.)
 
-Cost, same graph: n=8 1.93 -> 2.68 ms/step for the widest arm (+39%); n=16 21.6 -> 23.1 ms (+7%).
+*What — level 2 is the default, decided:*
+- **Level 1:** head input `[h_i, h_j, h_i ⊙ h_j, e_ij, adj_ij]`.
+- **Level 2 (default):** additionally route the action-specific rigidity scalars around the GNN as
+  a skip connection — `[add_gain_ij, add_rank_ij, block_rank_K_ij, soft_align_ij]`. These have a
+  near-affine relationship to the action's value, and three layers of mean aggregation over `n−1`
+  pairs is the wrong thing to put between them and the Q-value.
+- **Level 3 (arm):** explicit one-step decomposition `Q(s,a) = Δφ̂(s,a) + f_θ(h_i, h_j, e_ij)`,
+  where the rank part of `Δφ̂` is exactly computable —
+  `Δφ_rank = (100·add_rank_ij·c_max − 25·c_max)/rank_K`. Needs `rank_K` and `c_max` exposed as
+  observation scalars, which they currently are not.
 
-**Also changed:** `MAX_STEPS` now scales as `4*n*(n-1)` (n=8 -> 224, n=16 -> 960), and environment
-filenames carry the arm (`_rigG`, `_rigGF`, `_rigGFE`). Regenerated n=8 configs therefore give 224
-steps where the existing `AllBearings` run was evaluated at 200 — pass `--steps 200` when comparing
-directly against it.
+`SelectNodesSequentially` gets the same plus the old phase-5 items: separate first-pick and
+second-pick heads, explicit phase flag instead of the zero-vector sentinel. Note this action space
+has a structural disadvantage — the first pick earns zero reward so its value is pure bootstrap, and
+its Q must implicitly encode `max_j Q(second pick)`, which interacts badly with WP13's frozen
+target. Run `AddRemoveEdge` as the main line; keep `SelectNodes` for when n grows.
 
-**Acceptance (pending training):** four arms trained at n=8/R^3, each evaluated at n=8 and n=16, with
-`--policy-mode greedy` reported as the headline alongside `sample`. The Phase 3 post-mortem showed
-sampled numbers flatter the policy badly (n=8 argmax collapses to 70% rigid against 100% sampled),
-so an ablation scored only on `sample` would measure the proposal distribution rather than the
-policy.
+#### WP10 — input embedder for the EGNN
 
-### Phase 5 — pairwise pointer head
-*Fixes 2.6.*
+*Why:* `EGNN` preserves the feature dimension and `GNNBackboneEquivariant` is constructed with
+`dim = node_feat_dim`. On `mixed`, `node_feat_dim = 11` (5 domain + 2 degree + 3 rigidity_global +
+1 flex_mag). So:
 
-- Separate first-pick and second-pick heads; explicit phase flag instead of the zero-vector
-  sentinel.
-- Second-pick logit from `[h_i, h_j, h_i*h_j, e_ij, adj_ij, p_hat_ij]`.
-- Applies to actor, critic and q_func variants of `SelectNodesSequentially`.
+```
+                        node representation width    action head input width
+GNNBackboneGINE                   128                      2*128 + 1 = 257
+GNNBackboneEquivariant             11                      2* 11 + 1 =  23
+```
 
-**Acceptance:** no regression at n=8/R^3; improvement expected on transfer.
+confirmed in the checkpoint: `gnn.conv1.edge_mlp.0.weight` has shape `(62, 31) = (2*m_dim, 2*11+1+8)`.
+**The EGNN-vs-GINE comparison as run is an 11-dimensional model against a 128-dimensional one**,
+not a comparison of message-passing schemes; that claim has to come down until this is fixed,
+independently of the p ≈ 0.34 power problem.
 
-### Phase 6 — correctness and cost cleanups
-*Fixes 2.7 (partly), 2.8, 2.9.*
+*What:* `nn.Sequential(Linear(node_feat_dim, 128), LeakyReLU(), Linear(128, 128))` before the EGNN
+stack, then `EGNN(dim=128, …)`. **This does not break equivariance** — the EGNN's equivariance is
+with respect to `coors`, and `feats` are invariant scalars throughout. (Embedding `coors` would
+break it.) ~18k parameters.
 
-- `fully_connected()` diagonal; dead code in `action_SelectNodesSequentially`; the broken
-  `is_MBR_Rd` branch.
-- Gate `is_MBR` and `rigidity_eigenvalue` behind an explicit flag / episode-end computation, so a
-  `Weighted`-scored run stops paying for them every step.
-- `RunningStandardScaler` as the observation preprocessor in both training scripts.
-- Shorter default horizon (~50 steps at n=8) once gamma < 1 is in.
+*The harder question this exposes.* EGNN consumes coordinates only through `‖x_i − x_j‖²`. Bearing
+rigidity is scale-invariant and depends on *directions*, so distance is close to the wrong
+invariant, and the directional information arrives as invariant scalar edge features that GINE
+receives identically. The ablation on the EGNN checkpoint agrees: `coord_features` flips 22.5% of
+decisions but costs **−0.50 phi** (nothing, within noise at 10 episodes) and `bearings` flips 8.3%
+for **−0.25 phi**; only `adj`, `rigidity_glob` and `degree` have a positive cost, the same picture
+as GINE. So fix the width, re-run at 3 seeds, and be prepared for the honest answer to be
+*"equivariance is not exercised by this objective"* — a legitimate negative result, and one WP3 may
+overturn, since the margin *is* geometric. A genuinely directional architecture (GVP, vector
+neurons, e3nn) is thesis-scale and should not start before WP3 shows the geometry matters.
 
-**Acceptance:** `Stats / Env stepping time (ms)` drops materially; no change in learning curves.
+#### WP13 — DQN hygiene
 
-### Later (not in this branch)
-- Multi-n training: curriculum over n within one run, or padded sub-envs with different n. The
-  latter needs a node mask threaded through the backbone — note `EGNN` already accepts a `mask`
-  argument that `GNNBackboneEquivariant` never passes.
-- Heterogeneous domains at scale, where the `is_MBR` greedy bound can produce false negatives
-  (known issue 1).
-- The constructive (add-only, start-from-empty) formulation, which is also the natural bridge to
-  appendix A.
+*Why:* skrl applies `polyak = 0.005` every `target_update_interval = 200` **updates**, and updates
+happen every `update_interval = 4` timesteps — one 0.5% step every 800 timesteps, giving a target
+time constant of **160,000 timesteps**. Across a 400k-step run that is 2.5 time constants, i.e.
+two or three Bellman backups of value propagation for the whole of training. Almost certainly an
+unintended hybrid of the two standard conventions.
+
+*What:* pick one convention — hard update (`polyak = 1`) every 200 updates, or soft update
+(`polyak ≈ 0.005`) every update. Either gives a time constant near 800 timesteps. Also: **Double
+DQN** (skrl supports it as a drop-in; with 181 actions on `mixed` the max-operator overestimation
+bias is not negligible), and **seeding** — `np.random.seed(SEED)` runs after the sub-envs are
+constructed and the envs use global `np.random` rather than `self.np_random`, so the three-seed
+protocol in WP8 is not reproducible until that is fixed.
+
+*Acceptance:* one control run before and after; this changes learning dynamics.
+
+### Tier 2 — the science
+
+#### WP7 — heterogeneous training
+
+*Phase A — the `mixed` scenario, no code required.* Two agents in each of the five domains means
+all 25 ordered domain pairs occur every episode, so every `(U_ij, V_ij)` combination is exercised
+on every reset. The observation and action shapes do not depend on the mix. Blocked only on WP1.
+
+*Phase B — resample the composition.* New env key
+`domain_sampler: "fixed" | "uniform" | {weights}`, drawn in `reset()` before `random_scenario`.
+Two ordering details: compute the mix first, then `m_req`, then the edge count (today
+`sample_initial_edge_count` reuses the previous episode's `m_req` as its mean, which is stale the
+moment the mix moves); and pass `env.m_req` into `is_MBR` rather than letting it recompute from the
+current graph's blocks.
+
+*Prediction, stated in advance so it can be wrong:* a mix-trained policy at n=10 should reach ≥90%
+rigid on **every** homogeneous corner at n=8 (against today's 5% on SE(3), 25% on R^3xS^1), and
+should not lose more than ~10 points of minimality at n=8/R^3 relative to the specialist. If it
+does not, the diagnosis is wrong and the problem is capacity or credit assignment, not domain
+coverage — and the next move is the constructive formulation, not more features.
+
+#### WP3 — the rigidity margin in the reward
+
+```
+phi = (w_rank * rank  -  w_edge * m * c_max) / rank_K   +   w_eig * 1[IBR] * q(lam)
+
+  lam      = sigma_r(B_hat)^2  on the POSE-NORMALIZED network (centred, unit RMS radius)
+  lam_ref  = the same quantity for ONE greedy-built minimal graph on the same poses,
+             computed once per episode in compute_episode_constants
+  q(lam)   = sigmoid( log10(lam / lam_ref) / s ),   s = 0.75 decades     -> q in (0,1)
+  w_eig    = kappa * w_edge * c_max / rank_K,       kappa = 0.9   (DECIDED)
+```
+
+- **κ = 0.9 makes the margin a strict tie-breaker.** Since `q ≤ 1`, the whole margin range is worth
+  less than one edge, so the sparsity ordering can never be overturned and `is_MBR` stays the
+  primary metric. One edge costs `w_edge·c_max/rank_K` = 2.50 at n=8/R^3, 1.52 on `mixed` after
+  WP1, 1.14 at n=16/R^3 — expressing κ as a multiple of one edge makes it scale automatically.
+  κ = 0 reproduces today byte-for-byte. This is the bound that makes *"most rigid configuration
+  with the minimal number of edges"* well-posed rather than self-contradictory (§1.3). Weighting
+  rigidity above sparsity later is exactly κ > 1; the natural figure is a Pareto front over
+  κ ∈ {0, 0.9, 2, 4}.
+- **`λ_ref` per episode, and it is cheap.** Measured: 0.09 s at n=8, 0.12 s on `mixed`, 0.26 s at
+  n=16 for one greedy construction — 133 s over a whole 400k-step run on `mixed`. It is a
+  per-episode constant, so potential-based shaping is preserved.
+- **Why not `λ_K`.** `λ/λ_K` still decays two decades from n=4 to n=12, so `q` would saturate at
+  large n. The greedy reference is by construction a typical solution at *this* n, these poses and
+  this mix, so `q ≈ 0.5` for a typical answer everywhere. *Fallback if the oracle becomes a
+  problem:* estimate the offset `log10(λ_min/λ_K)` once at env init from ~8 pose draws — measured
+  stable to 0.15 decades at n=8/R^3 and 0.38 on `mixed`, against a within-configuration signal of
+  1.1–1.9 decades. Usable but noisier.
+- **s = 0.75 decades** because the p10–p90 spread among minimal graphs is 1.1–1.9 decades, so the
+  logistic spends its range on the achievable band instead of saturating.
+- **`q ≥ 0` and gated on IBR** so becoming rigid is never punished; a raw `log λ` term would make
+  the transition to rigidity a large negative jump.
+
+*To state in the thesis:* λ mixes translational stiffness (columns scaling as `1/‖p_ij‖`) with
+rotational stiffness (dimensionless) through an implicit length unit. Pose-normalizing to unit RMS
+radius pins that unit to the formation's own size. Defensible and similarity-invariant, but it is a
+modelling choice and must be named as one — it matters most in `SE(3)` and in any mix.
+
+*Acceptance:* edge count and minimality unchanged within noise at κ = 0.9; geometric-mean margin up
+5–10× at n=8/R^3. And the decisive one: **the ablation should finally show a nonzero cost for
+destroying the geometric channels.** That single figure is the acceptance test for the entire
+geometric half of the thesis.
+
+#### WP4 — margin-aware observation (softest mode)
+
+With `v` the singular vector at the rigidity eigenvalue, `Δλ ≈ ‖b_ij v‖²` for adding `(i,j)` — and
+the same number is what removing an existing edge would cost. Measured on minimal graphs at n=7:
+
+| domain | log-log correlation | predictor's top pick in the true top-3 |
+|---|---|---|
+| R^2 | 0.962 | 50% |
+| R^3 | 0.925 | 40% |
+| SE(3) | 0.874 | 30% |
+
+A strong ranking signal, **not** an oracle — first-order theory breaks down because adding an edge
+is not an infinitesimal perturbation and eigenvalues cross. That is the ideal position, and it
+pairs an approximate channel with `add_gain`'s exact one.
+
+*What:* `soft_node[i] = ‖v_i‖` (position and orientation parts separately) and
+`soft_align[i,j] = ‖b_ij v‖²` over all pairs, each normalized by its own mean. Gate behind a
+`rigidity_margin` flag, default off, so existing configs stay byte-identical.
+
+### Tier 3
+
+#### WP8 — baselines and evaluation protocol
+
+phi-greedy is the wrong opponent: it hill-climbs from a random start into exactly the trap phi's
+landscape sets — from (rank 19, m 10) in R^3, adding a rank-1 edge scores +2.5 and lands on
+(rank 20, m 11), from which no single edit improves anything. Good illustration, bad reference
+point. Add `constructive_greedy` with the restart count as an explicit compute knob and report
+phi-evaluations used per method; add a **margin-aware greedy** once WP3 lands (ties broken by
+`‖b_ij v‖²`) or greedy will look bad on the new objective for the wrong reason; report **final
+state** as the headline with best-visited as a second column; **three seeds minimum** and paired
+statistics; extend brute force at n ≤ 5 to return the **margin-optimal** minimal graph, which is
+what makes `mixed5` worth having.
+
+#### WP9 — multi-n training (parked)
+
+Two decisions to fix now so WP5 and WP6 do not need redoing: pad every sub-env to `n_max` and
+thread a boolean node mask through both backbones (`EGNN` already takes a `mask` that
+`GNNBackboneEquivariant` never passes; GINE's complete-digraph builder needs to respect it), and
+make the action masks mask padded nodes. WP6's constructive arm is what makes a curriculum over
+n = 4…32 affordable.
+
+---
+
+## §3 Sequencing
+
+| stage | work | question it answers | go / no-go |
+|---|---|---|---|
+| 0 | WP1 · WP6 · WP12 · WP11 | is the physics right, are runs cheap, are numbers comparable? | homogeneous rank identical · `rank_K ≤ ΣDOF−3` on every mix · quality unchanged at 1/4 horizon |
+| 1 | WP2 · WP5 · WP10 · WP13 | can the policy see and use "which edge helps", in every domain, at a fair width? | `e_ij` probe AUC ≈ 1.0 in SE(3) · no regression at n=8/R^3 · EGNN ≈ GINE at equal width |
+| 2a | WP7 phase A on `mixed` | does domain coverage fix cross-domain transfer? | ≥90% rigid on all five homogeneous corners |
+| 2b | WP3 · WP4 on n=8/R^3 and `mixed5` | does it find *good* rigid graphs, not just rigid ones? | margin up 5–10× at unchanged minimality · ablation charges for the geometric channels |
+| 3 | WP7 phase B, then WP3 × WP7 | one policy across compositions and objectives? | held-out compositions within 10 points of specialists |
+| 4 | WP8 | does any of it beat a ten-line algorithm? | beats restart-greedy at matched phi-evaluations for n ≥ 12 |
+
+**2a and 2b are deliberately separate branches of work.** Darvariu et al. (2024) report the same
+method generalizing under one objective and collapsing under a closely related one, so changing the
+domain distribution and the reward in one run would make a bad result uninterpretable.
+
+---
+
+## §4 Decisions log
+
+| date | decision |
+|---|---|
+| 2026-08-12 | κ = 0.9 — sparsity first, margin as tie-breaker. Pareto front over κ deferred. |
+| 2026-08-12 | The greedy `λ_ref` oracle is in. Fallback (once-per-config offset) documented in WP3. |
+| 2026-08-12 | R^2 is a control and a ground-truth debugging case, never a headline result. |
+| 2026-08-12 | Constructive (empty-start) stays an arm; the action space and empty-graph start already exist. |
+| 2026-08-12 | WP5 defaults to level 2; level 3 (`Q = Δφ̂ + residual`) is an arm. |
+| 2026-08-12 | UCT / model-based planning deferred to future work; possibly a baseline after everything else. |
+| 2026-08-12 | Sensing range, degree budgets and other geometric limits are out of scope for now. |
+| 2026-08-12 | `mixed5` (one agent of each of the five domains, n=5) is the ground-truth verification case. |
+| 2026-08-12 | Nothing is committed to a thesis chapter, so WP1 costs only re-runs. |
+
+---
+
+## §5 Work log
+
+Newest first. One entry per work package or per material finding.
+
+### 2026-08-12 — WP1 done
+
+`rigidity.py`: new `node_dof_projectors(agent)` → `(S_i, P_i)`;
+`extended_bearing_rigidity_matrix` now builds `[Dp Ēᵀ S̄ | Da Ē_oᵀ P̄]`. `bearing_DOFs` retained,
+unused by the matrix, as the Table I reference the equivalence test compares against.
+
+Verified:
+
+| check | result |
+|---|---|
+| homogeneous output identical to the old construction | max abs diff **0.0**, 60 graphs × 5 domains |
+| `B δ` equals the central-difference Jacobian | rel err ≤ 1.9e-9, 5 domains + 3 mixes, non-default rotation axis |
+| inadmissible variations annihilated | `max ‖B @ inadmissible‖ = 0.0`; admissible dim = Σ dim D_i |
+| `rank_K ≤ Σ dim D_i − trivial` | holds for all 8 mixes (was violated: 36 vs 33, 14 vs 13) |
+| existing suite | 472 passed, unchanged |
+| mutation check (remove the restriction) | **23 tests fail** — the new tests discriminate |
+
+Effect on the configurations in use:
+
+| config | `rank_K` | `c_max` | `m_req` | phi\* |
+|---|---|---|---|---|
+| `mixed5` | 15 | 2 | 8 | 73.33 |
+| `mixed` | 33 (was 36) | 2 | 17 (was 18) | 74.24 |
+| n=8 R^3, n=16 R^3, n=8 SE(3), n=4 R^2 | unchanged | | | 75.00 / 75.00 / 74.39 / 75.00 |
+
+Side benefit: dropping the two `(3m, 3m)` dense `U`/`V` allocations makes `B` **1.3× faster at
+n=8, 2.2× at n=16, 6.1× at n=32** on the complete graph.
+
+New tests in `tests/test_rigidity_matrix.py`:
+`test_matrix_is_the_numerical_jacobian_of_the_bearings`, `test_rank_K_respects_the_dof_budget`,
+`test_infeasible_coordinates_are_zero_columns`,
+`test_matches_michieletto_table_I_on_homogeneous_networks`,
+`test_rotation_axis_is_a_projector_not_a_row`. `tests/conftest.py` gains `DOF_PER_AGENT`, `MIXES`
+and `max_rank_K()`. The stale `R^3xS^1` xfail in
+`test_homogeneous_string_domain_accepts_every_domain` is removed — the branch it claimed was
+commented out is present, and `pytest.xfail()` short-circuits so it could never have reported the
+fix.
+
+Docs updated in the same change: `THEORY.md` §2 (assembly), §4 (`c_k` for mixes) and new §12;
+`DESIGN_NOTES.md#per-node-dof`; `CLAUDE.md` rigidity-core bullets, "Current results", known issues
+1 and 4.
+
+**Still open, deliberately deferred to WP2:** `trivial_modes()` hardcodes three translations plus
+scaling and is wrong for mixes. The correct replacement is an orthonormal basis of `ker(B_K)`, which
+changes its shape from `R^{3n}` to `R^{6n}` and only makes sense with the full-null-space flex
+rework.
+
+### 2026-08-12 — branch created
+
+- Branch `margin-and-heterogeneity` off `formulation-overhaul` @ `cb074cd`.
+- `ROADMAP.md` replaced with this plan; the phase 1–6 record is condensed into appendix B.
+- `CLAUDE.md`: added the never-commit and keep-docs-current standing instructions.
+
+---
+
+## Scenarios in use
+
+| name | n | composition | purpose |
+|---|---|---|---|
+| `mixed5` | 5 | one of each of the five domains | ground-truth debug case; brute-forceable (`m_req` 8, 125,970 subsets ≈ 2 min) and inside `MAX_BRUTE_FORCE_N = 5` |
+| `mixed` | 10 | two of each of the five domains | the heterogeneous experiment; all 25 ordered domain pairs every episode; 5.88 ms/step, 0.65 h per 400k steps |
+
+Both use `only_randomize_edges = False`, so poses and edges are redrawn each episode and only the
+domain mix carries over — which is what makes them generalization experiments rather than case
+studies. Two caveats recorded so they are not rediscovered:
+
+- The **saved** poses put planar agents off-plane (`set_domain` ran after the positions were
+  drawn). Harmless while `only_randomize_edges = False`, because `reset()` redraws poses and
+  `Agent.randomize_position` respects the domain — but it silently becomes a wrong geometry if that
+  flag is ever flipped for a case-study figure.
+- `"domains"` in the env config is vestigial when a scenario is set (the scenario wins in
+  `initialize()`); `mixed`'s config says `"R^2"`, which is misleading but has no effect.
 
 ---
 
@@ -543,19 +685,19 @@ distributed version could reuse. Three tiers:
 bearings the agent is *currently measuring*; whatever one-hop neighbours communicate.
 
 **Tier 2 — available only under a sensing-radius assumption.** *Bearings to agents the agent is
-not currently measuring* — i.e. the geometry of **candidate** edges. This is exactly what Phase 3
-adds, and it is worth being explicit that **it is not free information**: an agent does not know
-its bearing to another node before measuring it. There is no way for a purely local decision maker
-to evaluate "would adding `i -> j` help?" without first obtaining `p_hat_ij`.
+not currently measuring* — i.e. the geometry of **candidate** edges. This is what the all-pairs
+bearing observation adds, and it is worth being explicit that **it is not free information**: an
+agent does not know its bearing to another node before measuring it. There is no way for a purely
+local decision maker to evaluate "would adding `i -> j` help?" without first obtaining `p_hat_ij`.
 
-Whether Phase 3 is admissible in a distributed setting therefore depends on a modelling choice
-that has not been made yet, and should be made deliberately:
+Whether it is admissible in a distributed setting therefore depends on a modelling choice that has
+not been made yet, and should be made deliberately:
 
 - If **detection is cheap and maintenance is expensive** — e.g. omnidirectional vision gives
   bearings to every agent within radius `R` essentially for free, while an *edge* denotes a
   persistent, tracked, communicated measurement link with a real cost — then all-pairs bearings
-  within `R` are a legitimate local observation, and Phase 3 carries over unchanged (with the
-  all-pairs set truncated to the sensing radius).
+  within `R` are a legitimate local observation, and the current observation carries over unchanged
+  (with the all-pairs set truncated to the sensing radius).
 - If **any measurement costs what an edge costs**, candidate bearings are genuinely unavailable
   and a distributed protocol needs either an explicit exploration phase, a construction phase in
   which agents acquire bearings as they join, or a policy that reasons from communicated
@@ -565,42 +707,44 @@ This is the single most important open modelling question for the distributed di
 current centralized work does not depend on resolving it.
 
 **Tier 3 — not available at all.** `rank(B)`, rank deficit, per-edge block rank `c_k`, `is_IBR`,
-and the graph centralities (`betweenness`, `closeness`, `eigenvector`). Global by construction,
-too expensive to compute and to communicate.
+the null-space features of WP2/WP4, and the graph centralities. Global by construction, too
+expensive to compute and to communicate.
 
 ### A.2 What this buys the current ablation
 
-The Phase 3 / Phase 4 split maps onto tiers 2 and 3, so it measures *the price of
-decentralization* in two separable steps, before committing to any of it:
+The tier-2 / tier-3 split is what the observation arms measure, so the ablation prices
+decentralization in two separable steps before committing to any of it:
 
-- **Phase 4 minus Phase 3** = the cost of losing tier 3 (rigidity algebra).
-- **Phase 3 minus a tier-1-only variant** = the cost of losing tier 2 (candidate-edge geometry),
-  under the pessimistic measurement model.
+- **informed minus geometry-only** = the cost of losing tier 3 (rigidity algebra).
+- **geometry-only minus a tier-1-only variant** = the cost of losing tier 2 (candidate-edge
+  geometry), under the pessimistic measurement model.
 
 The second comparison is worth adding as a third arm later if the distributed direction is
-revived; it is not needed now, but the observation code should be structured so that dropping
-candidate bearings is a config flag rather than a rewrite.
+revived; it is not needed now, but `include_candidate_bearings` already makes it a config flag
+rather than a rewrite.
 
-Concrete things to preserve in the current code so this stays open:
+Concrete things to preserve so this stays open:
 - keep GNN depth an explicit constructor argument (already true, `num_layers`);
 - keep per-node / per-edge action heads as a first-class option rather than flattening to a global
   index;
-- keep the observation builders tagged by tier, and keep candidate-bearing inclusion switchable
-  rather than baked in.
+- keep the observation builders tagged by tier, and keep candidate-bearing inclusion switchable.
 
 ---
 
-## Appendix B — what the split actually is
+## Appendix B — the phase 1–6 overhaul, completed on `formulation-overhaul`
 
-**Config-level (fixable now, mostly already fixed):**
-gamma=1.0 in PPO; `memory_size != rollouts`; a 200-step horizon; DQN's `polyak=0.005` combined
-with `target_update_interval=200`, which gives a target time constant of ~160k steps (it worked,
-but it is not what those numbers suggest was intended).
+Condensed record of the previous roadmap. Full text in git history at `cb074cd:ROADMAP.md`.
 
-**Structural (no amount of tuning fixes these):**
-candidate-edge geometry invisible (2.2); no rigidity information in the observation (2.4);
-phi's weights dimension-dependent (2.5); EGNN invariance broken by its inputs (2.3) and `adj_mat`
-ignored (2.1).
+| phase | what | outcome |
+|---|---|---|
+| 1 | PPO discount factor and memory sizing | **done, confirmed.** `memory_size == cfg.rollouts`; γ = 1.0 → 0.99. With purely potential-based shaping and γ=1 the advantage collapses to ≈0 under a near-uniform policy, which is what froze PPO's entropy at ~1.9 of ~2.0 nats. |
+| 2 | dimension-normalized state score | **done.** `WeightedNormalized` = `(100·rank − 25·m·c_max)/rank_K`; optimum ≈ 75 at any n and domain. The old `Weighted` made R^3 three times more eager to add than to prune while R^2 was neutral. |
+| 3 | all-pairs bearing observation | **done.** Bearings for every ordered pair plus an explicit `edge_exists` channel. Large transfer gain at the time (n=16 edge count 50.80 → 32.95, rigid 80% → 90%). |
+| 4 | rigidity-feature observation arms | **done.** `rigidity_global` / `rigidity_flex` / `rigidity_edge`, default off. Note `c_k` is constant in every homogeneous domain, which is why it has its own flag — and why `mixed` is the first configuration where it carries information. |
+| 5 | pairwise pointer head | **not done** — superseded by and folded into WP5. |
+| 6 | correctness and cost cleanups | **partly done.** `fully_connected()` diagonal fixed. Still open and now folded into WP2/WP6/WP13: gating `is_MBR`/`rigidity_eigenvalue` behind the shared SVD, the shorter horizon, the dead code in `action_SelectNodesSequentially`, the broken `is_MBR_Rd` branch, and the seeding order. |
 
-Fixing the config items should get PPO to roughly where DQN already is at n=8/R^3. Only the
-structural items move the transfer numbers in 1.3.
+**What phases 1–4 did not fix, and this branch exists to address:** cross-domain transfer stayed
+below random (5% rigid on n=8/SE(3) against 35% for the untouched initial graph), because the
+reward contains no geometry (§1.1), the heterogeneous physics is wrong (§1.2), and a
+single-domain-trained policy cannot use the domain channel at all (§1.5).

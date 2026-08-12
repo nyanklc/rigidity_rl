@@ -69,6 +69,38 @@ RANK_K_FORMULA = {
 # a bearing is one angle in the plane, two in 3-space (THEORY.md section 4)
 C_MAX = {"R^2": 1, "R^2xS^1": 1, "R^3": 2, "R^3xS^1": 2, "SE(3)": 2}
 
+# dim D_i: how many coordinates agent i can actually vary
+DOF_PER_AGENT = {"R^2": 2, "R^3": 3, "R^2xS^1": 3, "R^3xS^1": 4, "SE(3)": 6}
+
+# Heterogeneous mixes for the per-node DOF sweep (ROADMAP.md#WP1). There is no
+# closed form for rank_K here, so the tests assert the DOF budget instead.
+MIXES = [
+    ["R^2", "R^3", "SE(3)"],
+    ["R^2"] * 3 + ["R^3"] * 3,
+    ["R^2"] * 5 + ["R^3"],
+    ["R^2", "R^2xS^1", "R^3", "R^3xS^1", "SE(3)"],                      # mixed5
+    ["R^2"] * 2 + ["R^2xS^1"] * 2 + ["R^3"] * 2 + ["R^3xS^1"] * 2 + ["SE(3)"] * 2,  # mixed
+    ["R^2"] * 4 + ["SE(3)"] * 2,
+    ["R^3"] * 3 + ["SE(3)"] * 3,
+    ["R^2xS^1"] * 4 + ["R^3xS^1"] * 2,
+]
+
+
+def max_rank_K(domains):
+    """Upper bound on rank(B_K): sum(DOF) minus the trivial motions that must exist.
+
+    Always available: 2 translations in the plane, plus uniform scaling. The
+    z-translation is only admissible when no agent is confined to a plane, and a
+    coordinated rotation only when every agent carries a frame -- so 3 is the
+    floor on the trivial count and this is an upper bound, tight for most mixes.
+
+    rank_K exceeding it is impossible, and is exactly what the pre-WP1 matrix did
+    (36 against a bound of 33 on `mixed`). See ROADMAP.md#1.2.
+    """
+    dof = sum(DOF_PER_AGENT[d] for d in domains)
+    trivial = 3 if any(d in PLANAR for d in domains) else 4
+    return dof - trivial
+
 TOL = 1e-9          # "exactly invariant" for float64 pipelines
 LOOSE_TOL = 1e-6    # after a float32 round trip through a model
 
