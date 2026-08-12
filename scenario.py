@@ -149,25 +149,26 @@ if __name__ == "__main__":
     filename = sys.argv[1]
 
     # graph/network
-    positions = (
-        np.array(
-            [
-                [0, 0, 0],
-                [1, 0, 0],
-                [1, 1, 0],
-                [0, 1, 0],
-                [0.5, 0.5, 1],
-                [0.65, 0.123, 0.5],
-                [0.1, 0.5, 0.8],
-                # [1, 0, 1],
-                # [1, 1, 1],
-                # [0, 1, 1],
-                # [0.5, 0.5, 1],
-            ],
-            dtype=float,
-        )
-        * 50
-    )
+    # positions = (
+    #     np.array(
+    #         [
+    #             [0, 0, 0],
+    #             [1, 0, 0],
+    #             [1, 1, 0],
+    #             [0, 1, 0],
+    #             [0.5, 0.5, 1],
+    #             [0.65, 0.123, 0.5],
+    #             [0.1, 0.5, 0.8],
+    #             # [1, 0, 1],
+    #             # [1, 1, 1],
+    #             # [0, 1, 1],
+    #             # [0.5, 0.5, 1],
+    #         ],
+    #         dtype=float,
+    #     )
+    #     * 50
+    # )
+    positions = 2 * np.random.rand(5, 3) - 1
     n = len(positions)
     orientations_euler = np.zeros((n, 3))
     # edges = None
@@ -191,10 +192,17 @@ if __name__ == "__main__":
     #     ]
     # )
     network = Network(positions, orientations_euler, edges)
-    network.set_agents_domain_homogeneous("R^2")
+    # network.set_agents_domain_homogeneous("R^3")
+    network.agents[0].set_domain("R^2")
+    network.agents[1].set_domain("R^2xS^1")
+    network.agents[2].set_domain("R^3")
+    network.agents[3].set_domain("R^3xS^1")
     network.agents[4].set_domain("SE(3)")
-    network.agents[5].set_domain("SE(3)")
-    network.agents[6].set_domain("SE(3)")
+    # network.agents[5].set_domain("R^2")
+    # network.agents[6].set_domain("R^2xS^1")
+    # network.agents[7].set_domain("R^3")
+    # network.agents[8].set_domain("R^3xS^1")
+    # network.agents[9].set_domain("SE(3)")
     bearings = network.get_bearings()
 
     # goal
