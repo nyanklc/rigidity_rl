@@ -88,30 +88,15 @@ def test_rank_is_scale_invariant():
 
 @pytest.mark.parametrize("domain", ALL_DOMAINS)
 def test_homogeneous_string_domain_accepts_every_domain(domain):
-    """Network.set_agents_domain_homogeneous accepts all five domains.
-
-    This used to xfail for R^3xS^1, on the grounds that its branch was commented
-    out and the call fell through to a bare quit(). The branch is present
-    (network.py, set_agents_domain_homogeneous), the xfail was stale, and because
-    pytest.xfail() short-circuits before the assertion it could never have gone
-    green to report that. Asserted properly now.
-    """
+    """set_agents_domain_homogeneous accepts all five domains (stale xfail removed)."""
     net_, _ = random_scenario(4, domain, edge_count=4)
     assert all(a.domain == domain for a in net_.agents)
 
 
-# --------------------------------------------------------------------- WP1
-# Per-node DOF restriction. These are the tests that would have caught the
-# heterogeneous bug: the pre-WP1 matrix attached the translational restriction to
-# the edge, so a planar agent measuring a spatial one regained a z DOF and the
-# matrix spent rank resisting a motion nobody can perform. ROADMAP.md#1.2.
+# ------------------------------------------- per-node DOF restriction, THEORY.md#12
 
 def _perturb(net, delta, eps):
-    """chi + eps*delta, with delta = [dp_0..dp_{n-1}, dw_0..dw_{n-1}] in R^(6n).
-
-    dw is a world-frame angular variation, matching B's convention: the frame
-    update is R_i <- exp([dw]_x) R_i.
-    """
+    """chi + eps*delta, delta = [dp_0..dp_n-1, dw_0..dw_n-1]; dw is world-frame."""
     out = copy.deepcopy(net)
     n = out.n
     for i, a in enumerate(out.agents):
@@ -150,15 +135,10 @@ def _admissible_basis(net):
 
 @pytest.mark.parametrize("domains", [[d] * 6 for d in ALL_DOMAINS] + MIXES)
 def test_matrix_is_the_numerical_jacobian_of_the_bearings(domains):
-    """B @ delta must equal d(bearings)/dt for every admissible variation.
-
-    The definition, checked directly by central differences. This validates the
-    whole construction at once -- D_p, D_a, the incidence signs, and both DOF
-    projectors -- in every domain and mix.
-    """
+    """B @ delta equals d(bearings)/dt for every admissible variation."""
     n = len(domains)
     net, _ = random_scenario(n, list(domains), edge_count=max(3, 2 * n))
-    # a non-default rotation axis, so the v v^T projector is actually exercised
+    # non-default axis, so the v v^T projector is exercised
     for a in net.agents:
         if a.domain == "R^3xS^1":
             a.set_domain("R^3xS^1", rotation_axis=np.array([1.0, 2.0, -0.5]))
@@ -174,11 +154,7 @@ def test_matrix_is_the_numerical_jacobian_of_the_bearings(domains):
 
 @pytest.mark.parametrize("domains", MIXES)
 def test_rank_K_respects_the_dof_budget(domains):
-    """rank_K cannot exceed sum(DOF) minus the trivial motions.
-
-    The pre-WP1 matrix gave rank_K = 36 on the `mixed` composition against a
-    budget of 33 -- i.e. zero trivial motions, which no framework has.
-    """
+    """rank_K cannot exceed sum(DOF) minus the trivial motions."""
     net, _ = random_scenario(len(domains), list(domains), edge_count=len(domains))
     rank_K = np.linalg.matrix_rank(B_of(net.fully_connected()))
     assert rank_K <= max_rank_K(domains)
@@ -200,12 +176,7 @@ def test_infeasible_coordinates_are_zero_columns(domains):
 
 @pytest.mark.parametrize("domain", ALL_DOMAINS)
 def test_matches_michieletto_table_I_on_homogeneous_networks(domain):
-    """The per-node construction must reproduce the per-edge U_ij / V_ij exactly.
-
-    Table I is the homogeneous case, where U_ij = S_i = S_j and V_ij = P_i, so the
-    two constructions coincide -- and no homogeneous result may move because of
-    WP1. bearing_DOFs is retained for exactly this comparison.
-    """
+    """The per-node construction reproduces the per-edge U_ij / V_ij exactly."""
     for n in (4, 6, 8):
         net, _ = random_scenario(n, domain, edge_count=max(2, n))
         p = [a.pose.position for a in net.agents]
@@ -231,12 +202,7 @@ def test_matches_michieletto_table_I_on_homogeneous_networks(domain):
 
 
 def test_rotation_axis_is_a_projector_not_a_row():
-    """V_ij for R^3xS^1 must be v v^T, not [0; 0; v] laid out as rows.
-
-    The two coincide at v = e3, the only axis in use, so nothing measured has ever
-    depended on it -- but the parameter is exposed and the row form is wrong for
-    every other axis. Michieletto Table I gives [0_{3x2} v], a column.
-    """
+    """P_i for R^3xS^1 is v v^T, not [0; 0; v] laid out as rows."""
     v = np.array([1.0, 2.0, -0.5])
     v /= np.linalg.norm(v)
     net, _ = random_scenario(5, "R^3xS^1", edge_count=8)

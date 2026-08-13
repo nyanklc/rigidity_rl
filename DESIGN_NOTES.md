@@ -155,6 +155,136 @@ than faking a second mode.
 
 Cost: ~8% of training throughput at a 1.5k interval, so ~0.5% at the 25k default.
 
+### horizon
+
+`MAX_STEPS = 4*m_req + 10`, not the old `4*n*(n-1)`.
+
+The old budget was 20-30x the measured `best@` (6.6-12.8 steps across every run), and
+`Edit efficiency` ended training at 0.018 ~ 1/56: the policy reached its answer around step 7 and
+then ran a two-cycle for the remaining ~217 steps because `skip_enabled: false` forced an edit
+every step.
+
+The argument for cutting it is about **data**, not wall clock. A run sees
+`total_timesteps / max_steps` distinct instances, and its replay buffer holds
+`memory_size * num_envs / max_steps` of them (skrl buffers are `(memory_size, num_envs, ...)`, so
+10000 x 4):
+
+| config | old `max_steps` | instances seen | in buffer | new | instances seen | in buffer |
+|---|---|---|---|---|---|---|
+| n=8 R^3 | 224 | 1785 | 178 | 50 | 8000 | 800 |
+| `mixed` n=10 | 360 | 1111 | 111 | 78 | 5128 | 512 |
+| n=16 R^3 | 960 | 416 | 41 | 98 | 4081 | 408 |
+
+Raising `memory_size` is not the alternative: each transition stores a 1050-float observation
+twice, so the buffer already costs ~336 MB at n=10.
+
+**Verified free.** `generaldqngine` re-evaluated at the 50-step horizon reproduces its 224-step
+result exactly -- 10.05 edges, 100% rigid, 95% minimal, best@ 8.0. The `random` row does get worse
+(85% -> 60% rigid), which is correct: it was benefiting from a longer search budget, so the shorter
+horizon makes it a fairer floor.
+
+Shorter episodes mean far more resets, and `reset()` rebuilds `B_K` and `m_req`. Measured, that
+amortises to 0.06-0.23 ms/step against a 1.2-8.5 ms step -- 2-3%, not a concern.
+
+`m_req` depends only on `(n, domain mix)`, not the poses, so the config generator settles it from a
+single draw.
+
+**skip is an arm, off by default.** Generated configs keep `skip_enabled: false`; the stop arm is
+`skip_enabled: true` + `skip_is_stop: true` + a small `time_penalty_value`. The reason skip was
+masked out is that as a *free no-op* it is an absorbing zero-reward cycle that on-policy methods
+collapse onto; as a terminating action it is not, and it makes the final state a meaningful headline
+metric instead of best-state-visited. The penalty has to stay well under one edge's worth of phi
+(`w_edge*c_max/rank_K`, 1.1-2.5 across the configurations in use) or the agent stops before it is
+finished.
+
+#### Is the stop action worth having? (measured, unresolved)
+
+`skip_enabled` / `skip_is_stop` / `time_penalty_value` are env keys, so both terminations are
+trainable arms. Four 150k-step DQN runs at n=8/R^3, identical apart from those keys, evaluated by
+argmax on the frozen `bench_n8_R3`:
+
+| arm | time penalty | stops? | steps | **final** min% | best-visited min% |
+|---|---|---|---|---|---|
+| A  no stop | -- | no | 50 | 55% | **95%** |
+| B  stop | 0.05 | yes | 7.7 | **85%** | 85% |
+| C  stop | 0.20 | yes | 7.5 | 70% | 75% |
+| D  stop | 0.01 | yes | 7.0 | 50% | 50% |
+| greedy (reference) | -- | -- | 6.2 | 50% | 50% |
+
+**It does not collapse**, which was the thing worth ruling out. `Q(s, stop) = -c` exactly -- the
+graph does not change, so the shaping term is zero and the episode ends -- making it a constant and
+trivially learnable, and the danger is that a *guaranteed* value beats a badly estimated one early
+on. It does not happen: initial graphs are far from optimal, so improving actions have clearly
+positive `d phi` from the start. Episode length falls 30 -> ~7 over training and settles;
+`Episode/ Terminated` reaches 1.00; the policy stops *on* its best graph (`Best-final score gap`
+1.79 -> 0.04).
+
+**The two columns say opposite things.** As a deployed policy (final state) the stop arm is the best
+thing measured: 85% against 55% for no-stop and 50% for greedy, at 6.5x fewer edits. As a search
+(best of everything visited) no-stop wins 95% to 85% -- but that 95% costs 50 edits and takes the
+max over the trajectory; arm A reaches its best at step 6.8 and then wanders for 43 more because it
+is forced to act.
+
+**Not resolved, and it would take seeds to resolve.** tp = 0.01 -> 50%, 0.05 -> 85%, 0.20 -> 70% is
+non-monotone, and D stops at the same ~7 steps as B. A 35-point swing between penalty values that
+produce identical behaviour is more likely seed noise than sensitivity, and one seed per arm cannot
+separate them. Treat both terminations as arms; do not quote either number as settled.
+
+That variance is itself worth recording: **at n=8/R^3 a single seed spans at least 35 points of
+minimality**, so the historical "95% minimal" headline is also a single-seed number, and WP8's
+three-seed protocol is not optional.
+
+**A trap in reading the training curves.** The TensorBoard averages make the stop arms look far
+worse than the argmax evaluation does (`Best is min rigid` 0.97 vs 0.57) because training episodes
+still carry epsilon = 0.05. Over 50 steps that is 2.5 random edits, which arm A absorbs; over ~7
+steps it is 0.35, and one of them can be *stop*, ending the episode early. Judge terminations on an
+argmax evaluation, never on the curves.
+
+### rotation-augmentation
+
+`rotation_augmentation` (env config, **default `False` everywhere** -- generator, `initialize()` and
+`load()` -- so it is an arm and archived runs replay unchanged). Applies a random global rotation in
+`reset()`.
+
+The task is invariant to a global rotation. The observation is not, in `R^2`/`R^3`: `get_bearing`
+returns a global-frame vector when the agent has no frame of its own, so rotating the network moves
+the policy's output. Audited end to end -- `R^d` logits move, `R^2xS^1`/`R^3xS^1`/`SE(3)` are
+invariant to 6e-08. This is free data augmentation for the frameless half and a no-op for the rest,
+and it matters on `mixed`, where four of ten agents are frameless.
+
+**Measured effect is small.** Same 20 instances with and without a global rotation
+(`bench_n8_R3` vs `bench_n8_R3_rot`): `generaldqngine` scores 95% minimal / 10.05 edges unrotated,
+90% / 10.10 rotated. One instance in twenty, within noise at that sample size. The augmentation is
+free and principled, not a fix for a large defect -- do not oversell it.
+
+**Only the z axis is admissible when any planar agent is present** -- an arbitrary axis would lift
+it out of its plane. `rotate_network` rotates about the centroid and leaves the z component
+untouched under a z rotation, so planar agents stay at z=0 exactly (asserted).
+
+While adding this: `random_scenario` now carries `rotation_axes` the way it already carried
+`domains`. `set_domain` resets the axis to `e3`, so an `R^dxS^1` agent with a scenario-specified
+axis silently lost it on every reset. Nothing measured depended on it (`e3` is the only axis in
+use), but WP1 made the maths correct for arbitrary axes and the environment could not produce one.
+
+### benchmarks
+
+`benchmark.py` freezes evaluation instances (poses, orientations, domains, rotation axes, initial
+edges) into `benchmarks/<name>.npz`; `baselines.py --benchmark <name>` evaluates on them instead of
+sampling, and records the name and a content digest in `meta.json`.
+
+This exists because regenerating an env config silently resamples the instance distribution, and
+that has already invalidated one comparison: the two n=16 evaluations ran against initial graphs of
+52.25 +- 46.53 and 23.70 +- 10.64 edges, so reading "31.60 -> 23.85 edges" as progress conflated a
+better policy with an easier instance set. WP1 changes `m_req` and the horizon change moves
+`max_steps`, so every config is being regenerated at once.
+
+Verified faithful: `--benchmark bench_n8_R3` reproduces the sampled seed-0 run exactly
+(initial 11.20 +- 5.33, greedy 10.50 / 100% / 50%).
+
+**Tracked, not gitignored** -- unlike everything under `runs/`, `train/` and `environments/`, a
+benchmark is a fixture rather than an output, and an untracked one defeats the purpose. Three
+20-instance sets cost 32 KB in total.
+
 ### episode-logging
 
 Environment metrics are written once per episode, not once per step. A step-resolution scalar costs

@@ -1,447 +1,181 @@
-# rigidity_rl
+# Network Topology Optimization for Bearing Rigid Multi-Agent Systems via Deep Reinforcement Learning and Graph Neural Networks
+
+Master's thesis, University of Padova. Noyan Erdin Kilic.
+
+A team of robots that can only measure *directions* to one another (bearings, from cameras rather
+than range sensors) can recover its own shape only if the graph of who-measures-whom is rich
+enough. Adding every possible measurement makes that trivial and is wasteful: each link costs
+sensing, tracking and communication. This thesis asks which links to keep, and learns the answer
+with a graph neural network trained by reinforcement learning, rather than deriving it by hand for
+each network.
+
+**Status: work in progress.** Interfaces, configuration formats and model architectures change
+frequently, and the repository carries superseded code from earlier experiments.
+
+## References
+
+Bearing rigidity theory, and the source of the rigidity matrix formulation used here:
+
+1. G. Michieletto, A. Cenedese, and D. Zelazo, "A Unified Dissertation on Bearing Rigidity Theory,"
+   *IEEE Transactions on Control of Network Systems*, vol. 8, no. 4, pp. 1624-1636, Dec. 2021.
+   [doi:10.1109/TCNS.2021.3077712](https://doi.org/10.1109/TCNS.2021.3077712)
+2. M. H. Trinh, Q. Van Tran, and H.-S. Ahn, "Minimal and Redundant Bearing Rigidity: Conditions and
+   Applications," *IEEE Transactions on Automatic Control*, vol. 65, no. 10, pp. 4186-4200,
+   Oct. 2020. [doi:10.1109/TAC.2019.2958563](https://doi.org/10.1109/TAC.2019.2958563)
+
+Reinforcement learning over graph structure:
+
+3. V.-A. Darvariu, S. Hailes, and M. Musolesi, "Graph Reinforcement Learning for Combinatorial
+   Optimization: A Survey and Unifying Perspective," *Transactions on Machine Learning Research*,
+   Aug. 2024. [arXiv:2404.06492](https://arxiv.org/abs/2404.06492)
+4. V.-A. Darvariu, S. Hailes, and M. Musolesi, "Goal-directed graph construction using reinforcement
+   learning," *Proceedings of the Royal Society A*, vol. 477, no. 2254, 2021.
+   [doi:10.1098/rspa.2021.0168](https://doi.org/10.1098/rspa.2021.0168)
+
+Architectures:
+
+5. V. G. Satorras, E. Hoogeboom, and M. Welling, "E(n) Equivariant Graph Neural Networks,"
+   *ICML*, 2021. [arXiv:2102.09844](https://arxiv.org/abs/2102.09844)
+6. K. Xu, W. Hu, J. Leskovec, and S. Jegelka, "How Powerful are Graph Neural Networks?," *ICLR*,
+   2019. [arXiv:1810.00826](https://arxiv.org/abs/1810.00826)
+
+A [draft presentation](resources/rigidity_rl_260807-1.pdf) covers the same material with figures.
+
+## Problem
+
+A formation of `n` agents is modelled as a **directed graph**. Each node is an agent with a pose
+and a *domain* fixing which degrees of freedom it actually has: `R^2`, `R^3`, `R^2xS^1`, `R^3xS^1`
+or `SE(3)`. A planar ground robot cannot leave its plane; a quadrotor with a fixed-axis gimbal can
+rotate about one axis only. A directed edge `i -> j` means agent `i` measures the bearing to agent
+`j`, in `i`'s own frame. The relation is not symmetric: `i` seeing `j` does not imply `j` sees `i`.
+
+A framework is **infinitesimally bearing rigid** when those measurements pin down the formation's
+shape, leaving only the motions that no bearing can detect (translation, uniform scaling, and,
+where every agent carries its own frame, global rotation). The test is algebraic: rigid exactly
+when the rigidity matrix `B` attains the rank of the complete graph on the same poses.
+
+The optimization problem is then:
+
+> Given `n` agents at given poses, with given domains, choose the directed edge set so the
+> framework is bearing rigid, using as few edges as possible, and among the sparsest solutions
+> preferring the one that is most robustly rigid.
+
+Two properties make this harder than it first appears. Agent domains can be **mixed** within one
+network, and the pair of domains at an edge's endpoints decides which degrees of freedom that
+measurement constrains. And sparsity alone is not a sufficient criterion: many edge sets of the
+same minimal size are rigid at the same poses, and they differ by five orders of magnitude in how
+much perturbation they survive.
+
+## Research questions
+
+1. Is there an optimal graph topology balancing sparsity against structural rigidity, and what
+   characterizes it?
+2. Can deep reinforcement learning construct such a topology, and what architecture and training
+   procedure does that require?
+3. Does a learned policy generalize to networks it was not trained on: different sizes, different
+   agent domains, heterogeneous compositions?
+4. Where does a learned policy earn its place against classical combinatorial heuristics, and where
+   does it not?
+
+Question 3 is the central claim the thesis aims at, a single policy for any `n` and any domain
+mix, and is currently the open problem. Question 4 is treated as a genuine question rather than a
+rhetorical one: part of the contribution is identifying the regime in which learning helps, and
+saying plainly where a greedy algorithm is already optimal.
+
+## Approach
+
+The task is cast as a Markov decision process over edge sets. A state is a set of agent poses plus
+the current graph; an action edits one directed edge; the reward is the improvement in a scalar
+objective `phi` that rewards rigidity rank and charges for each edge. A graph neural network encodes
+the network into node embeddings, and an action head turns those into Q-values (DQN) or logits
+(PPO). Invalid actions are masked inside the model.
+
+Design choices that carry the argument:
+
+- **The objective is dimensionless.** `phi` is normalized by quantities computed from the poses
+  themselves, so the same number means the same thing at any network size and in any domain. A
+  score that changes units between configurations cannot support a claim about generalization.
+- **The policy sees candidate geometry.** Bearings are supplied for every ordered pair, not only
+  for existing edges, so the network can reason about a measurement it does not yet have.
+- **Rigidity-derived features are an ablation arm, not a default.** Quantities like the rigidity
+  matrix rank are global and expensive, and no distributed agent could compute them. They are
+  switchable, so the gap between the informed and uninformed policy is itself a measurement of how
+  much rigidity structure a GNN can recover from geometry alone.
 
-> **Note:** this README was generated by Claude and manually verified.
->
-> **This project is a work in progress.** Interfaces, configuration formats and model
-> architectures change frequently. The repository also contains superseded code and older
-> experimental work that is no longer part of the active pipeline.
+The longer-term motivation is a *distributed* protocol for maintaining rigid formations in swarms.
+The centralized formulation here is a deliberate first step; `ROADMAP.md` appendix A assesses what
+would carry over and what provably would not.
 
----
+## Current state
 
-## See also
+Results move as the formulation changes. The authoritative, dated summary is
+[ROADMAP.md](ROADMAP.md) section 1; the short version:
 
-- [ROADMAP.md](ROADMAP.md) — the live plan: what currently works, what is known-broken and why,
-  and the phased fix. Read this before changing the environment, observations or reward.
-- [Draft presentation](resources/rigidity_rl_260807-1.pdf) — slides on the current state of this work.
-- [Michieletto et al. (2021), *A Unified Dissertation on Bearing Rigidity Theory*](resources/Michieletto%20et%20al.%20-%202021%20-%20A%20Unified%20Dissertation%20on%20Bearing%20Rigidity%20Theory.pdf) — the reference the rigidity theory in this repo follows.
+**Works.** At 8 agents in `R^3` a trained DQN policy reaches 10.05 edges against a proven optimum
+of 10, rigid on every instance and minimal on 95% of them, compared with 50% for greedy
+hill-climbing on the same objective and the same instances. It converges in roughly 7 edits and
+computes no rigidity matrix at inference.
 
-## What is this?
+**Does not work yet.** Transfer to unseen domains is below doing nothing: the same policy scores 5%
+rigid on 8 agents in `SE(3)`, where the untouched initial graph scores 35%. The cause is identified
+rather than suspected, and it is not a tuning problem.
 
-Topology optimization for **bearing rigid multi-agent networks**, using deep reinforcement
-learning with graph neural networks.
+**Two findings that reframed the project.** The rank of the rigidity matrix is generically
+independent of the agent configuration, which means a rank-based objective is purely combinatorial
+and cannot motivate the geometric machinery usually paired with it. Separately, the standard
+heterogeneous rigidity matrix construction attaches degree-of-freedom restrictions per edge rather
+than per node, which lets a planar agent gain a degree of freedom it does not have; the corrected
+construction is validated against its own definition by numerical differentiation and agrees
+exactly with the published one on homogeneous networks. See [THEORY.md](THEORY.md) section 12.
 
-A multi-agent network is modelled as a **directed graph**. Each node is an agent with a pose
-(position and orientation) and a *domain* that determines its degrees of freedom. A directed
-edge `i -> j` means **agent `i` measures the bearing to agent `j`**, expressed in `i`'s local
-frame — for orientation-less domains (`R^2`, `R^3`) that is simply the global frame. Edges are
-therefore asymmetric, and each one represents a sensing/communication cost.
+Numbers reported here are single-seed unless stated otherwise, and measured run-to-run variance at
+this scale is large. Treat them as indicative.
 
-The reinforcement learning task is: given a set of agents at given poses, **choose the edge set**
-so that the network is bearing rigid using as few edges as possible. A GNN encodes the graph into
-node embeddings, and an action head turns those embeddings into logits (PPO) or Q-values (DQN)
-shaped by the configured action space.
+## Documentation
 
-Supported agent domains: `R^2`, `R^3`, `R^2xS^1`, `R^3xS^1`, `SE(3)`. Networks may be
-heterogeneous — the domain pair of an edge's endpoints determines which degrees of freedom that
-bearing measurement actually constrains.
-
-The longer-term motivation is a **distributed** method for maintaining rigid formations in swarms.
-The centralized formulation here is a deliberate first step; see
-[ROADMAP.md appendix A](ROADMAP.md) for an assessment of what would carry over.
-
-## Status
-
-**Works:** at 8 agents in `R^3`, a trained DQN policy reaches **10.02 edges against an optimum of
-10, 100% rigid and 98.2% minimally rigid**, and holds it. It gets there in roughly 8 edge toggles,
-against a greedy hill-climber's 11 improvement steps of `n(n-1)` objective evaluations each.
-
-**Does not work yet:**
-
-- **Generalization across `n` and domain.** A policy trained at `n=8`/`R^3` is *worse than a random
-  policy* when transferred zero-shot to `n=4`/`R^2` (45% vs 80% rigid) and no better than random at
-  `n=16`. It learns an edge-count prior for its training configuration rather than a rigidity
-  criterion. One of the two causes is addressed — the observation now carries the geometry of
-  candidate edges — and the retrain to confirm it is pending; the other (no rigidity information in
-  the observation) is the next step, deliberately run as an ablation.
-- **PPO.** Did not learn on this task for two identified reasons — a PPO memory/rollout sizing bug,
-  and `discount_factor = 1.0` making the advantage identically zero under potential-based shaping.
-  Both are fixed; a confirming run has not been done yet. DQN was never affected.
-
-Details, evidence and the fix plan are in [ROADMAP.md](ROADMAP.md).
-
-## Evaluation output
-
-Every evaluation run measures the trained policy against reference points. The starting graph,
-a random policy, and a greedy search in case of the examples below.
-
-![Baseline comparison table](resources/baselines-table.svg)
-
-![Run trajectories](resources/baselines-trajectories.svg)
-
-![Final, best and mean outcome per method](resources/baselines-outcomes.svg)
-
-![Outcome distribution across networks](resources/baselines-summary.svg)
-
-## Requirements
-
-- Python 3.12
-- An NVIDIA GPU — `setup.sh` installs CUDA 12.6 builds of PyTorch and the PyTorch Geometric
-  extensions. The training scripts select `cuda` when available and `cpu` otherwise. Inference and `baselines.py` run on CPU by default.
-- [`uv`](https://docs.astral.sh/uv/) for environment management (installed by `setup.sh` if
-  missing)
-
-Key dependencies: `torch`, `torch-geometric` (+ `pyg_lib`, `torch_scatter`, `torch_sparse`,
-`torch_cluster`, `torch_spline_conv`), `skrl` (RL algorithms), `egnn-pytorch` (equivariant GNN),
-`gymnasium`, `numpy-quaternion`, `viser` (3D visualisation), `tensorboard`.
-
-## Setup
-
-```bash
-git clone git@github.com:nyanklc/rigidity_rl.git
-cd rigidity_rl
-./setup.sh
-```
-
-This installs `uv` if needed, creates a `.venv` on Python 3.12, and installs the dependencies.
-`requirements.txt` records a full pinned freeze of a working environment for reference.
-
-Everything is then run through `uv`:
-
-```bash
-uv run <script>.py <args>
-```
-
-There is no `pyproject.toml` or lockfile — the virtualenv is populated directly by `uv pip`.
-
-## Quick start
-
-Configuration of the environment and training can be done within the source code or generated '.json' files.
-
-```bash
-# 1. create an environment configuration (edit the constants in the __main__ block first)
-uv run environment.py 4 "R^2"
-
-# 2. train
-uv run train_dqn.py env_actionSelectNodesSequentially_rewardWeightedNormalized_termMaxSteps_n4_R2 my_first_run
-
-# 3. watch it train
-tensorboard --logdir runs
-
-# 4. compare it against reference points
-uv run baselines.py env_actionSelectNodesSequentially_rewardWeightedNormalized_termMaxSteps_n4_R2 --model my_first_run
-
-# 5. step through an episode in the browser
-uv run inference.py my_first_run env_actionSelectNodesSequentially_rewardWeightedNormalized_termMaxSteps_n4_R2
-```
-
-Throughout, names are **filenames without extension**: `<environment_name>` resolves to
-`environments/<name>.json`, `<scenario_name>` to `scenarios/<name>.json`, and `<model_name>` to
-`train/<name>.json` plus `models/complete/<ALGO>/<name>.pt`.
-
-## Core concepts
-
-### Bearing rigidity
-
-A framework is **Infinitesimally Bearing Rigid (IBR)** when the bearing measurements determine the
-formation's shape up to translation and scale. This is tested through the *extended bearing
-rigidity matrix* `B` (shape `3m x 6n` for `m` edges and `n` agents): the graph is IBR when
-`rank(B)` equals the rank of the fully-connected graph's matrix on the same poses.
-
-Two derived quantities are used throughout:
-
-- **Rigidity eigenvalue** — the first nonzero eigenvalue of `B^T B`. A scalar measure of *how
-  robustly* rigid a framework is. Its absolute magnitude is not meaningful on its own — matrix
-  entries scale as `1/||p_ij||`, so it moves with the pose range `random_scenario` draws from
-  (`pos_limits`, currently `[-1, 1]`). Compare frameworks at the same scale, and plot on a log axis.
-- **Minimal Bearing Rigidity (MBR)** — whether the graph is rigid with as few edges as possible.
-  Exact via a closed form for homogeneous `R^d` networks; otherwise a greedy per-edge lower bound
-  is used. That bound is *sound but not a ground truth* on heterogeneous networks, so it is kept out
-  of the objective and used only for reporting.
-
-### The environment
-
-One `gymnasium.Env` (`Environment` in `environment.py`) serves every experiment. Nothing is
-subclassed — behaviour is selected by string names in a JSON config, each dispatched to a
-module-level function:
-
-| Axis | Config key | Meaning |
-|---|---|---|
-| Action space | `action_type` | what a single step does to the graph |
-| Observation | `obs_type` | what the policy sees (one type, `Dict`) |
-| State score | `state_score_type` | the scalar φ measuring how good a graph is |
-| Termination | `termination_condition_type` | when an episode ends |
-
-Currently in active use:
-
-- **Action spaces** — `SelectNodesSequentially` (pointer-network style: pick one node per step;
-  every second pick toggles the edge between the two picks) and
-  `AddRemoveEdgeDiscreteNoSelfLoops` (pick an edge and an add/remove operation directly).
-- **Observation** — one type, `Dict`: node features (domain one-hot, in/out degree, closeness /
-  eigenvector centrality, betweenness), pose-normalized coordinates, edge features (bearing vector,
-  an explicit `edge_exists` flag, edge betweenness, reciprocity, common neighbours), the adjacency
-  matrix and the current selection. Each model reads the keys it needs, so the choice of GNN is a
-  training-script constant rather than an observation type.
-  Bearings cover **every ordered pair**, not only existing edges, so the policy can see the
-  geometry of an edge it might add. `include_candidate_bearings: false` restricts them back to
-  existing edges at the same shape — that is a modelling choice about what a distributed agent
-  could know, not a tuning knob.
-- **State score** — `WeightedNormalized`: `(w_rank·rank − w_edge·|E|·c_max) / rank_K`, dimensionless
-  so it means the same thing at any `n` and in any domain. (The older `Weighted`, `20·rank − 10·|E|`,
-  traded rank against edges differently per dimension and did not transfer — ROADMAP §2.5.)
-- **Termination** — `MaxSteps` (fixed horizon) or `MinimallyRigid`.
-
-**Reward.** Each step yields
-
-```
-reward = -time_penalty + [action reward] + (φ(s') - φ(s)) + [terminal bonus]
-```
-
-The φ term is potential-based shaping: the reward is how much *better* the graph became, not its
-absolute quality. **The discount factor interacts with this and is not free.** At γ=1 the return
-telescopes to `φ(s_T) − φ(s_0)` and the advantage collapses to ≈0 under a near-uniform policy, so
-nothing learns. At γ<1 the same reward becomes "maximize the discounted average of φ along the
-trajectory" — converge quickly and stay converged. Use γ<1.
-
-**Episode reset** re-randomises poses *and* edges, so a policy must generalise across geometries
-rather than memorise one.
-
-### Policies
-
-`policy/gnn_backbone.py` holds the GNN backbones; `policy/{actor,critic,q_func}/` hold one model
-per (backbone × action-space) combination, all re-exported from `policy/__init__.py`.
-
-- `GNNBackboneEquivariant` — E(n)-equivariant GNN (EGNN). Preserves the node feature width;
-  `gnn_hidden_dim` sets only the internal message width. Message passing is dense over all pairs
-  by design — the topology reaches it through the edge features, where `edge_exists` states
-  adjacency explicitly.
-- `GNNBackboneGINE` — GINE, edge-feature aware. Outputs `gnn_hidden_dim`. Message passing is
-  restricted to existing edges, so this backbone sees no geometry for candidate edges at all.
-
-`policy/registry.py` maps `(role, backbone, action space)` to a class, so the training scripts look
-a model up rather than walking an if/else chain; constructor differences are absorbed by filtering
-kwargs against each signature.
-
-Naming: `Equivariant_*` = EGNN, `GINE_*` = GINE. **Action masking happens inside the model** —
-invalid actions get `-1e9` written into their logit/Q-value; the environment does not mask. DQN
-Q-networks additionally mask inside `random_act()` so ε-greedy exploration respects it too.
-
-## Commands
-
-### Creating configurations
-
-```bash
-# environment config -> environments/env_<...>.json
-uv run environment.py <n> <domain>            # e.g. uv run environment.py 4 "R^2"
-uv run environment.py file <scenario_name>    # take n and domains from a scenario
-
-# scenario (fixed poses/domains) -> scenarios/<name>.json
-uv run scenario.py <name>
-```
-
-Both scripts read their settings from constants at the top of their `__main__` block — **edit
-those first**, then run. The generated environment filename encodes the chosen axes.
-
-### Training
-
-```bash
-uv run train_ppo.py <environment_name> <model_name>
-uv run train_dqn.py <environment_name> <model_name>
-```
-
-- `<model_name>` may be given as `prefix=foo`, which appends the action/obs type and `n_domain`
-  automatically.
-- If a run of that name exists you are prompted to **continue**, start **fresh**, or **abort**.
-- Hyperparameters live in the constants block at the top of each training script.
-
-Outputs: `models/complete/{PPO,DQN}/<name>.pt`, a run manifest at `train/<name>.json`, and
-TensorBoard logs in `runs/<name>/`.
-
-### Monitoring
-
-```bash
-tensorboard --logdir runs
-```
-
-Beyond the usual reward/loss curves, the environment logs an `Episode/ *` group — **one point per
-tag per episode**, written when the episode ends and plotted against the global environment step so
-it lines up with skrl's own curves. Each episode contributes three views of itself:
-
-- **`Final *`** — the graph the episode ended on (`Final state score`, `Final nr edges`,
-  `Final rank`, `Final rank deficit`, `Final is rigid`, `Final is min rigid`, `Final min eig`),
-  plus `Nr initial edges`, `Edge delta`, `Length`, `Nr edits`, `Skip fraction`, `Terminated`
-  and the return decomposition.
-- **`Best *`** — the highest-scoring graph *seen* during the episode and the step it was reached
-  at (`Best state score`, `Best nr edges`, `Best rank`, `Best is rigid`, `Best is min rigid`,
-  `Best min eig`, `Best step`). Scoring an episode on its final state alone conflates finding a
-  good topology with learning to stop on one; `Best-final score gap` measures exactly that
-  difference — 0 means the episode ended on the best graph it found.
-- **`Mean *` / fractions** — the episode average (`Mean state score`, `Mean nr edges`, `Mean rank`,
-  `Mean min eig`, `Rigid fraction`, `Min rigid fraction`), i.e. what the graph looked like
-  throughout rather than at one instant.
-
-### Evaluation
-
-```bash
-uv run baselines.py <environment_name> [options]
-```
-
-Scores several methods on identical problem instances, all through the same φ the agent trains on:
-
-| Method | What it does |
+| File | Contents |
 |---|---|
-| `initial` | the graph the sampler produced |
-| `random` | uniform random actions; the floor for that action space |
-| `greedy` | hill-climbing on φ, one edge toggle at a time |
-| `learned` | a trained policy (requires `--model`) |
-| `optimal` | exhaustive search for the fewest-edge rigid graph (`--brute-force`, small `n` only) |
+| [ROADMAP.md](ROADMAP.md) | live plan, current diagnosis, work log. Start here. |
+| [THEORY.md](THEORY.md) | the mathematics: rigidity matrix, rank, null space, objective |
+| [DESIGN_NOTES.md](DESIGN_NOTES.md) | why the implementation is the way it is |
+| [CLAUDE.md](CLAUDE.md) | code map and working conventions |
 
-Options: `--episodes N`, `--model <name>`, `--brute-force`, `--steps K` (rollout horizon),
-`--methods a,b,c`, `--policy-mode sample|greedy`, `--seed`, `--device`, `--tag <label>`,
-`--out-dir PATH`, `--no-plots`, `--plot-episodes N`, `--brief`, `--replay-env`.
+## Running the code
 
-Each run writes one self-describing directory:
-
-```
-runs_baselines/<timestamp>__<environment>__<model>/
-  summary.txt        the printed comparison table and its legend
-  results.csv        one row per (episode, method) — the final outcome
-  trajectories.csv   one row per (episode, method, step) — the full time series
-  meta.json          arguments, environment config, versions, seed, git state
-  plots/pdf/         table, trajectories, outcomes, summary and per-episode figures
-  plots/png/         the same figures as PNG
-```
-
-Every figure is written in both formats and filed by format — PDF for the thesis, PNG for
-looking at.
-
-The table reports, per method: edges used, objective score, the percentage of networks that came
-out rigid and minimally rigid, the rigidity margin, **work** (how many changes to the network the
-method actually made) and **best@** (the step at which its best network was found). A legend
-below the table explains each column in plain language; `--brief` omits it.
-
-Every value is a mean over the networks with its standard deviation, except the percentage
-columns — those are already means of a yes/no outcome, so their spread carries no extra
-information. The margin appears twice: arithmetically (`mean ± sd`) and geometrically
-(`gmean ×/÷ gsd`), since it ranges over orders of magnitude and an arithmetic ± implies a range
-crossing zero. The geometric column is marked `*` when non-rigid networks had to be excluded —
-their margin is exactly 0, which a geometric mean cannot take, so a starred row describes only
-the networks that came out rigid.
-
-Four figures cover the run, each with the full environment and model names in its title block and
-a notes card explaining how it was built:
-
-- **`table`** — the comparison table itself, the same numbers as `summary.txt` but laid out:
-  each column states its direction under its name, reference rows are drawn as reference rows,
-  and the column legend rides along in the card. Use it when the table has to appear beside the
-  plots rather than in a terminal.
-- **`trajectories`** — objective score, edge count, rigidity-matrix rank and rigidity margin
-  against step, for every method, with full rigidity and the exhaustive optimum as reference lines.
-  Mean across networks with the middle 50% shaded; `episode_NNN` is the same figure for one network.
-- **`outcomes`** — **final / best / mean** side by side for every method: the network the run ended
-  on, the best-scoring one it passed through, and the average over the run. The same three views
-  the environment logs per episode to TensorBoard. A method whose `best` bar stands well above its
-  `final` bar found a good topology and then moved off it.
-- **`summary`** — the spread across networks (box plots) of the outcome each method is scored on,
-  the percentage rigid and minimally rigid, and how long each method took to reach its best.
-
-Per-step tracing is what makes these possible and costs roughly 20–30% per step, so `--no-plots`
-disables both.
-
-**`--policy-mode`** controls how the trained policy is rolled out, and the two modes measure
-different things:
-
-- `sample` (default) — actions are sampled from the policy. Combined with best-state-visited
-  scoring over the horizon, this uses the policy as a *sampling-based search*, which is the usual
-  inference procedure for neural combinatorial optimization. Reproducible for a given `--seed`,
-  but the result depends on the rollout budget, so report it together with `--steps`.
-- `greedy` — the single action the policy considers best. This is what a deployed policy would do,
-  is reproducible regardless of seed, and terminates as soon as the trajectory repeats a state
-  (a deterministic policy in a deterministic environment is eventually periodic).
-
-A DQN Q-network has no distribution to sample from and takes the argmax in either mode; the
-distinction only affects PPO.
-
-`greedy` is the expensive baseline — it evaluates all `n(n-1)` candidate toggles per improvement,
-so cost grows quadratically in `n`. Drop it with `--methods` on large graphs. Brute force refuses
-above `n = 5`.
-
-### Inference and manual editing
+Requires Python 3.12, an NVIDIA GPU, and [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
-uv run inference.py <model_name> <environment_name>   # step through an episode in viser
-uv run manual.py <environment_name>                   # hand-edit a graph, watch rigidity metrics
+./setup.sh          # installs uv if needed, creates .venv, installs dependencies
 ```
-
-Both open a [viser](https://viser.studio) server in the browser. `inference.py` advances one step
-per button press (or spacebar) and, with `BRUTE_FORCE_BEST` enabled, opens a second server showing
-the exhaustively-optimal topology for comparison.
-
-## Run manifests and reproducibility
-
-Every training run writes `train/<model_name>.json` — a **self-contained record of that run**.
-`train/` is gitignored, so a manifest lives only on the machine that produced it; keep it
-alongside the checkpoint it describes. Each contains:
-
-- hyperparameters and the environment configuration used
-- the **source code** of the actor/critic/Q-network classes
-- the **full text** of every file that determines the model — `environment.py`, `network.py`,
-  `rigidity.py`, `util.py`, `scenario.py`, `policy/gnn_backbone.py` — gzipped and base64-encoded
-  into `sources_b64gz`
-- `scenario_raw`, the scenario contents (`scenarios/` is gitignored, so a run naming one would
-  otherwise be unreplayable)
-- `provenance`: git commit and dirty flag, command line, package versions, device, random seed
-
-Because the code is archived, a checkpoint keeps working after the repository moves on. When
-loading, the tools compare the archived sources against the working tree; if they differ, the
-difference is reported and the model — and, where necessary, the **environment it was trained
-against** — is rebuilt from the archive rather than from current code.
 
 ```bash
-uv run manifest.py list                  # every run: what it carries, whether it still verifies
-uv run manifest.py show <name> [file]    # print archived source and provenance
-uv run manifest.py diff <name> [file]    # archived vs the working tree
-uv run manifest.py verify <name>         # rebuild the model from the archive, check the weights
-uv run manifest.py backfill [--write]    # add missing information to older manifests
+uv run environment.py 8 "R^3"          # generate an environment configuration
+uv run train_dqn.py <env_name> <run_name>
+uv run baselines.py <env_name> --model <run_name>    # against random, greedy, optimal
+tensorboard --logdir runs
 ```
 
-`backfill` only archives current sources for a run whose weights they demonstrably reconstruct
-(checked against the saved parameter shapes); such entries are marked
-`provenance.captured_at_training: false`. Runs that cannot be reconstructed are marked
-`reconstructible: false` with the reason instead.
-
-A manifest is required: a checkpoint without `train/<name>.json` cannot be loaded, since the
-manifest is what records the model classes, hyperparameters and environment config the run used.
+Names are filenames without extension. `uv run tests/run_all.py` runs the test suite, which pins
+the invariants this project keeps breaking, and passes on a fresh clone. `CLAUDE.md` lists every
+entry point.
 
 ## Repository layout
 
 ```
-ROADMAP.md              current plan: diagnosis, ranked issues, phased fixes
-DESIGN_NOTES.md         why the code is written the way it is
-environment.py          the gymnasium environment; action / observation / reward / termination dispatch
-network.py              Agent and Network; graph features used by the observations
-rigidity.py             bearing rigidity matrix, IBR / MBR tests, rigidity eigenvalue
-scenario.py             random and file-backed scenario generation
-util.py                 Pose and geometry helpers
-
-policy/
-  gnn_backbone.py       EGNN and GINE backbones
-  registry.py           (role, backbone, action space) -> model class
-  actor/ critic/ q_func/  one model per (backbone x action space)
-
-train_ppo.py            PPO training
-train_dqn.py            DQN training
-agent_loader.py         rebuild a trained agent (and its environment) from a manifest
-manifest.py             build, inspect, verify and backfill run manifests
-baselines.py            reference points: initial / random / greedy / learned / optimal
-inference.py            step through an episode with a trained model
-manual.py               interactive graph editor
-visualizer.py           viser wrapper
-
-environments/           environment configs      (gitignored)
-scenarios/              fixed poses/domains      (gitignored)
-models/                 checkpoints              (gitignored)
-runs/                   TensorBoard logs         (gitignored)
-runs_baselines/         evaluation output        (gitignored)
-resources/              papers, slides, README figures
-train/                  run manifests            (gitignored)
+rigidity.py         bearing rigidity matrix, rigidity tests, derived quantities
+network.py          Agent and Network, graph features
+environment.py      the gymnasium environment and its dispatchers
+scenario.py         random and file-backed scenario generation
+policy/             GNN backbones and one model per (backbone x action space)
+train_dqn.py        training (train_ppo.py for PPO)
+baselines.py        evaluation against random, greedy and exhaustive search
+benchmark.py        frozen evaluation instances, so results stay comparable
+manifest.py         run manifests: archived sources and provenance
+tests/              invariant tests
 ```
 
-`gpu_environment.py`, `gpu_network.py` and `gpu_rigidity.py` are an in-progress batched PyTorch
-reimplementation of the environment and rigidity maths; they are not yet wired into training.
-
-The repository also contains superseded scripts and older experimental work that are no longer
-part of the active pipeline.
+Directories produced by runs (`environments/`, `models/`, `runs/`, `train/`) are not tracked.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).

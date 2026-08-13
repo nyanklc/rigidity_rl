@@ -1,4 +1,6 @@
 """Reference values every change is measured against, and report.py's maths."""
+import copy
+
 import numpy as np
 import pytest
 
@@ -30,16 +32,28 @@ def test_greedy_is_rigid_and_minimal_at_n4_R2(make_env):
 
 
 def test_greedy_is_at_least_as_good_as_random_and_far_cheaper(make_env):
-    """Both are scored on best-state-visited, so random can tie on small graphs --
-    the real separation is how many edits it takes to get there."""
+    """Both scored on best-state-visited from the SAME graph, so random can tie on
+    small graphs -- the real separation is how many edits it takes to get there.
+
+    The restore between methods is the point: without it run_random continues from
+    the graph run_greedy just optimised and can only improve on it, which makes the
+    comparison meaningless (and eventually fails, when random finds the two-edit
+    swap greedy cannot). baselines.py deep-copies for the same reason.
+    """
     e = make_env(n=6, domains="R^3", max_steps=80,
                  termination_condition_type="MaxSteps")
     g, r, gw, rw = [], [], [], []
     for _ in range(5):
         e.reset()
+        instance = copy.deepcopy(e.network)
         e.freeze_network = True
+
         res_g = run_greedy(e, max_steps=80, verbose=False)
+
+        e.network = copy.deepcopy(instance)
+        e.reset()
         res_r = run_random(e, steps=80)
+
         e.freeze_network = False
         g.append(res_g["score"]); r.append(res_r["score"])
         gw.append(res_g["work"]); rw.append(res_r["work"])

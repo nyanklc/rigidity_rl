@@ -16,14 +16,21 @@ def random_scenario(
     pos_limits=([-1, -1, -1], [1, 1, 1]),
     # pos_limits=([-100, -100, -100], [100, 100, 100]),
     edge_count=None,
+    rotation_axes=None,
 ):
     low, high = np.array(pos_limits[0]), np.array(pos_limits[1])
     positions = np.zeros((n, 3))
     orientations_euler = np.random.uniform(0, 2 * np.pi, size=(n, 3))
 
     network = Network(positions, orientations_euler, edges=np.zeros((0, 2), dtype=int))
+    # axes must be carried like domains: set_domain resets them to e3 otherwise, so an
+    # R^dxS^1 agent silently loses a custom axis on every reset
+    axes = rotation_axes if rotation_axes is not None else [None] * n
     if isinstance(domains, str):
         network.set_agents_domain_homogeneous(domains)
+        for agent, rax in zip(network.agents, axes):
+            if rax is not None:
+                agent.set_domain(domains, rotation_axis=np.asarray(rax, dtype=float))
     else:
         # Important: We do not want the model to memorize domain specific
         # weights, so we shuffle the nodes' roles
@@ -31,8 +38,9 @@ def random_scenario(
         # The GNN should handle this (permutation invariance) actually
         # np.random.shuffle(domains)
 
-        for agent, domain in zip(network.agents, domains):
-            agent.set_domain(domain)
+        for agent, domain, rax in zip(network.agents, domains, axes):
+            agent.set_domain(domain, rotation_axis=None if rax is None
+                             else np.asarray(rax, dtype=float))
     network.randomize_positions(low, high)
     network.randomize_orientations()
 

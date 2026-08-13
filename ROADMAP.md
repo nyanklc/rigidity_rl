@@ -16,11 +16,11 @@ conversation history** can read it and continue. If you are picking this up cold
 | WP | Title | Tier | State |
 |---|---|---|---|
 | WP1 | Per-node DOF restriction in the rigidity matrix | 0 | **done** (2026-08-12) |
-| WP6 | Cut the horizon, restore the stop action | 0 | not started |
-| WP12 | Freeze benchmark instances to disk | 0 | not started |
-| WP11 | Random global rotation at reset | 0 | not started |
+| WP6 | Cut the horizon; stop action as a trainable arm | 0 | **done** (2026-08-12) |
+| WP12 | Freeze benchmark instances to disk | 0 | **done** (2026-08-12) |
+| WP11 | Random global rotation at reset | 0 | **done** (2026-08-12) |
 | — | `mixed5` scenario as the ground-truth debug case | 0 | **done** (user-provided) |
-| WP2 | Null-space features: fix flex, add the exact addition oracle | 1 | not started |
+| WP2 | Null-space features: fix flex, add the exact addition oracle | 1 | **next** |
 | WP5 | Pairwise action head (level 2 default, level 3 arm) | 1 | not started |
 | WP10 | Input embedder for the EGNN | 1 | not started |
 | WP13 | DQN hygiene: target time constant, DDQN, seeding | 1 | not started |
@@ -41,8 +41,7 @@ multi-agent network so it is bearing rigid with as few edges as possible, via de
 any `n` and any mix of agent domains.
 
 **Where it stood before this branch.** The formulation worked at n=8/R^3 (95% minimally rigid,
-against 50% for phi-greedy) and failed everywhere else. `CLAUDE.md`'s "Current results" section
-records the pre-branch numbers; they are still accurate for what they measure.
+against 50% for phi-greedy) and failed everywhere else. §1.5 below has the cross-domain numbers.
 
 **The two findings that motivated this branch:**
 
@@ -565,6 +564,134 @@ domain distribution and the reward in one run would make a bad result uninterpre
 
 Newest first. One entry per work package or per material finding.
 
+### 2026-08-12 — arms turned off by default, config ownership, a flawed test fixed
+
+The generator now emits the **validated baseline**: `4*m_req + 10` horizon, stop action off
+(`skip_enabled`/`skip_is_stop` false, `time_penalty_value` 0), `rotation_augmentation` false. Both
+new behaviours stay switchable env keys, so either can be trained as an arm without a source edit.
+`environments/` and `scenarios/` regenerated once to match, and are **the user's to manage from here
+— do not regenerate or hand-edit them; make a new config under a new name if an experiment needs
+different settings** (recorded in `CLAUDE.md`).
+
+`benchmarks/` refreshed against the restored configs. The WP11 pair re-measures identically
+(95% unrotated / 90% rotated), so that number does not depend on the arms being on.
+
+**A pre-existing test was wrong and is fixed.**
+`test_greedy_is_at_least_as_good_as_random_and_far_cheaper` ran `run_random` on the graph
+`run_greedy` had just optimised, with no restore between them — so random could only improve on
+greedy's answer, and the assertion held only while random failed to find the two-edit swap greedy
+cannot. It now deep-copies the instance between methods, which is what `baselines.py` does and what
+`CLAUDE.md` already required. Unrelated to WP1/6/11/12; it surfaced because the comparison finally
+got exercised from a different starting graph.
+
+### 2026-08-12 — stop-action experiment, cleanup
+
+Four A/B/C/D runs and their artefacts (`train/run_stop*`, `models/complete/DQN/run_stop*`,
+`runs/run_stop*`, `environments/env_stop*`, `runs_baselines/*stopeval*`) removed after the
+measurement below; the finding lives in `DESIGN_NOTES.md#horizon`. Every `environments/*rigGFE*`
+config regenerated so none is stale (all now carry the `4*m_req+10` horizon and the
+`rotation_augmentation` key) — that includes the `SelectNodesSequentially` and non-`_lean` variants.
+
+Two fixes that came out of it:
+
+- **`benchmark.digest()` hashed the file, not the instances.** npz is a zip and stores timestamps,
+  so an identical benchmark rewritten got a different digest — exactly the false mismatch the digest
+  exists to detect. It now hashes the arrays; verified stable across a rewrite.
+- **`benchmark.py rotate <source> <name>`** added, so the rotated pair behind the WP11 number is
+  reproducible from the CLI instead of a scratch script.
+
+### 2026-08-12 — WP6, WP11, WP12 done (tier 0 complete)
+
+**WP6 — horizon.** `MAX_STEPS = 4*m_req + 10` in the config generator (n=8/R^3 → 50, `mixed5` → 42,
+`mixed` → 78, n=16/R^3 → 98, n=8/SE(3) → 94). The stop action (`skip_enabled` + `skip_is_stop` +
+`time_penalty_value`) is a trainable **arm, off in generated configs**. Also fixed: the
+scenario branch of the generator took `config["domains"][0]`, writing a homogeneous label into every
+mixed config; it now carries the full per-agent list, which `MAX_STEPS` needs anyway.
+
+| | instances seen in 400k | in the replay buffer |
+|---|---|---|
+| n=8 R^3 | 1785 → **8000** | 178 → **800** |
+| `mixed` | 1111 → **5128** | 111 → **512** |
+| n=16 R^3 | 416 → **4081** | 41 → **408** |
+
+**Acceptance met, measured:** `generaldqngine` re-evaluated at 50 steps reproduces its 224-step
+result exactly — 10.05 edges, 100% rigid, 95% minimal, best@ 8.0. (`random` drops 85% → 60% rigid,
+correctly: it was living off the longer search budget.) Reset cost amortises to 0.06–0.23 ms/step
+against a 1.2–8.5 ms step, so the extra resets are 2–3%.
+
+**The stop action: measured, and kept as an arm.** Four 150k-step runs at n=8/R^3 differing only in
+`skip_enabled` / `skip_is_stop` / `time_penalty_value`, argmax on `bench_n8_R3`:
+
+| arm | tp | stops? | steps | **final** min% | best-visited min% |
+|---|---|---|---|---|---|
+| A no stop | -- | no | 50 | 55% | **95%** |
+| B stop | 0.05 | yes | 7.7 | **85%** | 85% |
+| C stop | 0.20 | yes | 7.5 | 70% | 75% |
+| D stop | 0.01 | yes | 7.0 | 50% | 50% |
+| greedy | -- | -- | 6.2 | 50% | 50% |
+
+- **It does not collapse.** `Q(s, stop) = -c` exactly, so it is a constant and trivially learnable —
+  the risk was that a guaranteed value beats a badly estimated one early on. It does not, because
+  initial graphs are far from optimal and improving actions have clearly positive `d phi` from the
+  start. Episode length settles at ~7, `Episode/ Terminated` reaches 1.00, and the policy stops *on*
+  its best graph (`Best-final score gap` 1.79 → 0.04).
+- **The two columns disagree.** As a deployed policy (final state) the stop arm is the best measured
+  — 85% vs 55% no-stop and 50% greedy, at 6.5x fewer edits. As a search (best-visited) no-stop wins
+  95% vs 85%, but that costs 50 edits and takes the max over the trajectory.
+- **Not resolved.** tp 0.01 → 50%, 0.05 → 85%, 0.20 → 70% is non-monotone while D stops at the same
+  ~7 steps as B, so this is most likely seed noise. One seed per arm cannot separate them.
+
+**Decision (2026-08-12): keep both terminations as trainable arms**, selected by the env keys, with
+the generator emitting the no-stop baseline. No further training spent on resolving it now; revisit
+with seeds when WP8's protocol lands. To reproduce the arms, set `SKIP_ENABLED`/`SKIP_IS_STOP` true
+and `TIME_PENALTY_VALUE` in `environment.py`'s `__main__` and generate a config under a new name —
+the `env_stop*` configs used for the measurement were deleted with the runs.
+
+**Side finding, and it matters for every later number:** a single seed at n=8/R^3 spans **at least
+35 points of minimality**. The historical "95% minimal" headline is a single-seed number too.
+WP8's three-seed protocol is not optional.
+
+**A trap:** the TensorBoard averages make the stop arms look far worse than argmax evaluation does
+(`Best is min rigid` 0.97 vs 0.57), because training still carries epsilon = 0.05 — 2.5 random edits
+over 50 steps (absorbed) versus 0.35 over ~7 steps, one of which can be *stop*. Judge terminations
+on an argmax evaluation, never on the curves.
+
+**WP11 — rotation augmentation.** *(Effect size measured 2026-08-12, and it is small — see below.)*
+`rotation_augmentation` env key, **default `False` everywhere** — an arm, like the stop action, so
+archived runs replay unchanged. `Environment.randomly_rotate()`
+in `reset()`, z-axis only when a planar agent is present. 10 new tests in `tests/test_environment_api.py`
+(rank/`m_req`/edges invariant, planar agents stay at z=0 exactly, the network actually moves).
+
+**How much it is worth, measured.** `bench_n8_R3` and `bench_n8_R3_rot` are the same 20 instances,
+one set given a random global rotation (rank and edge sets verified identical, 0/20 changed).
+Through `baselines.py`, `generaldqngine` scores **95% minimal / 10.05 edges** unrotated and
+**90% / 10.10** rotated — one instance out of twenty, i.e. **below the resolution of a 20-instance
+evaluation**. `initial` and `greedy` are bit-identical across the pair, confirming the pairing.
+
+So WP11 is justified on principle (the observation genuinely is not invariant while the task is,
+and the augmentation is free) but it is **not** a large effect at n=8/R^3. Do not claim otherwise.
+A scratch rollout script initially suggested a 30-point drop; it disagreed with `baselines.py` on
+the same instances and was wrong. Lesson recorded: **measure through `baselines.py`**, which is the
+path every reported number uses, rather than through an ad-hoc rollout.
+
+While there: `random_scenario` now carries `rotation_axes` the way it already carried `domains`, and
+`Environment` captures `self.rotation_axes` at init. `set_domain` resets the axis to `e3`, so an
+`R^dxS^1` agent with a scenario-specified axis silently lost it on every reset — harmless while `e3`
+is the only axis in use, but WP1 made the maths correct for arbitrary axes and the environment could
+not produce one. Found by a test, not by reading.
+
+**WP12 — frozen benchmarks.** New `benchmark.py`: `save`/`load`/`digest`/`available`, CLI
+`uv run benchmark.py <env> <name> [--instances N] [--seed S]` and `list`. `baselines.py --benchmark
+<name>` evaluates on the stored set and records the name + digest in `meta.json`. Verified faithful:
+`--benchmark bench_n8_R3` reproduces the sampled seed-0 run exactly (initial 11.20±5.33, greedy
+10.50 / 100% / 50%). Created `bench_n8_R3`, `bench_mixed5`, `bench_mixed` (20 instances each, 32 KB
+total). **`benchmarks/` is tracked on purpose** — a fixture, not an output.
+
+Suite: 508 → **527 passed**, 28 skipped, 9 xfailed.
+
+Docs: `DESIGN_NOTES.md#horizon`, `#rotation-augmentation`, `#benchmarks`; `CLAUDE.md` commands,
+config keys, `skip_enabled`, gitignore section.
+
 ### 2026-08-12 — WP1 done
 
 `rigidity.py`: new `node_dof_projectors(agent)` → `(S_i, P_i)`;
@@ -604,8 +731,7 @@ commented out is present, and `pytest.xfail()` short-circuits so it could never 
 fix.
 
 Docs updated in the same change: `THEORY.md` §2 (assembly), §4 (`c_k` for mixes) and new §12;
-`DESIGN_NOTES.md#per-node-dof`; `CLAUDE.md` rigidity-core bullets, "Current results", known issues
-1 and 4.
+`DESIGN_NOTES.md#per-node-dof`; `CLAUDE.md` rigidity-core bullets and known issues 1 and 4.
 
 **Still open, deliberately deferred to WP2:** `trivial_modes()` hardcodes three translations plus
 scaling and is wrong for mixes. The correct replacement is an orthonormal basis of `ker(B_K)`, which

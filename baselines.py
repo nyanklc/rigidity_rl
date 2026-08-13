@@ -35,6 +35,7 @@ from tqdm import tqdm
 
 from environment import Environment
 from rigidity import rigidity_eigenvalue, is_IBR_explicit
+import benchmark
 import manifest
 import report
 
@@ -341,6 +342,9 @@ def main():
     parser.add_argument("--steps", type=int, default=None,
                         help="rollout horizon for random/learned (default: env truncate/max steps)")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--benchmark", default=None,
+                        help="evaluate on a frozen instance set from benchmarks/ instead of "
+                             "sampling; makes runs comparable across config regenerations")
     parser.add_argument("--device", default="cpu", help="device for the --model rollout")
     parser.add_argument("--tag", default=None,
                         help="label appended to the run directory name")
@@ -442,10 +446,25 @@ def main():
     # --policy-mode sample repeatable for a given seed
     torch.manual_seed(args.seed)
 
+    frozen = None
+    if args.benchmark:
+        frozen, bench_meta = benchmark.load(args.benchmark)
+        if len(frozen) < args.episodes:
+            print(f"  benchmark {args.benchmark} has {len(frozen)} instances; "
+                  f"running that many instead of {args.episodes}")
+            args.episodes = len(frozen)
+        print(f"  instances: benchmark {args.benchmark} "
+              f"({benchmark.digest(args.benchmark)}), sampling disabled")
+
     rows = []
     for ep in range(args.episodes):
         env.freeze_network = False
-        env.reset()                              # draw a fresh instance
+        if frozen is not None:
+            env.network = copy.deepcopy(frozen[ep])
+            env.freeze_network = True
+            env.reset()                          # bookkeeping only
+        else:
+            env.reset()                          # draw a fresh instance
         instance = copy.deepcopy(env.network)
         env.freeze_network = True                # every reset below keeps it
 
@@ -491,7 +510,9 @@ def main():
         "environment": args.environment_name,
         "network": f"{n} agents in {domain_str}, action space {env.action_space_type}",
         "objective": f"{env.state_score_type} state score",
-        "instances": f"{args.episodes} random networks, seed {args.seed}",
+        "instances": (f"{args.episodes} networks from benchmark {args.benchmark} "
+                      f"({benchmark.digest(args.benchmark)})" if args.benchmark
+                      else f"{args.episodes} random networks, seed {args.seed}"),
     }
     if args.model:
         context["policy"] = (f"{args.model} ({algorithm}, --policy-mode {args.policy_mode}, "
@@ -509,6 +530,9 @@ def main():
         "args": vars(args),
         "environment_config": env_config_data,
         "n": n, "rollout_steps": steps,
+        # the instance set, so two runs are only comparable when these agree
+        "benchmark": args.benchmark,
+        "benchmark_digest": benchmark.digest(args.benchmark) if args.benchmark else None,
         "provenance": manifest.collect_provenance(seed=args.seed, device=args.device),
     })
 

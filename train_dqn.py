@@ -20,10 +20,12 @@ import manifest
 from probe import Probe
 
 ######################################
-TOTAL_TIMESTEPS = int(4e5)
+# env-var overridable so an A/B or a 3-seed sweep does not need a source edit;
+# both land in the manifest
+TOTAL_TIMESTEPS = int(float(os.environ.get("TOTAL_TIMESTEPS", 4e5)))
 NR_ENVS = 4
 MEM_SIZE = 10000
-SEED = 0  # recorded in the manifest; training was unseeded before this
+SEED = int(os.environ.get("SEED", 0))
 EGREEDY_STEPS = TOTAL_TIMESTEPS * 0.5
 
 # which GNN serves the model; the observation is one type now, so the backbone

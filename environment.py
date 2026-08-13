@@ -622,6 +622,7 @@ class Environment(gym.Env):
         rigidity_global=False,
         rigidity_flex=False,
         rigidity_edge=False,
+        rotation_augmentation=False,
         filepath=None,
     ):
         print("initializing environment")
@@ -643,6 +644,10 @@ class Environment(gym.Env):
                # closeness / eigenvector / betweenness: measured to carry less
         # rigidity-relevant signal than out-degree (which is free) while costing
         # ~60-70% of feature building. See DESIGN_NOTES.md#graph-features
+        # bearings in R^d are global-frame, so the observation is not rotation
+        # invariant even though the task is. See DESIGN_NOTES.md#rotation-augmentation
+        self.rotation_augmentation = rotation_augmentation
+
         self.graph_features = graph_features
         self.rigidity_global = rigidity_global
         self.rigidity_flex = rigidity_flex
@@ -668,6 +673,8 @@ class Environment(gym.Env):
         # resolved per-agent domains; for a scenario these come from the file, and they
         # must survive every reset or a heterogeneous network silently homogenizes
         self.domains = [agent.domain for agent in self.network.agents]
+        # carried for the same reason as domains: reset() rebuilds the network
+        self.rotation_axes = [agent.rotation_axis for agent in self.network.agents]
         self.m = int(self.network.edges.sum())
         self.initial_m = self.m
 
@@ -779,6 +786,7 @@ class Environment(gym.Env):
         RIGIDITY_GLOBAL = config.get("rigidity_global", False)
         RIGIDITY_FLEX = config.get("rigidity_flex", False)
         RIGIDITY_EDGE = config.get("rigidity_edge", False)
+        ROTATION_AUGMENTATION = config.get("rotation_augmentation", False)
         scenario_name = config["scenario"]
         scenario_path = (
             "scenarios/" + scenario_name + ".json"
@@ -808,6 +816,7 @@ class Environment(gym.Env):
             rigidity_global=RIGIDITY_GLOBAL,
             rigidity_flex=RIGIDITY_FLEX,
             rigidity_edge=RIGIDITY_EDGE,
+            rotation_augmentation=ROTATION_AUGMENTATION,
             filepath=scenario_path,
         )
 
@@ -1468,9 +1477,27 @@ class Environment(gym.Env):
         else:
             # poses and edges are both redrawn; domains are carried over, so a
             # scenario contributes its domain mix rather than its geometry
-            self.network, self.goal_network = random_scenario(n, domains, edge_count=edge_count)
+            self.network, self.goal_network = random_scenario(
+                n, domains, edge_count=edge_count,
+                rotation_axes=getattr(self, "rotation_axes", None))
+            self.randomly_rotate()
 
         return self.begin_episode()
+
+    # Free augmentation: the task is rotation invariant, the R^d observation is not.
+    # Planar agents restrict the admissible axis to z.
+    def randomly_rotate(self):
+        if not self.rotation_augmentation:
+            return
+        if any(a.domain in ("R^2", "R^2xS^1") for a in self.network.agents):
+            axis = np.array([0.0, 0.0, 1.0])
+        else:
+            axis = np.random.normal(size=3)
+            norm = np.linalg.norm(axis)
+            if norm < 1e-9:
+                return
+            axis = axis / norm
+        self.network.rotate_network(axis, np.random.uniform(0.0, 2.0 * np.pi))
 
     # Per-episode bookkeeping for whatever graph self.network currently holds.
     def begin_episode(self):
@@ -1543,10 +1570,6 @@ if __name__ == "__main__":
 
     TIME_PENALTY_VALUE = 0.0
 
-    # False masks the skip action out of the policy entirely. Recommended with
-    # MaxSteps: skip is a zero-reward action the agent can loop on forever
-    # (select -> skip changes nothing), which on-policy methods collapse onto.
-    # Score such runs with the best-state-visited metric instead.
     SKIP_ENABLED = False
     SKIP_IS_STOP = False
     RANDOM_GRAPH_WITH_MEAN_MIN_EDGES = True
@@ -1557,7 +1580,6 @@ if __name__ == "__main__":
     # OBS_TYPE = "Complete"
     # OBS_TYPE = "CompleteAndEigenvalues"
     # OBS_TYPE = "AdjFlatAndEigenvalues"
-    # the Dict* variants were merged; the backbone is picked in the train script
     OBS_TYPE = "Dict"
 
     # STATE_SCORE_TYPE = "Rigid"
@@ -1573,7 +1595,6 @@ if __name__ == "__main__":
     # STATE_SCORE_TYPE = "RigidityMatrixRank"
     # STATE_SCORE_TYPE = "RigidityMatrixRankAndEdges"
     # STATE_SCORE_TYPE = "Weighted"
-    # dimensionless; use for anything spanning several n or domains
     STATE_SCORE_TYPE = "WeightedNormalized"
     # STATE_SCORE_TYPE = "None"
 
@@ -1593,10 +1614,10 @@ if __name__ == "__main__":
 
     ONLY_RANDOMIZE_EDGES = False
 
-    # False = bearings only on existing edges (tier-2 restriction)
+    ROTATION_AUGMENTATION = False
+
     INCLUDE_CANDIDATE_BEARINGS = True
 
-    # tier-3 rigidity information; the Phase 4 ablation arms
     GRAPH_FEATURES = False
     RIGIDITY_GLOBAL = True
     RIGIDITY_FLEX = True
@@ -1631,22 +1652,27 @@ if __name__ == "__main__":
             print(f"file scenarios/{filepath}.json does not exists")
             quit()
 
-        # get n and domains from scenario
+        # the full per-agent list: taking domains[0] wrote a homogeneous label
+        # into every mixed config, and MAX_STEPS below needs the real mix
         with open(filepath, "r") as f:
             config = json.load(f)
             n = len(config["positions"])
-            domains = config["domains"][0]
+            domains = config["domains"]
 
-    domains_str = domains
-    domains_str = domains_str.replace("^", "").replace("(", "").replace(")", "")
+    if isinstance(domains, str):
+        domains_str = domains.replace("^", "").replace("(", "").replace(")", "")
+    else:
+        domains_str = scenario_name or "mixed"
 
     now = datetime.now()
     now_str = now.strftime("%Y_%m_%d_%H_%M_%S")
 
-    # ~4 toggles per candidate pair. A fixed budget silently starves large n:
-    # the edits needed grow with n(n-1) while a constant does not.
-    # n=4 -> 48, n=8 -> 224, n=16 -> 960
-    MAX_STEPS = 4 * n * (n - 1)
+    # ~4 edits per required edge. The old 4*n*(n-1) was 20-30x the measured
+    # best@, and the horizon sets how many distinct instances a run and its
+    # replay buffer ever see. m_req depends only on (n, domain mix), not on the
+    # poses, so one draw settles it. See DESIGN_NOTES.md#horizon
+    _probe_net, _ = random_scenario(n, domains, edge_count=n)
+    MAX_STEPS = 4 * int(required_edge_count(_probe_net)) + 10
 
     n_domains = f"n{n}_{domains_str}"
     # the rigidity arms differ only by these flags, so the name has to carry them
@@ -1691,6 +1717,7 @@ if __name__ == "__main__":
         "rigidity_global": RIGIDITY_GLOBAL,
         "rigidity_flex": RIGIDITY_FLEX,
         "rigidity_edge": RIGIDITY_EDGE,
+        "rotation_augmentation": ROTATION_AUGMENTATION,
         "scenario": scenario_name,
     }
     env_filename = f"env_{model_name}.json"

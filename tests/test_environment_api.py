@@ -3,7 +3,8 @@ import json
 import numpy as np
 import pytest
 
-from conftest import ALL_DOMAINS, RANK_K_FORMULA, C_MAX, TERMINATIONS, config_dict
+from conftest import (ALL_DOMAINS, RANK_K_FORMULA, C_MAX, TERMINATIONS, PLANAR,
+                      config_dict)
 from environment import Environment
 from rigidity import extended_bearing_rigidity_matrix as B_of
 
@@ -147,3 +148,49 @@ def test_last_stats_matches_a_fresh_computation(make_env):
         assert e.last_stats["rank"] == rank
         assert e.last_stats["is_IBR"] == bool(ibr)
         assert e.last_stats["is_MBR"] == bool(mbr)
+
+
+# ------------------------------------------------- rotation augmentation (WP11)
+
+def test_rotation_augmentation_is_off_by_default(make_env):
+    """Off unless a config asks for it, so archived runs replay unchanged."""
+    e = make_env(n=5, domains="R^3")
+    assert e.rotation_augmentation is False
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+def test_rotation_augmentation_preserves_rigidity(domain, make_env):
+    """A global rotation is a symmetry of the task: rank and m are untouched."""
+    e = make_env(n=6, domains=domain, rotation_augmentation=True)
+    for _ in range(5):
+        e.reset()
+        before = (int(e.rank_K), int(e.c_max), int(e.m_req), int(e.network.edges.sum()))
+        edges = e.network.edges.copy()
+        rank = np.linalg.matrix_rank(e.network.extended_bearing_rigidity_matrix())
+        e.randomly_rotate()
+        e.compute_episode_constants()
+        assert (int(e.rank_K), int(e.c_max), int(e.m_req),
+                int(e.network.edges.sum())) == before
+        assert np.array_equal(e.network.edges, edges)
+        assert np.linalg.matrix_rank(e.network.extended_bearing_rigidity_matrix()) == rank
+
+
+@pytest.mark.parametrize("domains", [["R^2"] * 3 + ["R^3"] * 3, ["R^2"] * 6,
+                                     ["R^2xS^1"] * 2 + ["SE(3)"] * 2])
+def test_rotation_augmentation_keeps_planar_agents_in_plane(domains, make_env):
+    """With a planar agent present only the z axis is admissible."""
+    e = make_env(n=len(domains), domains=domains, rotation_augmentation=True)
+    for _ in range(5):
+        e.reset()
+        e.randomly_rotate()
+        for a in e.network.agents:
+            if a.domain in PLANAR:
+                assert abs(a.pose.position[2]) < 1e-12
+
+
+def test_rotation_augmentation_actually_moves_the_network(make_env):
+    e = make_env(n=6, domains="R^3", rotation_augmentation=True)
+    e.reset()
+    p0 = e.network.get_position_features().copy()
+    e.randomly_rotate()
+    assert not np.allclose(p0, e.network.get_position_features())

@@ -34,6 +34,10 @@ apply to every task in this repository.
   work log and must be updated whenever a work package's status changes; `CLAUDE.md`, `THEORY.md`
   and `DESIGN_NOTES.md` must be corrected in the same change that invalidates them. The test is
   whether a *fresh session with no conversation history* can read the repo and continue the work.
+- **Keep code comments brief.** One or two lines, saying what is non-obvious, with a pointer to the
+  document that explains it (`see THEORY.md §12`). Derivations, measurements, rejected alternatives
+  and rationale belong in `THEORY.md` / `DESIGN_NOTES.md` / `ROADMAP.md`, not in a comment block
+  above a function. The same goes for test docstrings: state what the test pins down, not why.
 
 ## Project
 
@@ -66,74 +70,16 @@ the observations used to be missing, and are now included (see `#all-pairs-beari
 phased fix. Read it before changing the environment, the observations or the reward — several
 things in this file that *look* like design decisions are recorded there as known errors.
 
-## Current results
+## Results and where they live
 
-> **`ROADMAP.md` §1 is the authoritative, current diagnosis** and supersedes anything below it that
-> disagrees. The rest of this section is the pre-2026-08-12 record, kept because the reasoning is
-> still useful; treat the numbers as history.
+**Measured results live in exactly one place: `ROADMAP.md` §1.** Nothing else in the repository
+should carry policy numbers. When a number is superseded, delete it rather than archiving it; git
+history is the archive, and a stale number in a file that loads into every session costs more than
+it is worth.
 
-**Post-fix summary (2026-08-12).** `generaldqngine` (DQN, GINE, `AddRemoveEdgeDiscreteNoSelfLoops`,
-`WeightedNormalized`, rigidity features on) trained at n=8/R^3, evaluated on 20 instances each:
-
-| evaluated on | edges | rigid | minimal | vs. |
-|---|---|---|---|---|
-| n=8 R^3 *(train)* | 10.05 | 100% | **95%** | greedy 10.50 / 100% / 50% |
-| n=16 R^3 | 23.85 | 95% | 10% | 20-restart constructive greedy: 23.15 |
-| n=8 R^3xS^1 | 13.95 | **25%** | 5% | random 75%, initial 40% |
-| n=8 SE(3) | 17.30 | **5%** | 0% | random 55%, **initial 35%** |
-
-The scale fixes worked (no `O(n)` activation drift left; n=16 pruning 31.6 → 23.9 edges against a
-requirement of 22), and in-distribution performance is genuinely good. **Cross-domain transfer is
-below doing nothing**, for a mechanical reason measured in the weights: training on one domain
-leaves four of the five domain one-hot columns at initialization. See `ROADMAP.md` §1.5.
-
-Two findings reframe everything below — `rank(B)` is generically a function of the graph alone, so
-the current reward contains no geometry at all (`ROADMAP.md` §1.1), and the heterogeneous rigidity
-matrix was wrong until WP1 (`THEORY.md` §12).
-
-### Historical record (pre-2026-08-12)
-
-**Every number in the rest of this section predates the scale fixes**, so treat those checkpoints as
-history rather than as a control.
-
-**The formulation works at n=8 / R^3.** `bigDQN8SelectEquivariant3e-4lrNormalizedPositions` (DQN,
-`SelectNodesSequentially`, EGNN, `Weighted`) converges to 10.02 edges (optimum 10), 100% rigid,
-**98.2% minimally rigid**, and roughly holds it (final 10.94 edges). It reaches its best graph at
-~step 15 — about 8 edge toggles, against `greedy`'s 11 hill-climbing steps of `n(n-1)` phi
-evaluations each.
-
-**PPO's two known-fatal config bugs are fixed** — `memory_size != cfg.rollouts` (trained on 7/8
-stale off-policy data) and `discount_factor = 1.0` (advantage identically zero under
-potential-based shaping). DQN works and is what every result here comes from. A later PPO run
-(`heynewppo`) still collapsed, and has not been diagnosed; do not assume PPO is healthy.
-
-**Generalization fails.** A policy trained at n=8/R^3 evaluated zero-shot is *worse than random* at
-n=4/R^2 (45% vs 80% rigid) and indistinguishable from random at n=16 (65% vs 60% rigid, 0%
-minimal). It learned an edge-count prior for its training configuration, not a rigidity criterion.
-The target claim is one policy for any n and any domain mix, so this is the blocking problem.
-
-**Diagnosed, and four causes fixed** (all in `DESIGN_NOTES.md#aggregation-and-scale`; the fixes
-land *after* every existing checkpoint, so nothing below is yet re-measured):
-
-1. **Shortcut learning.** Perturbing one observation channel at a time and reading the change in
-   phi gives degree **+21.00**, bearings **+0.25**, `flex_mag` **-0.25**, `flex_align` **+0.00**.
-   The policy decides almost entirely from node degree and ignores the geometry and the rigidity
-   features outright. This is the finding that matters; the other three are what made it easy.
-2. **Sum aggregation.** Both backbones message-pass densely over all pairs, so a sum aggregator is
-   `O(n)` by construction — at trained-scale weights, GINE activations ran 580x at n=64. Both now
-   aggregate with `mean`.
-3. **The EGNN coordinate update**, which `m_pool_method` does *not* cover: it is a hardcoded sum
-   over `j` that re-enters the next layer through `rel_dist`, so it compounds and squares across
-   layers (mean pooling alone still gave 6e7 at n=64). `update_coors` now defaults off.
-4. **Unnormalized features and an n^4 sampler.** Degree/`common_nbrs` were raw counts; the sampler's
-   spread grew like `n^4`, so n=16 episodes started at ~41.6 edges against `m_req` 22. Counts are
-   now normalized by `m_req/n` and `m0/m_req` is centred on 1 at every size.
-
-**Two distinct failure modes, and only one is about scale.** At n=16 the policy stays rigid but
-cannot prune (31.60 edges against `m_req` 22) — consistent with out-of-distribution activations. At
-n=8/SE(3) the activations are *in* distribution (3.60 vs 3.80) and it still collapses to 20% rigid
-against a 65% random floor. That second failure is purely a knowledge gap, so items 2-4 cannot fix
-it; only the policy actually using the geometry can.
+This file therefore records *what the code is* and the structural facts that do not move (the
+`rank_K` formulas, `c_max` per domain, cost scaling). For "how well does it currently work", read
+`ROADMAP.md` §1. For a human-readable summary, `README.md`.
 
 ## What is live vs. obsolete
 
@@ -148,8 +94,6 @@ The repo carries a lot of history. **Currently in focus:**
 | Algorithms | PPO and DQN, both via `skrl` |
 
 **Obsolete / ignore unless asked:** `main.py`, `control.py` (the gradient-based formation controllers — the thesis originally aimed at control), everything `sb3` (`train_ppo_sb3.py`, `policy_sb3.py`, `models/sb3/`), `junk/`, `runs_old*/`, `fix_train.py`, `dummy*`, the GAT backbone, and most of the older action/obs/state-score variants still present in the dispatchers.
-
-`gpu_environment.py` / `gpu_network.py` / `gpu_rigidity.py` are a **WIP** batched torch reimplementation of the env + rigidity math (tensors shaped `(num_envs, n, ...)`), not yet wired into training.
 
 ## Running things
 
@@ -175,6 +119,11 @@ uv run inference.py <model_name> <environment_name>
 
 # Reference points: initial / random / greedy / learned / optimal, all scored with the same phi
 uv run baselines.py <environment_name> [--episodes N] [--model <name>] [--brute-force] [--methods a,b] [--replay-env]
+#   --benchmark <name> evaluates on a frozen instance set instead of sampling
+
+# Freeze evaluation instances so results stay comparable across config regenerations
+uv run benchmark.py <environment_name> <benchmark_name> [--instances N] [--seed S]
+uv run benchmark.py list
 
 # Which observation channels does a trained policy actually depend on?
 uv run ablation.py <model_name> [environment_name] [--episodes N] [--mode shuffle|zero|noise] [--channels a,b] [--csv out.csv]
@@ -207,7 +156,7 @@ environments programmatically and write configs to `tmp_path` -- **the fast suit
 a fresh clone**, with checkpoint-dependent tests skipping rather than failing. Anything that
 writes to `runs/`/`train/`/`models/` uses the `temp_run_name` fixture and cleans up.
 
-There is no linter or CI. `dummy/test_mbr.py` is a scratch file, not a test.
+There is no linter or CI.
 
 ## Architecture
 
@@ -257,7 +206,7 @@ configuration (50 at n=4/R^2, 300 at n=8/R^3), shifting the critic's target rang
 
 **Episode reset** re-randomizes poses *and* edges (a fresh `random_scenario`), so the policy must generalize across geometries, not memorize one. Setting `env.freeze_network = True` makes `reset()` redo only the per-episode bookkeeping (`begin_episode()`) and keep the current graph — that is how `baselines.py` runs several methods on one instance.
 
-**`skip_enabled`** (env config, default `True`). When `False`, `train_ppo.py` / `train_dqn.py` pass `allow_skip=False` to the `SelectNodesSequentially` models, which mask the skip logit to `MASK_VALUE` (`-inf`) in `compute()` *and* in the DQN `random_act()`. The action space stays `Discrete(n+1)`, so checkpoints and `agent_loader` stay compatible. Turn skip off with `MaxSteps`: `select -> skip` is a zero-reward 2-cycle that never touches the graph, and on-policy methods collapse onto it (observed: entropy → 0, all rewards exactly 0, graph unmodified for two thirds of training). Score skip-less runs with the best-state-visited metric below.
+**`skip_enabled`** (env config). When `False`, `train_ppo.py` / `train_dqn.py` pass `allow_skip=False` to the models, which mask the skip logit to `MASK_VALUE` (`-inf`) in `compute()` *and* in the DQN `random_act()`. The action space keeps its width, so checkpoints and `agent_loader` stay compatible. **Skip must either be masked out or be a real stop** (`skip_is_stop: True`): as a free no-op it is an absorbing zero-reward cycle that on-policy methods collapse onto (observed: entropy → 0, all rewards exactly 0, graph unmodified for two thirds of training). Generated configs default to skip masked out, scored with the best-state-visited metric below; the stop arm is `skip_enabled` + `skip_is_stop` + a small `time_penalty_value`, and is measured but unresolved (`DESIGN_NOTES.md#horizon`).
 
 **Best-state-visited metric.** `Environment` tracks the highest-scoring graph seen during an episode (`best_state_score` / `best_edges` / `best_step` / `best_stats` with `m`/`is_IBR`/`is_MBR`/`rank`/`min_eig`, updated in `update_best_state()`), exposed in `info` and logged as `Episode/ Best *`. This is observational — the reward does not use it. It exists because scoring an episode on its *final* state conflates "found a good topology" with "learned to stop on it", which matters under `MaxSteps` where the agent is expected to converge and then hold with `skip`. `best_step` records how many steps it took to get there, which is the only way to tell a policy that converges fast from one that stumbles onto the same graph late.
 
@@ -265,7 +214,7 @@ configuration (50 at n=4/R^2, 300 at n=8/R^3), shifting the critic's target rang
 
 **Scenarios.** With `"scenario": "<name>"`, `initialize()` loads `scenarios/<name>.json` and caches it. What a scenario contributes on reset depends on `only_randomize_edges`: `false` carries over only the **domain mix** (poses and edges are redrawn each episode — use this for heterogeneous generalization experiments), `true` keeps the scenario's **actual geometry** and resamples only the edges (use this for a fixed case-study figure). Both paths honour `random_graph_with_mean_min_edges`.
 
-**Config format keeps moving — regenerate, never hand-edit.** Current keys: `state_score_type`, `skip_is_stop`, `random_graph_with_mean_min_edges`, `include_candidate_bearings`, plus the `graph_features` / `rigidity_*` flags. `environments/` is gitignored and accumulates files from older formats, which will either `KeyError` in `load()` or raise on a merged-away `obs_type`; `uv run environment.py <n> <domain>` regenerates. Note the filename no longer carries the obs type, since there is only one.
+**Config format keeps moving — regenerate, never hand-edit.** Current keys: `state_score_type`, `skip_is_stop`, `random_graph_with_mean_min_edges`, `include_candidate_bearings`, `rotation_augmentation`, plus the `graph_features` / `rigidity_*` flags. `max_steps` is now `4*m_req + 10` (n=8/R^3 → 50, `mixed` → 78, n=16/R^3 → 98), not `4*n*(n-1)`. Two switchable arms, **both off in generated configs**: the stop action (`skip_enabled` + `skip_is_stop` + `time_penalty_value`) and `rotation_augmentation`. For a scenario the generator writes the **full per-agent domain list** rather than `domains[0]`, which used to label every mixed config with one domain. See `DESIGN_NOTES.md#horizon` and `#rotation-augmentation`. `environments/` is gitignored and accumulates files from older formats, which will either `KeyError` in `load()` or raise on a merged-away `obs_type`. **Regenerating is the user's call** — see the note under "Gitignored" below. The filename no longer carries the obs type, since there is only one.
 
 ### Domains and scaling (measured, all five domains, n up to 64)
 
@@ -286,8 +235,7 @@ n=16 needs 44 edges where `R^2` needs 29 — since each agent's heading must als
 
 **Step cost is the blocker for large n.** Roughly, per env step: ~3 ms at n=8, ~10 ms at n=16,
 25–100 ms at n=32, and **0.1–6 s at n=64**. At 600k steps that is hours at n=32 and over a week at
-n=64. Anything beyond n≈32 needs the batched torch rewrite (`gpu_environment.py`, still WIP), not
-tuning. (These timings re-randomize the graph each measurement and cost scales with `m`, so they are
+n=64. Anything beyond n≈32 needs a batched reimplementation of the environment, not tuning. (These timings re-randomize the graph each measurement and cost scales with `m`, so they are
 *not* a clean `graph_features` comparison — for that see the controlled measurement in
 `DESIGN_NOTES.md#graph-features`: 43.4 → 9.2 ms at n=16 on a fixed graph.)
 
@@ -343,7 +291,7 @@ Conventions that matter when writing a new model:
 - `GNNBackboneEquivariant` output width is `node_feat_dim` (EGNN preserves feature dim; `gnn_hidden_dim` only sets the internal message width `m_dim`), whereas `GNNBackboneGINE` outputs `gnn_hidden_dim`. Head input sizes differ accordingly — a common source of shape errors.
 - GINE flips `edge_index` before message passing so a node aggregates its *outgoing* bearings ("I measure this bearing to that node"), which is the semantically right direction here.
 - **Both backbones do dense all-pairs message passing.** `GNNBackboneGINE.forward(nodes, edges)` takes the dense `(B, N, N, E)` edge tensor and builds the complete digraph itself; it used to message-pass over `adj.nonzero()` only, which silently discarded the all-pairs bearings. They now differ only in *how* they mix, which is what makes a backbone comparison meaningful. See `DESIGN_NOTES.md#gine-dense-all-pairs`.
-- **The EGNN starts nearly blind to edge features.** `egnn_pytorch` inits every Linear at `std=1e-3`; three layers deep against the node residual, the edge path begins at ~1e-10 of the output. Structural, not absent — the working DQN run grew those weights to ~1e-1 and hit 98.2% minimal — but it is a slow start, and an asymmetry against GINE, which inits at the torch default (~1e-1). `init_eps` is a `GNNBackboneEquivariant` argument and **now defaults to 1e-2**, not 1e-3. It is also a measurement trap: at 1e-3 an untrained EGNN reports invariance it does not have and reports sum vs mean pooling as identical, so any sensitivity test must run at trained-scale weights. See `DESIGN_NOTES.md#egnn-init-eps`.
+- **The EGNN starts nearly blind to edge features.** `egnn_pytorch` inits every Linear at `std=1e-3`; three layers deep against the node residual, the edge path begins at ~1e-10 of the output. Structural rather than absent (a trained run grows those weights to ~1e-1), but it is a slow start, and an asymmetry against GINE, which inits at the torch default (~1e-1). `init_eps` is a `GNNBackboneEquivariant` argument and **now defaults to 1e-2**, not 1e-3. It is also a measurement trap: at 1e-3 an untrained EGNN reports invariance it does not have and reports sum vs mean pooling as identical, so any sensitivity test must run at trained-scale weights. See `DESIGN_NOTES.md#egnn-init-eps`.
 
 **Aggregation is `mean` and the EGNN coordinate update is off**, both because dense all-pairs
 passing otherwise makes activations scale with `n` and kills transfer. These are not tuning knobs —
@@ -436,11 +384,11 @@ perturbed gets **empty** cells rather than zeros -- a 0.0 there would be average
 evidence of independence, which is the one thing it is not -- and `status` / `feeds_action_mask`
 carry the two caveats above as columns.
 
-This is what produced the shortcut-learning result in "Current results". Reproduced on both
-surviving checkpoints: `heynewdqn` gives degree `+2.33` phi and `-86.7%` minimal against bearings
-`+0.00`, `flex_mag` `+0.00`, `coord_features` `+0.00`; the older
-`bigDQN8SelectEquivariant3e-4lrNormalizedPositions` gives `edge_between +14.00` and `degree +12.00`
-against bearings and coords at `+0.00`. Geometry costs the policy nothing.
+What it found, and why it is not the failure it looks like: destroying any geometric channel costs
+the policy nothing, while degree and the global rigidity channels cost it a lot. That is the
+*correct* behaviour under an objective with no geometry in it (`ROADMAP.md` §1.1), not shortcut
+learning. It becomes the acceptance test for WP3: once the margin enters the reward, the geometric
+channels must start costing something.
 
 ### Baselines (`baselines.py`, `agent_loader.py`)
 
@@ -617,8 +565,15 @@ shim has `add_scalar` only. See `DESIGN_NOTES.md#training-metrics`.
 
 **Episode-level logging.** All environment metrics are written at episode end, not per step — a step-resolution scalar costs one tensorboard event per step and is then downsampled and averaged for display, so the detail was paid for and never seen. `step()` folds each step into `episode_accum` (`new_episode_accum()`: sums and counts only, so episode length is free), and on `terminated or truncated` builds `episode_summary()` → `last_episode_stats` → `write_episode()`, which dumps every entry under `Episode/ <key>`. Three views per episode: `Final *` (where it ended), `Best *` (best graph visited, plus `Best-final score gap` — 0 iff the episode ended on its own best graph), and `Mean *` / `* fraction` (the episode average). Scalars are written against `writer_counter` (global env step), *not* the episode index, so they share an x-axis with skrl's loss/reward curves; `writer_counter` therefore still advances every step. `last_episode_stats` is a plain attribute rather than an `info` key because `SyncVectorEnv` aggregates sub-env `info` dicts into arrays. `Environment.write(value, tag)` remains for custom scalars.
 
+**`environments/` and `scenarios/` are the user's to manage.** Do not regenerate or hand-edit
+existing ones; generate a new config under a new name if an experiment needs different settings.
+
 ### Gitignored (don't assume present)
 `environments/`, `scenarios/`, `models/`, `runs/`, `runs_old*/`, `runs_baselines/`, `train/`, `tboard_logs/`, `junk/`, `dummy/`.
+
+**`benchmarks/` is deliberately NOT ignored.** A frozen instance set is a fixture, not an output —
+its whole purpose is that a number measured today is comparable next month, which an untracked file
+cannot deliver. Three 20-instance sets cost 32 KB. See `DESIGN_NOTES.md#benchmarks`.
 
 **Nothing a run produces is tracked any more.** `runs_baselines/` and `train/` were both tracked until they were untracked wholesale — the first churned hundreds of binary files per run, the second is paired with `models/` which was already ignored. Consequence: a manifest now only exists on the machine that trained it, so `train/<name>.json` is no longer a shared record — back it up alongside the checkpoint it describes. Anything that has to survive (the README's figures) is copied into `resources/`.
 
@@ -631,7 +586,7 @@ Live research questions, not things to silently "fix":
 1. **Termination condition.** There is no way to know the true optimal topology. The only sound stopping test is minimal bearing rigidity: exact via `MBR_required_Rd` for homogeneous `R^d`, otherwise the greedy `is_MBR` heuristic. The heuristic is a *sound lower bound* (rank subadditivity over edge blocks ⇒ no proper subset of the current edges can be rigid with fewer than `m_req` edges), and it reproduces the closed form exactly for homogeneous `R^2` and `R^3`. It can produce **false negatives** in heterogeneous networks, where the greedy sum over the highest-rank blocks may not be jointly realizable — a truly minimal graph is then never recognized and the episode never terminates. **Note the two `m_req`s**: `required_edge_count` accumulates block ranks of the *complete* graph (the true lower bound, and what `env.m_req` holds), while `is_MBR` recomputes from the *current* graph's blocks — which on a heterogeneous network can also **false-positive**, reporting a non-minimal graph as minimal. They coincide in every homogeneous domain, and the false positive does not fire on the `mixed` scenario (0 in 122 rigid graphs), but `is_MBR` should take `env.m_req` instead. WP7 hygiene.
 2. **Initial-graph difficulty.** With `random_graph_with_mean_min_edges` the initial edge count is drawn around `m_req` with `sd = 0.5·m_req`, so `m0/m_req` is centred on 1 at every `n` and domain. With the flag *off* it falls back to `m ~ Uniform{0, …, n²-n}`, which over-constrains badly (~2.8× the requirement at n=8/R^3) and teaches deletion only — so leave it on unless you specifically want that.
 3. **Constructive vs. editing formulation.** Starting from the empty graph and only adding edges is under consideration; the open worry is whether a purely constructive agent can reach *optimal* topologies rather than merely feasible ones. This is also the natural bridge to a distributed protocol (Henneberg-style vertex addition attaches each new agent with `d` edges, which is exactly what `MBR_required_Rd` counts) — see `ROADMAP.md` appendix A.
-4. **Generalization is the blocking problem, and it is now diagnosed rather than open.** The scale/observation fixes are measured and they helped *within* R^d (n=16: 31.6 → 23.9 edges) and not at all *across* domains (n=8/SE(3): 5% rigid against 35% for the untouched initial graph). Three causes, all in `ROADMAP.md` §1: the reward contains no geometry so nothing forces the policy to read it (§1.1); the domain one-hot columns for unseen domains never receive a gradient, so the domain identity can only inject noise at evaluation (§1.5); and until WP1 the heterogeneous physics was wrong anyway (§1.2). The plan is WP3 (margin in the reward) and WP7 (train across domains); neither is a tuning change.
+4. **Generalization is the blocking problem, and it is now diagnosed rather than open.** The scale and observation fixes helped *within* R^d and not at all *across* domains. Three causes, all in `ROADMAP.md` §1: the reward contains no geometry so nothing forces the policy to read it (§1.1); the domain one-hot columns for unseen domains never receive a gradient, so the domain identity can only inject noise at evaluation (§1.5); and until WP1 the heterogeneous physics was wrong anyway (§1.2). The plan is WP3 (margin in the reward) and WP7 (train across domains); neither is a tuning change.
 5. `reset()` with no scenario file rebuilds the network from `agents[0].domain` only, so heterogeneous domains survive only via the `scenario` path (`randomize_scenario`).
 6. Per-step cost is dominated by pure-Python graph features in `obs()` (Floyd–Warshall closeness, Brandes betweenness) plus repeated rigidity-matrix construction: `step()` builds `B`, then calls `is_MBR` unconditionally (a full-matrix rank *plus* one rank per edge, ~25 SVDs at n=8) and `rigidity_eigenvalue` when tracking (which rebuilds `B` and does a 48×48 `eigvalsh`). **`Weighted` needs neither.** Env stepping is several times the network's own cost at n=8, spent on metrics that never enter the reward. `graph_features=False` removes the centralities (4.7x at n=16); the rigidity-matrix work remains. Fine at `n=4–8`, the bottleneck beyond.
 7. **Bearings are not rotation-invariant in `R^d`** (see Invariance above). The task is invariant;
