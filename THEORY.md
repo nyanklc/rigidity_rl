@@ -530,7 +530,7 @@ agents must be vertically stacked. So no choice of `U_ij` works off a measure-ze
 **Consequence.** Whether a planar agent's z-column vanishes becomes a property of the *graph*
 (it vanishes iff that agent has no spatial neighbour), so `q_v` no longer cancels between `G` and
 `K` — which is exactly the step the paper's Theorem 2 proof relies on. Measured: the resulting rank
-test returns the wrong IBR verdict on 7.7% of 1200 random heterogeneous frameworks. An explicit
+test returns the wrong IBR verdict on 6.8% of 1200 random heterogeneous frameworks. An explicit
 4-agent counterexample is in the note.
 
 The cause is structural rather than a typo. The true derivative is
@@ -567,7 +567,11 @@ Two notes.
 - **`bearing_DOFs` is retained**, unused by the matrix, as the reference implementation of Table I.
   `test_matches_michieletto_table_I_on_homogeneous_networks` asserts the two constructions produce
   the *same matrix* (max abs difference 0.0, 60 graphs per domain), which is what guarantees no
-  homogeneous result moved.
+  homogeneous result moved. **It is a faithful Table I reference only at `v = e₃`**: it stores the
+  `R^3xS^1` rotational entry as `e₃vᵀ` (rows) where Table I has `[0_{3x2} v]` (columns), and the
+  projector is `v vᵀ`. All three coincide at `e₃`, the only axis any scenario uses, so nothing
+  measured depends on it; but a Table I comparison off `e₃` must not use it.
+  `docs/verify_dof_restriction.py` implements Table I directly for that reason.
 
 ### 12.5 Consequences for the trivial space
 

@@ -34,6 +34,12 @@ apply to every task in this repository.
   work log and must be updated whenever a work package's status changes; `CLAUDE.md`, `THEORY.md`
   and `DESIGN_NOTES.md` must be corrected in the same change that invalidates them. The test is
   whether a *fresh session with no conversation history* can read the repo and continue the work.
+- **Keep useful throwaways.** If a script written to answer a question would be worth having again
+  (a verification, a regression, an ablation, a table of every configurable switch, a plot of some
+  invariant), say so and offer to keep it. Real tests go in `tests/`; anything else useful goes in
+  `tools/`. Ask before adding, and default to keeping rather than discarding: a small library of
+  these accumulates into something worth having, and a one-off answer that cannot be re-run is
+  worth much less than one that can. This is not only about tests.
 - **Keep code comments brief.** One or two lines, saying what is non-obvious, with a pointer to the
   document that explains it (`see THEORY.md §12`). Derivations, measurements, rejected alternatives
   and rationale belong in `THEORY.md` / `DESIGN_NOTES.md` / `ROADMAP.md`, not in a comment block
@@ -128,6 +134,10 @@ uv run benchmark.py list
 # Which observation channels does a trained policy actually depend on?
 uv run ablation.py <model_name> [environment_name] [--episodes N] [--mode shuffle|zero|noise] [--channels a,b] [--csv out.csv]
 
+# Reproduce every number in the heterogeneous rigidity-matrix note (docs/)
+PYTHONPATH=. uv run docs/verify_dof_restriction.py [--quick]
+PYTHONPATH=. uv run docs/verify_dof_restriction_2.py   # independent reimplementation
+
 # Inspect / verify / backfill training manifests (archived sources, provenance)
 uv run manifest.py list | show <name> | diff <name> | verify <name> | backfill [--write]
 
@@ -163,7 +173,7 @@ There is no linter or CI.
 ### Rigidity core (`rigidity.py`, `network.py`, `util.py`)
 
 - `Agent` — pose (position + quaternion) + `domain`. `Network` — list of agents + `edges`, an `(n, n)` boolean adjacency matrix (row = measuring agent).
-- `rigidity.node_dof_projectors(agent)` returns `(S_i, P_i)`, the **per-node** translational and rotational DOF projectors — `S = diag(1,1,0)` for a planar agent, `P = v vᵀ` for `R^dxS^1`, and so on. This is where heterogeneity is handled. **The restriction belongs to the node, not to the edge**: `bearing_DOFs`'s per-edge `U_ij` (Michieletto Table III) re-enables a planar agent's z DOF whenever it measures a spatial one, which made `rank_K` exceed the system's own DOF count on mixed networks. See `THEORY.md` §12 and `ROADMAP.md` §1.2. `bearing_DOFs` is retained, unused by the matrix, as the reference implementation of Table I that the homogeneous-equivalence test compares against.
+- `rigidity.node_dof_projectors(agent)` returns `(S_i, P_i)`, the **per-node** translational and rotational DOF projectors — `S = diag(1,1,0)` for a planar agent, `P = v vᵀ` for `R^dxS^1`, and so on. This is where heterogeneity is handled. **The restriction belongs to the node, not to the edge**: `bearing_DOFs`'s per-edge `U_ij` (Michieletto Table III) re-enables a planar agent's z DOF whenever it measures a spatial one, which made `rank_K` exceed the system's own DOF count on mixed networks. See `THEORY.md` §12 and `ROADMAP.md` §1.2. `bearing_DOFs` is retained, unused by the matrix, as the reference implementation of Table I that the homogeneous-equivalence test compares against — but it is faithful to Table I **only at `v = e₃`** (it uses the row form `e₃vᵀ` for `R^3xS^1` where the paper has the column form `[0_{3x2} v]`), so a Table I comparison off the default axis must not use it. See `THEORY.md` §12.4.
 - `extended_bearing_rigidity_matrix(network)` → `B`, shape `(3m, 6n)`, built as `[D_p E^T S | D_a E_o^T P]` with `S`, `P` block-diagonal over nodes. Rows come in **3-row blocks, one block per directed edge**, in `np.nonzero(edges)` order — this per-edge block structure is what `is_MBR` exploits. Homogeneous output is bit-identical to the previous per-edge construction; a coordinate an agent cannot vary is now an exactly-zero column, which is what Michieletto's nullity accounting requires. Validated against its own definition by central differences (`tests/test_rigidity_matrix.py`).
 - `is_IBR` — Infinitesimally Bearing Rigid iff `rank(B) == rank(B_K)`, where `B_K` is the rigidity matrix of the fully-connected graph on the same poses. `rank_K` is cached on the env per episode; always pass it through rather than recomputing.
 - `rigidity_eigenvalue` — the first nonzero eigenvalue of `B^T B` (index `6n - rank_K` into the ascending spectrum); the standard "how robustly rigid" scalar.
@@ -570,6 +580,15 @@ existing ones; generate a new config under a new name if an experiment needs dif
 
 ### Gitignored (don't assume present)
 `environments/`, `scenarios/`, `models/`, `runs/`, `runs_old*/`, `runs_baselines/`, `train/`, `tboard_logs/`, `junk/`, `dummy/`.
+
+**`tools/` is where reusable scripts accumulate** (see the standing instruction above). `tests/` is
+for anything the suite should run; `tools/` is for everything else worth re-running.
+
+**`docs/` holds the note on the heterogeneous rigidity matrix** (`dof_restriction_note.tex`,
+compiled `.pdf`) and two verification scripts. `verify_dof_restriction.py` is keyed section by
+section to the note and checks the repository's own implementation; `verify_dof_restriction_2.py`
+re-derives both constructions from the paper's conventions and shares no code with it. Keeping them
+separate is the point: two independent implementations agreeing is the evidence.
 
 **`benchmarks/` is deliberately NOT ignored.** A frozen instance set is a fixture, not an output —
 its whole purpose is that a number measured today is comparable next month, which an untracked file

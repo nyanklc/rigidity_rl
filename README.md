@@ -149,12 +149,25 @@ to step through.
 
 The trajectories show the behaviour behind the table. The policy prunes to the minimal graph within
 about ten edits and then holds it, while a random policy accumulates edges without ever becoming
-reliably rigid. The rigidity margin panel is the quantity the current objective ignores, and the
-reason for the next stage of the work: greedy and the learned policy end on graphs of the same size
-that differ in how much perturbation they survive.
+reliably rigid.
 
-`baselines.py` writes two further figures per run, an outcome distribution across networks and a
-final/best/mean breakdown per method, in both PNG and PDF.
+![Outcome across networks](resources/baselines-summary.png)
+
+Per network rather than averaged over them. The learned policy collapses to a flat line at ten
+edges with a single outlier, so the mean in the table is not hiding a spread: it lands on the same
+answer almost every time. Greedy is rigid just as often and minimal on half as many networks, and
+the two need a comparable number of edits to get there.
+
+![Final, best and mean outcome per method](resources/baselines-outcomes.png)
+
+Three views of each run: the network it ended on, the best one it passed through, and the average
+over every step. The gap between the first two bars is the difference between finding a good
+topology and stopping on it. It is small for the learned policy and large for a random one, which
+drifts from 13.8 edges at its best to 20.1 by the end. The rigidity margin panel is the quantity
+the current objective ignores, and the reason for the next stage of the work: greedy and the
+learned policy end on graphs of the same size that differ in how much perturbation they survive.
+
+All four figures are written in both PNG and PDF for every evaluation run.
 
 ## Documentation
 
@@ -164,6 +177,7 @@ final/best/mean breakdown per method, in both PNG and PDF.
 | [THEORY.md](THEORY.md) | the mathematics: rigidity matrix, rank, null space, objective |
 | [DESIGN_NOTES.md](DESIGN_NOTES.md) | why the implementation is the way it is |
 | [CLAUDE.md](CLAUDE.md) | code map and working conventions |
+| [docs/](docs/) | note on the heterogeneous rigidity matrix, with verification scripts |
 
 ## Running the code
 
@@ -197,6 +211,8 @@ baselines.py        evaluation against random, greedy and exhaustive search
 benchmark.py        frozen evaluation instances, so results stay comparable
 manifest.py         run manifests: archived sources and provenance
 tests/              invariant tests
+tools/              scripts worth keeping: verifications, ablations, measurements
+docs/               the rigidity-matrix note and its verification scripts
 ```
 
 Directories produced by runs (`environments/`, `models/`, `runs/`, `train/`) are not tracked.

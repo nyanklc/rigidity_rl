@@ -499,7 +499,11 @@ Three things worth knowing about the implementation:
 
 - **Homogeneous output is bit-identical** (max abs difference 0.0 over 60 graphs in each of the five
   domains), so no existing homogeneous result moved. `bearing_DOFs` is kept unused precisely so
-  `test_matches_michieletto_table_I_on_homogeneous_networks` can assert that.
+  `test_matches_michieletto_table_I_on_homogeneous_networks` can assert that. It reproduces Table I
+  only at `v = e₃` though: it stores the `R^3xS^1` rotational entry as `e₃vᵀ` where the paper has
+  `[0_{3x2} v]`. Every scenario uses `e₃`, so nothing measured depends on it, but a Table I
+  comparison off the default axis has to build the entry itself, as
+  `docs/verify_dof_restriction.py` does.
 - **It is also faster**, because the two `(3m, 3m)` dense `U`/`V` allocations are gone: 1.3× at
   n=8, 2.2× at n=16, **6.1× at n=32** on the complete graph. That is a real contribution to the
   large-`n` scaling study, which was blocked on step cost.
@@ -511,7 +515,7 @@ Three things worth knowing about the implementation:
 The acceptance test is not a regression comparison but the definition itself:
 `test_matrix_is_the_numerical_jacobian_of_the_bearings` central-differences the bearing function and
 asserts `B δ` matches to 1e-6 relative, over all five domains and eight heterogeneous mixes, with a
-non-default rotation axis. Removing the DOF restriction fails 23 tests.
+non-default rotation axis. Removing the DOF restriction fails 35 tests.
 
 ### max-edge-rank
 

@@ -564,6 +564,65 @@ domain distribution and the reward in one run would make a bad result uninterpre
 
 Newest first. One entry per work package or per material finding.
 
+### 2026-08-14 — tools/ started
+
+`tools/` now collects scripts worth re-running, per the new standing instruction in `CLAUDE.md`
+(tests go to `tests/`, document-specific scripts stay in `docs/`). Seeded with three reconstructed
+from this branch's scratch work:
+
+- `constructive_greedy.py` — the restart greedy baseline WP8 needs. Reproduces the matroid split:
+  R^2 and R^2xS^1 terminate at `m_req` on every restart, the `c_max = 2` domains do not.
+- `env_report.py` — switches, observation layout with per-channel statistics, episode constants and
+  cost for any config. Warns when the layout has drifted from `build_dict_obs`.
+- `compare_runs.py` — tail averages and per-fifth trajectories across runs, reading `runs/` directly.
+
+### 2026-08-14 — rigidity matrix re-audited; note and verification finished
+
+Full independent audit of `extended_bearing_rigidity_matrix` across all five domains, homogeneous
+and heterogeneous, no code changes. It is correct. What the audit produced:
+
+| check | result |
+|---|---|
+| `B δ` equals the central-difference Jacobian | 432 frameworks, worst rel err **1.1e-9** |
+| `B(I − AAᵀ) = 0` (vanishes on the virtual subspace) | **2.2e-16** |
+| homogeneous `rank_K` vs closed forms | exact, all 5 domains, n = 3…16 |
+| heterogeneous `rank_K ≤ Σ dim D_i − trivial` | holds, tight in 7 of 8 mixes |
+| trivial motions | exactly the predicted set per domain, nothing extra in the kernel |
+| similarity invariance of rank | holds |
+| block structure | position block touches only `{i,j}`, attitude block only `i` |
+| Table I equivalence, homogeneous | bitwise, 25 graphs per domain |
+
+Two findings, neither a defect in the matrix:
+
+- **`bearing_DOFs` is only a faithful Table I reference at `v = e₃`.** It uses the row form `e₃vᵀ`
+  for `R^3xS^1`; Table I has the column form `[0_{3x2} v]`; the projector is `v vᵀ`. All three
+  coincide at `e₃`, the only axis in use, so nothing measured is affected. Caught because building
+  the edge-indexed form from it gave a relative error of **1.8** against the Jacobian. Recorded in
+  `THEORY.md` §12.4 and `CLAUDE.md`.
+- **"Null columns" is the wrong way to count `q_v` in general.** The invariant statement is
+  `B(I − AAᵀ) = 0`; the column count is equivalent only when the admissible subspace is coordinate
+  aligned, which fails for `R^3xS^1` with a generic axis under the projector parametrisation. The
+  note now states (R2) only as the identity.
+
+A knock-on: the two forms use *different coordinates* for the `R^3xS^1` rotational freedom (Table I
+stores θ̇ in slot 3; the projector keeps ω in `span{v}`), so comparing them against one Jacobian
+needs matched bases.
+
+**Verification consolidated.** Seven scratch scripts replaced by `docs/verify_dof_restriction.py`,
+sectioned to match the note's environments, 10/10 checks, ~11 s (`--quick` 0.6 s). It was not
+reproducible at first: `random_scenario` draws poses from the global numpy stream, which was never
+seeded, so figures drifted between runs. Both streams are seeded now and three consecutive runs are
+identical.
+
+`docs/verify_dof_restriction_2.py` (independent, shares no code, re-derives both forms from the
+paper) agrees on every qualitative claim and contributed a sharpening now in the note: when
+`rank(S_i − S_j) = 2`, which happens if agents are confined to *different* planes, the obstruction
+cannot be met at any configuration rather than merely generically. For the five manifolds of Table I
+the rank is at most 1, so there the failure stays generic.
+
+Numbers in the note updated to what the script prints (worst rel err 1.1e-9; identity violated
+517/1200; rank condition wrong 81/1200 = 6.8%). The earlier 7.7% predated the Table I fix.
+
 ### 2026-08-13 — WP1 claim audited and written up as a proof
 
 Re-read Michieletto et al. in full and re-derived the WP1 claim from scratch, because "a published
@@ -580,9 +639,11 @@ Definition 13 and both reproduce the true Jacobian on that subspace to 1.2e-10. 
 and Theorem 2's proof reads the columns off it — it needs `q_v` to cancel between `G` and `K`.
 Under the per-edge form `q_v` moves with the graph, so it does not cancel.
 
-**Measured.** Rank test disagrees with true IBR on **92/1200 (7.7%)** of random heterogeneous
-frameworks; the rank identity `rk = 6n − q_v − q_i` is violated on 499/1200. Under the per-node form:
-0/1200 and 0/1200. Explicit 4-agent counterexample (3× R^2×S^1 + 1× SE(3), 6 edges): per-edge says
+**Measured.** Rank test disagrees with true IBR on **81/1200 (6.8%)** of random heterogeneous
+frameworks; the rank identity `rk = 6n − q_v − q_i` is violated on 517/1200. Under the per-node form:
+0/1200 and 0/1200. An independent reimplementation sharing no code
+(`docs/verify_dof_restriction_2.py`) gets 116/1197 and 492/1197 on its own sample, and 0/1197 for
+the per-node form. Explicit 4-agent counterexample (3× R^2×S^1 + 1× SE(3), 6 edges): per-edge says
 rk 11 vs 13, "not IBR"; ground truth says IBR.
 
 **Two corrections to our own earlier account:**
@@ -767,7 +828,7 @@ Verified:
 | check | result |
 |---|---|
 | homogeneous output identical to the old construction | max abs diff **0.0**, 60 graphs × 5 domains |
-| `B δ` equals the central-difference Jacobian | rel err ≤ 1.9e-9, 5 domains + 3 mixes, non-default rotation axis |
+| `B δ` equals the central-difference Jacobian | rel err ≤ 1.1e-9 over 432 frameworks, 5 domains + 16 mixes, random rotation axes |
 | inadmissible variations annihilated | `max ‖B @ inadmissible‖ = 0.0`; admissible dim = Σ dim D_i |
 | `rank_K ≤ Σ dim D_i − trivial` | holds for all 8 mixes (was violated: 36 vs 33, 14 vs 13) |
 | existing suite | 472 passed, unchanged |
