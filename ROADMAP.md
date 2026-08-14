@@ -564,6 +564,70 @@ domain distribution and the reward in one run would make a bad result uninterpre
 
 Newest first. One entry per work package or per material finding.
 
+### 2026-08-13 — WP1 claim audited and written up as a proof
+
+Re-read Michieletto et al. in full and re-derived the WP1 claim from scratch, because "a published
+IEEE paper has an error" needs to be right. It holds, and it is sharper than first recorded.
+
+**What is actually wrong.** Not Table III's entries: the *form* of eq. (10). In `B_p = D_p U Ēᵀ`
+the same `U_ij` multiplies both endpoints' column blocks. Faithfulness plus annihilation forces
+`D_p,k (S_i − S_j) = 0`, i.e. `p̂_ij = ±e₃` for a planar/spatial pair. Generically impossible, so
+*no* per-edge factor can encode two different endpoint restrictions.
+
+**Why it matters.** Definition 13 only pins the matrix down on the admissible subspace (δ⁺ is
+zero-padded, so inadmissible columns are multiplied by zero). Both constructions therefore satisfy
+Definition 13 and both reproduce the true Jacobian on that subspace to 1.2e-10. They differ off it,
+and Theorem 2's proof reads the columns off it — it needs `q_v` to cancel between `G` and `K`.
+Under the per-edge form `q_v` moves with the graph, so it does not cancel.
+
+**Measured.** Rank test disagrees with true IBR on **92/1200 (7.7%)** of random heterogeneous
+frameworks; the rank identity `rk = 6n − q_v − q_i` is violated on 499/1200. Under the per-node form:
+0/1200 and 0/1200. Explicit 4-agent counterexample (3× R^2×S^1 + 1× SE(3), 6 edges): per-edge says
+rk 11 vs 13, "not IBR"; ground truth says IBR.
+
+**Two corrections to our own earlier account:**
+- `q_v` must be defined **structurally** as `6n − Σ dim D_i`, not as "the number of null columns"
+  (the paper's phrasing). An isolated agent contributes null columns for its *admissible*
+  coordinates too, and those belong in `q_i`. With the structural definition the identity holds
+  identically for the per-node form.
+- The `R^3xS^1` rotational entry `[0_{3×2} v]` is **not** an error: it is a different, valid
+  coordinatisation of the same 1-D freedom (θ̇ stored in the third slot), with the same rank and the
+  same `q_v`. Only the *translational* block carries the defect. Our repo's earlier row-form
+  `e₃vᵀ` was a genuine third variant and was wrong; that part of the WP1 note stands.
+
+Also caught: reproducing the paper's Section VI-B gives rk = 13 with 6 null columns, matching the
+values printed there, which confirms our implementation of Table III is faithful and the
+disagreement is in the construction rather than in our code.
+
+Written up with full proofs in `docs/dof_restriction_note.tex`;
+`docs/verify_dof_restriction.py` reproduces every number.
+
+### 2026-08-13 — README rewritten for a research audience; docs de-duplicated
+
+`README.md` rewritten as a research description (451 → 206 lines): problem, research questions,
+approach, current state, evaluation figures. Citations with DOIs at the top, since
+`resources/papers/` is no longer tracked. Implementation detail removed (it was duplicated in
+`CLAUDE.md` and `THEORY.md` anyway).
+
+**Documentation policy, now recorded in `CLAUDE.md`:** measured results live in exactly one place,
+this file §1. Nothing else carries policy numbers; superseded numbers get deleted rather than
+archived, because git history is the archive and a stale number in a file that loads every session
+costs more than it is worth. Applied by cutting `CLAUDE.md`'s 70-line historical results section and
+the checkpoint numbers that had leaked into its other sections.
+
+Swept all five docs for dead file references and fixed: `gpu_environment.py` / `gpu_network.py` /
+`gpu_rigidity.py` (deleted from the repo, still referenced in three places), `dummy/test_mbr.py`,
+and a wrong path for `tests/test_environment_api.py`. Every `DOC.md#anchor` cross-reference now
+resolves.
+
+**README figures regenerated.** The four in `resources/` were from a PPO run on the legacy
+`Weighted` objective, dated 2026-08-07, and contradicted the README text. Regenerated from
+`generaldqngine` on `bench_n8_R3` so figures and prose agree, and converted SVG → PNG.
+
+One bug found doing it: `report.py`'s figure header hardcoded "N random networks · seed S" even
+under `--benchmark`, so a figure that outlives its run would misstate its own provenance. It now
+names the benchmark.
+
 ### 2026-08-12 — arms turned off by default, config ownership, a flawed test fixed
 
 The generator now emits the **validated baseline**: `4*m_req + 10` horizon, stop action off

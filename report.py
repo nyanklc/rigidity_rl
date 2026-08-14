@@ -333,8 +333,16 @@ def _header_detail_lines(header, width_in):
             lines += _wrap(f"{label:<11} : {header[key]}", width_in - 0.2, 8.0)
     bits = []
     if header.get("episodes"):
-        bits.append(f"{header['episodes']} random networks")
-    if header.get("seed") is not None:
+        # a frozen instance set is not "random networks, seed N"; saying so in a
+        # figure that outlives the run is how a stale provenance line happens
+        if header.get("benchmark"):
+            bits.append(f"{header['episodes']} networks from benchmark "
+                        f"{header['benchmark']}")
+        else:
+            bits.append(f"{header['episodes']} random networks")
+            if header.get("seed") is not None:
+                bits.append(f"seed {header['seed']}")
+    elif header.get("seed") is not None:
         bits.append(f"seed {header['seed']}")
     if header.get("subtitle"):
         bits.append(header["subtitle"])

@@ -69,6 +69,63 @@ def bearing_DOFs(agent_i, agent_j):
 
     return Uij, Vij
 
+# # OLD
+# def extended_bearing_rigidity_matrix(network):
+#     p = [agent.pose.position for agent in network.agents]
+#     R = [agent.pose.rotation_mat() for agent in network.agents]
+#     edges = network.edges
+
+#     n = len(p)
+#     m = int(edges.sum())
+
+#     E = np.zeros((n, m))
+#     Eo = np.zeros((n, m))
+#     U = np.zeros((3*m, 3*m))
+#     V = np.zeros((3*m, 3*m))
+
+#     i_indices, j_indices = np.nonzero(edges)
+#     # TODO: there should be a more efficient implementation using the adjacency mat, i was lazy
+#     for k, (i, j) in enumerate(zip(i_indices, j_indices)):
+#         E[i, k] = -1
+#         E[j, k] = +1
+#         Eo[i, k] = -1
+#         # Uij, Vij
+#         U[3*k:3*(k+1), 3*k:3*(k+1)], V[3*k:3*(k+1), 3*k:3*(k+1)] = bearing_DOFs(
+#             network.agents[i], network.agents[j]
+#             )
+
+#     E_bar = np.kron(E, np.eye(3))
+#     Eo_bar = np.kron(Eo, np.eye(3))
+
+#     Dp = np.zeros((3*m, 3*m))
+#     Da = np.zeros((3*m, 3*m))
+#     for k, (i, j) in enumerate(zip(i_indices, j_indices)):
+
+#         # TODO: not sure if we should do this
+#         if i == j:
+#             continue
+
+#         pij = p[j] - p[i]
+#         s = 1.0 / np.linalg.norm(pij)
+#         p_bar = s * pij
+
+#         Ri = R[i]
+
+#         P = orthogonal_projection_matrix(p_bar)
+
+#         Dp_k = s * Ri.T @ P
+#         Da_k = -Ri.T @ skew_symmetric(p_bar)
+
+#         Dp[3*k:3*(k+1), 3*k:3*(k+1)] = Dp_k
+
+#         Da[3*k:3*(k+1), 3*k:3*(k+1)] = Da_k
+
+#     Bp = Dp @ U @ E_bar.T
+#     Ba = Da @ V @ Eo_bar.T
+#     B = np.hstack([Bp, Ba]) # (3m, 6n)
+
+#     return B
+
 # B = [ Dp E_bar^T S_bar | Da Eo_bar^T P_bar ], (3m, 6n). The DOF restriction is
 # applied per node on the column side, so an infeasible coordinate is a zero
 # column. See THEORY.md §12 and DESIGN_NOTES.md#per-node-dof.

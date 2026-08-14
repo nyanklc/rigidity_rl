@@ -157,30 +157,24 @@ if __name__ == "__main__":
     filename = sys.argv[1]
 
     # graph/network
-    # positions = (
-    #     np.array(
-    #         [
-    #             [0, 0, 0],
-    #             [1, 0, 0],
-    #             [1, 1, 0],
-    #             [0, 1, 0],
-    #             [0.5, 0.5, 1],
-    #             [0.65, 0.123, 0.5],
-    #             [0.1, 0.5, 0.8],
-    #             # [1, 0, 1],
-    #             # [1, 1, 1],
-    #             # [0, 1, 1],
-    #             # [0.5, 0.5, 1],
-    #         ],
-    #         dtype=float,
-    #     )
-    #     * 50
-    # )
-    positions = 2 * np.random.rand(5, 3) - 1
+    positions = (
+        np.array(
+            [
+                [0, 0, 0],
+                [1, 0, 0],
+                [1, 1, 0],
+                [0.5, 0.5, 1],
+            ],
+            dtype=float,
+        )
+    )
+    # positions = 2 * np.random.rand(5, 3) - 1
     n = len(positions)
     orientations_euler = np.zeros((n, 3))
     # edges = None
-    edges = np.asarray([(i, j) for i in range(n) for j in range(n) if i != j])
+    elist = [(i, j) for i in range(n) for j in range(n) if i != j]
+    elist.remove((3, 0))
+    edges = np.asarray(elist)
     # edges = np.asarray(
     #     [
     #         (0, 1),
@@ -202,10 +196,9 @@ if __name__ == "__main__":
     network = Network(positions, orientations_euler, edges)
     # network.set_agents_domain_homogeneous("R^3")
     network.agents[0].set_domain("R^2")
-    network.agents[1].set_domain("R^2xS^1")
-    network.agents[2].set_domain("R^3")
-    network.agents[3].set_domain("R^3xS^1")
-    network.agents[4].set_domain("SE(3)")
+    network.agents[1].set_domain("R^2")
+    network.agents[2].set_domain("R^2")
+    network.agents[3].set_domain("R^3")
     # network.agents[5].set_domain("R^2")
     # network.agents[6].set_domain("R^2xS^1")
     # network.agents[7].set_domain("R^3")
@@ -215,11 +208,12 @@ if __name__ == "__main__":
 
     # goal
     goal_network = copy.deepcopy(network)
+    goal_network.set_edges_list(np.asarray([(i, j) for i in range(n) for j in range(n) if i != j]))
     # goal_network.agents[4].pose.position = np.array([-50, -50, 50])
     # goal_network.agents[5].pose.position = np.array([100, -50, 50])
     # goal_network.agents[6].pose.position = np.array([100, 100, 50])
     # goal_network.agents[7].pose.position = np.array([-50, 100, 50])
-    goal_network.agents[0].pose.position = np.array([-50, 25, 0])
+    # goal_network.agents[0].pose.position = np.array([-50, 25, 0])
     # goal_network.translate_network([150, 100, 0])
     # goal_network.rotate_network([0, 0, 1], np.pi/4)
     # goal_network.agents[4].pose.position[0] += 50

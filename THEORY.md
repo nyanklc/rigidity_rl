@@ -483,6 +483,10 @@ rk(B⁺_G) = 6n - q_v - q_i ,
 counts `q_v`, the *virtual* variations, as the **number of null columns** of `B⁺`. So the framework
 requires: **a coordinate an agent cannot vary must correspond to an identically-zero column.**
 
+> A self-contained write-up with full proofs, the counterexample and the numerical
+> protocol is in `docs/dof_restriction_note.tex`; `docs/verify_dof_restriction.py`
+> reproduces every number in it.
+
 ### 12.2 What Table III does, and why it is not enough
 
 Table I gives `U_ij`, `V_ij` per manifold for *homogeneous* formations, and there it satisfies the
@@ -515,6 +519,19 @@ Measured on random configurations (`ROADMAP.md` §1.2):
 the matrix cannot have more independent columns than the system has coordinates. Directly: for
 4×`R^2` + 4×`R^3`, a pure `+z` motion of a planar agent gives `‖B v‖ = 2.1` — the framework resists
 a motion the agent cannot make, and spends rank doing it.
+
+**The obstruction is structural, not a wrong table entry.** In `B_p = D_p U Ēᵀ` the same `U_ij`
+multiplies the column blocks of *both* endpoints of an edge. Requiring it to be faithful on
+admissible variations *and* to annihilate inadmissible ones forces `D_p,k (S_i − S_j) = 0`, i.e.
+`range(S_i − S_j) ⊆ span{p̂_ij}`. For a planar `i` and a spatial `j` that says `p̂_ij = ±e₃`: the two
+agents must be vertically stacked. So no choice of `U_ij` works off a measure-zero set. Proof in
+`docs/dof_restriction_note.tex`, Theorem 1.
+
+**Consequence.** Whether a planar agent's z-column vanishes becomes a property of the *graph*
+(it vanishes iff that agent has no spatial neighbour), so `q_v` no longer cancels between `G` and
+`K` — which is exactly the step the paper's Theorem 2 proof relies on. Measured: the resulting rank
+test returns the wrong IBR verdict on 7.7% of 1200 random heterogeneous frameworks. An explicit
+4-agent counterexample is in the note.
 
 The cause is structural rather than a typo. The true derivative is
 

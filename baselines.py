@@ -547,6 +547,7 @@ def main():
             "network": context["network"],
             "episodes": args.episodes,
             "seed": args.seed,
+            "benchmark": args.benchmark,
         }
         report.plot_trajectories(run_dir, traces, rows, header)
         report.plot_outcomes(run_dir, traces, rows, header)

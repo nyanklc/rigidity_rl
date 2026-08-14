@@ -1,0 +1,469 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.6cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{microtype}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{remark}[theorem]{Remark}
+\newtheorem{example}[theorem]{Example}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\SEthree}{\mathrm{SE}(3)}
+\newcommand{\SOthree}{\mathrm{SO}(3)}
+\newcommand{\rank}{\operatorname{rk}}
+\newcommand{\range}{\operatorname{range}}
+\newcommand{\vspan}{\operatorname{span}}
+\newcommand{\Bper}{\mathbf{B}^{\times}}
+\newcommand{\Bnode}{\mathbf{B}^{\bullet}}
+\newcommand{\Ebar}{\bar{\mathbf{E}}}
+\newcommand{\Ebaro}{\bar{\mathbf{E}}_o}
+\newcommand{\Dp}{\mathbf{D}_p}
+\newcommand{\Da}{\mathbf{D}_a}
+
+\title{\bf A Node-wise DOF restriction in the Extended Bearing Rigidity Matrix}
+\author{Noyan Erdin Kilic}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+The unified framework of \cite{michieletto2021} builds the extended bearing
+rigidity matrix as $\mathbf B^+_{\mathcal G}=[\,\Dp\mathbf U\Ebar^\top\ \
+\Da\mathbf V\Ebaro^\top\,]$, with $\mathbf U$ and $\mathbf V$ indexed by edges,
+and characterises infinitesimal bearing rigidity by a rank condition. Working
+with heterogeneous formations we found that the edge-indexed factor cannot
+carry the motion constraints of both endpoints of an edge when those endpoints
+lie in different manifolds. We make this precise: requiring $\mathbf U_{ij}$ to
+be faithful to the bearing differential and to annihilate the motions the two
+agents cannot perform forces $\Dp^{(k)}(S_i-S_j)=0$, which for a planar and a
+spatial agent holds only when the two are vertically aligned. Because the
+matrix is only determined on the admissible subspace, the choice made off that
+subspace does not affect the differential, but it does affect the rank, and the
+rank is what the rigidity condition compares. We give a four-agent formation on
+which the resulting test reports a rigid framework as flexible, propose a
+node-indexed form that removes the difficulty, and show that it reproduces the
+homogeneous construction of \cite{michieletto2021} exactly, so that no result
+for homogeneous formations is affected. All statements are checked against a
+finite-difference Jacobian of the bearing map.
+\end{abstract}
+
+\section{Introduction}
+
+We came to this while using the framework of \cite{michieletto2021} to study
+topology design for formations whose agents live in different manifolds, for
+instance ground vehicles constrained to a plane together with aerial platforms
+in $\SEthree$. In that setting the rank condition of Theorem~2 in
+\cite{michieletto2021} sometimes reported frameworks as flexible that are in
+fact rigid, and the reason turned out to be structural rather than numerical.
+
+Everything concerning homogeneous formations, in particular Table~I and Section~V of
+\cite{michieletto2021}, is unaffected: the form proposed here reduces to it
+identically. The difficulty appears only for heterogeneous formations on
+incomplete graphs. Both case studies in \cite{michieletto2021} use complete
+graphs, where the rank condition holds trivially, so no conclusion drawn there
+changes either.
+
+We believe that The general form of (10) in [1] cannot, in general, extend heterogeneous endpoint constraints off the admissible variation space in a way that simultaneously preserves the endpoint constraints and the null-space structure required by the rank argument of Theorem 2.
+
+\section{Setting}
+
+We follow the notation of \cite{michieletto2021}. A formation of $n\ge3$ agents
+is a framework $(\mathcal G,\chi)$ with $\mathcal G$ a directed graph with $m$
+edges and $\chi\in\bar{\mathcal D}=\prod_i\mathcal D_i\subseteq\SEthree^n$.
+Agent $i$ has position $p_i$, attitude $R_i$, and $c_i=\dim\mathcal D_i$
+degrees of freedom; write $c=\sum_ic_i=\dim\bar{\mathcal I}$. An edge
+$e_k=(v_i,v_j)$ carries the bearing $b_{ij}=R_i^\top\hat p_{ij}$ with
+$\hat p_{ij}=(p_j-p_i)/\lVert p_j-p_i\rVert$ and
+$s_{ij}=\lVert p_j-p_i\rVert^{-1}$. Differentiating,
+\begin{equation}\label{eq:diff}
+  \dot b_{ij}
+  =\underbrace{s_{ij}R_i^\top P(\hat p_{ij})}_{\Dp^{(k)}}(\dot p_j-\dot p_i)
+  +\underbrace{\bigl(-R_i^\top[\hat p_{ij}]_\times\bigr)}_{\Da^{(k)}}(-\omega_i),
+\end{equation}
+with $P(x)=I_3-xx^\top$ and $\omega_i$ the world-frame angular velocity. With
+the incidence matrices of \cite{michieletto2021} and
+$\Ebar=\mathbf E\otimes I_3$, $\Ebaro=\mathbf E_o\otimes I_3$, one has
+$(\Ebar^\top x)_k=x_j-x_i$ and $(\Ebaro^\top x)_k=-x_i$.
+
+For each agent let $S_i$ and $P_i$ be the orthogonal projectors onto the
+translational and rotational directions it can realise:
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+$\mathcal D_i$ & $c_i$ & $S_i$ & $P_i$\\
+\midrule
+$\R^2$            & $2$ & $\operatorname{diag}(1,1,0)$ & $0$\\
+$\R^3$            & $3$ & $I_3$                        & $0$\\
+$\R^2\times S^1$  & $3$ & $\operatorname{diag}(1,1,0)$ & $e_3e_3^\top$\\
+$\R^3\times S^1$  & $4$ & $I_3$                        & $vv^\top$\\
+$\SEthree$        & $6$ & $I_3$                        & $I_3$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Here $v\in S^2$ is the controllable axis of an $\R^3\times S^1$ agent, and
+$\rank S_i+\rank P_i=c_i$. Following (8) of \cite{michieletto2021} a variation
+$\delta$ is lifted to $\delta^+\in\R^{6n}$ by zero padding. Write
+\begin{equation}
+  \mathcal A=\{\delta^+:\delta\in\bar{\mathcal I}\}
+  =\range\bar S\oplus\range\bar P\subseteq\R^{6n},
+\end{equation}
+with $\bar S=\operatorname{blkdiag}(S_i)$, $\bar P=\operatorname{blkdiag}(P_i)$,
+and let $A\in\R^{6n\times c}$ have orthonormal columns spanning $\mathcal A$.
+We call $\mathcal A$ the admissible subspace and $\mathcal A^\perp$ the virtual
+subspace, of dimension
+\begin{equation}\label{eq:qv}
+  q_v:=6n-c .
+\end{equation}
+
+\section{The two forms}
+
+Proposition~2 of \cite{michieletto2021} gives
+\begin{equation}\label{eq:peredge}
+  \Bper_{\mathcal G}=\bigl[\ \Dp\,\mathbf U\,\Ebar^\top\quad
+                             \Da\,\mathbf V\,\Ebaro^\top\ \bigr],
+  \qquad
+  \mathbf U=\operatorname{diag}(\mathbf U_{ij}),\
+  \mathbf V=\operatorname{diag}(\mathbf V_{ij}).
+\end{equation}
+We will compare it with
+\begin{equation}\label{eq:pernode}
+  \Bnode_{\mathcal G}=\bigl[\ \Dp\,\Ebar^\top\,\bar S\quad
+                              \Da\,\Ebaro^\top\,\bar P\ \bigr].
+\end{equation}
+Acting on $\delta^+$, the $k$th row block of each is
+\begin{align}
+  (\Bper\delta^+)_k&=\Dp^{(k)}\mathbf U_{ij}(\delta_{p,j}-\delta_{p,i})
+                     -\Da^{(k)}\mathbf V_{ij}\delta_{a,i},\label{eq:actper}\\
+  (\Bnode\delta^+)_k&=\Dp^{(k)}(S_j\delta_{p,j}-S_i\delta_{p,i})
+                     -\Da^{(k)}P_i\delta_{a,i}.\label{eq:actnode}
+\end{align}
+In \eqref{eq:actper} a single matrix multiplies the column blocks of both
+endpoints. In \eqref{eq:actnode} each endpoint carries its own projector. For a
+homogeneous formation the two coincide, since $S_i=S_j$.
+
+\section{The matrix is determined only on \texorpdfstring{$\mathcal A$}{A}}
+
+\begin{lemma}\label{lem:underdet}
+Relation (9) of \cite{michieletto2021} determines
+$\mathbf B^+_{\mathcal G}$ on $\mathcal A$ and imposes nothing on
+$\mathcal A^\perp$.
+\end{lemma}
+
+\begin{proof}
+$\delta^+$ ranges over $\mathcal A$, so (9) fixes
+$\mathbf B^+_{\mathcal G}\rvert_{\mathcal A}$. Entries acting on
+$\mathcal A^\perp$ are multiplied by zero.
+\end{proof}
+
+Both \eqref{eq:peredge} with Table~III of \cite{michieletto2021} and
+\eqref{eq:pernode} therefore satisfy Definition~13, and both reproduce
+\eqref{eq:diff} on admissible variations. They differ only on
+$\mathcal A^\perp$. That would be immaterial if only the differential were
+used, but Theorem~2 compares ranks, and the rank sees $\mathcal A^\perp$.
+
+The text preceding Theorem~2 in \cite{michieletto2021} supplies the missing
+condition: the extended matrix differs from the ordinary one ``because of the
+emergence of zero columns in correspondence of zero entries of the vector
+$\delta^+$'', and $q_v$ ``corresponds to the number of null columns''. Stated
+without reference to a coordinate frame, the requirement is that the matrix
+vanish on the virtual subspace. We record the three properties the proof of
+Theorem~2 uses.
+
+\begin{itemize}
+\item[(R1)] $\mathbf B^+_{\mathcal G}A$ equals the differential \eqref{eq:diff}
+  restricted to admissible variations.
+\item[(R2)] $\mathbf B^+_{\mathcal G}(I-AA^\top)=0$.
+\item[(R3)] $q_v$ is the same for $\mathcal G$ and for the complete graph
+  $\mathcal K$, so that it cancels between
+  $\rank\mathbf B^+_{\mathcal G}=6n-q_v-q_i$ and
+  $\rank\mathbf B^+_{\mathcal K}=6n-q_v-q_t$.
+\end{itemize}
+
+\begin{remark}\label{rem:aligned}
+(R2) is equivalent to ``every inadmissible coordinate indexes a null column''
+only when $\mathcal A$ is spanned by coordinate directions. This holds for
+$\R^2$, $\R^3$, $\R^2\times S^1$ and $\SEthree$, and for $\R^3\times S^1$ under
+the parametrisation of Table~I, which stores $\dot\theta$ in the third slot of
+$\delta_{a,i}$ and maps it through $\mathbf V_{ij}=[\,0_{3\times2}\ v\,]$. It
+does not hold if one instead writes $P_i=vv^\top$ and keeps $\omega_i$ itself as
+the variable, since $vv^\top$ has rank one but no zero column unless $v$ is a
+coordinate axis. The two parametrisations give the same rank and the same
+$q_v$; only the column-counting phrasing is sensitive to the choice, which is
+why we state (R2) as an identity.
+\end{remark}
+
+\begin{remark}\label{rem:qv}
+Definition \eqref{eq:qv} takes $q_v$ to be structural rather than a count of
+null columns of $\mathbf B^+_{\mathcal G}$, and (R3) then holds by
+construction. The two disagree on sparse graphs: if agent $i$ is isolated in
+$\mathcal G$, all six of its columns vanish, including the $c_i$ admissible
+ones, and those extra zeros are infinitesimal variations of $\mathcal G$
+belonging to $q_i$.
+\end{remark}
+
+\section{An edge-indexed factor cannot satisfy (R1) and (R2)}
+
+\begin{theorem}\label{thm:impossible}
+Let $e_k=(v_i,v_j)$ and suppose \eqref{eq:peredge} satisfies (R1) and (R2) on
+the column blocks of $i$ and $j$. Then
+\begin{equation}\label{eq:obstruction}
+  \Dp^{(k)}(S_i-S_j)=0,
+  \qquad\text{that is}\qquad
+  \range(S_i-S_j)\subseteq\vspan\{\hat p_{ij}\}.
+\end{equation}
+If $S_i\ne S_j$ this fails outside a set of configurations of measure zero.
+\end{theorem}
+
+\begin{proof}
+Write $U=\mathbf U_{ij}$. By \eqref{eq:actper} the column block of $\Bper$ in
+row block $k$ is $-\Dp^{(k)}U$ for agent $i$ and $+\Dp^{(k)}U$ for agent $j$.
+Comparing with \eqref{eq:diff} on admissible directions, (R1) gives
+\begin{equation*}
+  \Dp^{(k)}US_i=\Dp^{(k)}S_i,\qquad \Dp^{(k)}US_j=\Dp^{(k)}S_j,
+\end{equation*}
+and (R2) applied to the inadmissible directions of each endpoint gives
+\begin{equation*}
+  \Dp^{(k)}U(I_3-S_i)=0,\qquad \Dp^{(k)}U(I_3-S_j)=0 .
+\end{equation*}
+Adding the two conditions for $i$ yields $\Dp^{(k)}U=\Dp^{(k)}S_i$, and those
+for $j$ yield $\Dp^{(k)}U=\Dp^{(k)}S_j$; subtracting gives
+\eqref{eq:obstruction}. Since $\Dp^{(k)}=s_{ij}R_i^\top P(\hat p_{ij})$ with
+$s_{ij}\ne0$ and $R_i$ orthogonal,
+$\ker\Dp^{(k)}=\vspan\{\hat p_{ij}\}$, which gives the second form. If
+$S_i\ne S_j$ then $S_i-S_j$ is a nonzero symmetric matrix and
+\eqref{eq:obstruction} confines its range to a single line, a nontrivial
+algebraic condition on $(p_i,p_j)$.
+\end{proof}
+
+\begin{corollary}\label{cor:tableIII}
+For $i$ planar and $j$ spatial, $S_i-S_j=-e_3e_3^\top$ and
+\eqref{eq:obstruction} reads $P(\hat p_{ij})e_3=0$, so the two agents must be
+vertically aligned. Table~III of \cite{michieletto2021} takes
+$\mathbf U_{ij}=I_3$ on such edges, which satisfies (R1) but not (R2): the
+column of agent $i$ for its $z$ coordinate is $-\Dp^{(k)}e_3\ne0$, although a
+planar agent cannot translate in $z$.
+\end{corollary}
+
+\section{Consequences}
+
+\begin{proposition}\label{prop:graphdep}
+Under \eqref{eq:peredge} with $\mathbf U_{ij}=I_3$ on mixed edges, the
+$z$ column of a planar agent vanishes exactly when that agent is incident to no
+spatial agent. The number of null columns therefore depends on $\mathcal E$,
+and (R3) fails.
+\end{proposition}
+
+Since $q_v$ no longer cancels between $\mathcal G$ and $\mathcal K$, the
+equivalence in the proof of Theorem~2 of \cite{michieletto2021} does not go
+through. The following formation shows that the conclusion can fail as well.
+
+\begin{example}\label{ex:counter}
+Let $n=4$ with $\mathcal D_1=\mathcal D_2=\mathcal D_3=\R^2$ and
+$\mathcal D_4=\R^3$, so $c=9$ and $q_v=15$, at
+\begin{equation*}
+  p_1=(0,0,0),\quad p_2=(1,0,0),\quad p_3=(1,1,0),\quad p_4=(\tfrac12,\tfrac12,1),
+  \qquad R_i=I_3 ,
+\end{equation*}
+and let $\mathcal G$ have the four edges
+$\{(1,2),(1,3),(2,4),(3,4)\}$.
+
+\begin{center}
+\begin{tabular}{lccl}
+\toprule
+& $\rank\mathbf B_{\mathcal G}$ & $\rank\mathbf B_{\mathcal K}$ & conclusion\\
+\midrule
+edge-indexed \eqref{eq:peredge} & $6$ & $8$ & flexible\\
+node-indexed \eqref{eq:pernode} & $6$ & $6$ & rigid\\
+finite differences on $\bar{\mathcal I}$ & $6$ & $6$ & rigid\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The last row differentiates the bearing map along admissible variations and
+uses neither construction. The framework admits two translations and a uniform
+scaling and nothing else, so $c-q_t=9-3=6$ is full rank on
+$\bar{\mathcal I}$; $\mathcal G$ attains it with four edges and is minimally
+rigid.
+\end{example}
+
+\begin{remark}
+For $\mathcal K$ in Example~\ref{ex:counter} the edge-indexed matrix has
+$\rank=8$, and deleting the three $z$ columns of the planar agents returns it
+to $6$. Those columns carry two dimensions of rank that correspond to no
+admissible motion. One combination of them is a null direction, namely the
+global $z$ translation, which the planar agents cannot perform. The same effect
+appears in the case study of Section~VI-B of \cite{michieletto2021}: there
+$q_t=5$ is reported while the accompanying list of trivial motions has four
+entries, the difference being the global $z$ translation of a formation whose
+unicycles are confined to a plane. The parenthetical remark that columns
+$3,6,9,10,11$ are linearly dependent on the remainder is true of each column
+separately, but the three $z$ columns are not jointly removable: deleting them
+lowers the rank from $13$ to $11$.
+\end{remark}
+
+\section{The node-indexed form}
+
+\begin{theorem}\label{thm:repair}
+$\Bnode_{\mathcal G}$ satisfies (R1), (R2) and (R3), and for every
+$\mathcal G$
+\begin{equation}\label{eq:identity}
+  \rank\Bnode_{\mathcal G}=6n-q_v-q_i,
+  \qquad q_i=\dim\ker(\Bnode_{\mathcal G}A).
+\end{equation}
+Consequently $\rank\Bnode_{\mathcal G}=\rank\Bnode_{\mathcal K}$ holds if and
+only if $q_i=q_t$, that is, if and only if $(\mathcal G,\chi)$ is IBR.
+\end{theorem}
+
+\begin{proof}
+(R1) follows by substituting \eqref{eq:actnode} and using
+$S_i\delta_{p,i}=\delta_{p,i}$, $P_i\delta_{a,i}=\delta_{a,i}$ for
+$\delta^+\in\mathcal A$. For (R2), $\bar S$ and $\bar P$ are the orthogonal
+projectors onto the admissible subspace, so
+$\Bnode(I-AA^\top)=0$; this depends only on the agents' manifolds and not on
+$\mathcal E$, which is (R3) with \eqref{eq:qv}.
+
+For \eqref{eq:identity}, (R2) gives
+$\Bnode_{\mathcal G}=\Bnode_{\mathcal G}AA^\top$, hence
+$\range\Bnode_{\mathcal G}=\range(\Bnode_{\mathcal G}A)$ and
+\begin{equation*}
+  \rank\Bnode_{\mathcal G}=\rank(\Bnode_{\mathcal G}A)
+  =c-\dim\ker(\Bnode_{\mathcal G}A)=(6n-q_v)-q_i .
+\end{equation*}
+The same applies to $\mathcal K$ with $q_t=\dim\ker(\Bnode_{\mathcal K}A)$, and
+$q_v$ is the same constant in both. By Theorem~1 of \cite{michieletto2021},
+$\ker\mathbf B_{\mathcal K}\subseteq\ker\mathbf B_{\mathcal G}$, so equality of
+dimensions is equality of the two kernels, which is Definition~12 of
+\cite{michieletto2021}.
+\end{proof}
+
+\begin{proposition}\label{prop:homog}
+If $\mathcal D_i=\mathcal D$ for all $i$ and $\mathbf U_{ij}=S$,
+$\mathbf V_{ij}=P$ are the Table~I entries, then
+$\Bper_{\mathcal G}=\Bnode_{\mathcal G}$ for every graph and configuration.
+\end{proposition}
+
+\begin{proof}
+$(\mathbf U\Ebar^\top x)_k=S(x_j-x_i)=Sx_j-Sx_i=(\Ebar^\top\bar Sx)_k$ since
+$\bar S=I_n\otimes S$, and likewise
+$(\mathbf V\Ebaro^\top y)_k=-Py_i=(\Ebaro^\top\bar Py)_k$.
+\end{proof}
+
+For $\R^3\times S^1$, Proposition~\ref{prop:homog} is read with
+$\mathbf V_{ij}$ in the projector parametrisation of
+Remark~\ref{rem:aligned}; the two parametrisations differ as matrices but not
+in rank or in $q_v$.
+
+In implementation terms the change is to move $\mathbf U$ and $\mathbf V$ from
+between $\Dp,\Da$ and the incidence matrices to the far right, as node-indexed
+block-diagonal projectors. Per row block $k=(i,j)$, with each index naming the
+top-left corner of a $3\times3$ block,
+\begin{align}
+  \Bnode[\,3k,\ 3j\,]      &\mathrel{+}=\Dp^{(k)}S_j, \notag\\
+  \Bnode[\,3k,\ 3i\,]      &\mathrel{-}=\Dp^{(k)}S_i, \\
+  \Bnode[\,3k,\ 3n{+}3i\,] &\mathrel{+}=\Da^{(k)}P_i. \notag
+\end{align}
+The two dense $3m\times3m$ factors $\mathbf U$ and $\mathbf V$ are no longer
+needed.
+
+\section{Numerical checks}
+
+The reference in what follows is the Jacobian of the bearing map with respect
+to admissible variations, obtained by central differences on the manifold, with
+attitudes updated as $R_i\mapsto\exp([\varepsilon\omega_i]_\times)R_i$. It uses
+neither construction.
+
+Over $432$ frameworks covering the five manifolds at $n=3,4,6,9$ and sixteen
+heterogeneous mixes at four graph densities each, with randomised
+$\R^3\times S^1$ axes, \eqref{eq:pernode} reproduces this Jacobian on
+$\mathcal A$ to a worst relative error of $1.1\times10^{-9}$. So does
+\eqref{eq:peredge}, as Lemma~\ref{lem:underdet} requires, once each form is
+read in its own parametrisation of the $\R^3\times S^1$ rotational coordinate
+(Remark~\ref{rem:aligned}). The identity $\Bnode(I-AA^\top)=0$ holds to
+$2.2\times10^{-16}$.
+
+Over $1200$ random heterogeneous frameworks with $n\in\{4,5,6\}$:
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+ & edge-indexed & node-indexed\\
+\midrule
+\eqref{eq:identity} violated                     & $517/1200$          & $0/1200$\\
+rank condition disagrees with IBR                & $81/1200$ $(6.8\%)$ & $0/1200$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+For homogeneous formations the two constructions agree bitwise, checked over
+$25$ graphs in each manifold at $n=3,4,6,8,12$, as
+Proposition~\ref{prop:homog} predicts. The
+homogeneous ranks match the closed forms $2n-3$, $3n-4$, $3n-4$, $4n-5$,
+$6n-7$ at $n=3,4,6,8,12,16$, and for a heterogeneous mix
+$\rank\mathbf B_{\mathcal K}\le c-q_t$ holds in every case tested. Reproducing
+the case study of Section~VI-B of \cite{michieletto2021} with
+\eqref{eq:peredge} returns $\rank\mathbf B^+_{\mathcal K}=13$ with six null
+columns, the values reported there, which indicates that the difference lies in
+the construction and not in our implementation of it. Deleting the three $z$
+columns of the unicycles there lowers the rank from $13$ to $11$, and of the
+five motions listed as trivial only four are admissible.
+
+\section{Discussion}
+
+\subsection*{Where the ambiguity comes from}
+
+For a homogeneous planar formation, $\operatorname{diag}(1,1,0)$ serves two
+purposes at once. It restricts the admissible translations, and it records that
+a bearing between two coplanar agents has no $z$ component, so that the
+measurement manifold is $S^1\subset S^2$. Table~I is consistent with both
+readings and nothing separates them.
+
+They separate as soon as $S_i\ne S_j$. On an edge between a planar and a
+spatial agent the bearing does have a nonzero $z$ component, so the
+measurement reading gives $\mathbf U_{ij}=I_3$, which is the Table~III entry,
+while the variation reading asks for two different restrictions at the two
+endpoints. The proof of Proposition~2 in \cite{michieletto2021} describes
+$\mathbf U$ as embedding the variation of each bearing in $S^2$, which is the
+first reading, whereas the rank accounting behind Theorem~2 needs the second.
+Separating the two is what \eqref{eq:pernode} does (Theorem~\ref{thm:repair}): $\Dp^{(k)}$ already carries
+the measurement geometry, and $\bar S,\bar P$ carry the motion constraints.
+
+\subsection*{Possible next steps}
+
+The observation is small on its own. It becomes more interesting in what it
+enables, and we would be glad to hear whether any of the following seems worth
+pursuing jointly.
+
+Minimality is the first candidate. The counting arguments that give the minimum
+number of edges for rigidity in $\R^d$ rely on every edge contributing the same
+rank. Once endpoints carry different constraints the per-edge contribution
+varies with the pair of manifolds, and the corresponding bounds for
+heterogeneous formations do not appear to be settled.
+
+The second is the design problem that led us here: choosing which bearings to
+maintain in a heterogeneous formation so that the framework is rigid with as
+few measurements as possible. Sparsity alone underdetermines the answer, since
+many edge sets of the same minimal size are rigid at the same configuration and
+differ considerably in the rigidity eigenvalue.
+
+\begin{thebibliography}{9}
+\bibitem{michieletto2021}
+G.~Michieletto, A.~Cenedese, and D.~Zelazo,
+``A Unified Dissertation on Bearing Rigidity Theory,''
+\emph{IEEE Transactions on Control of Network Systems}, vol.~8, no.~4,
+pp.~1624--1636, Dec.~2021.
+\href{https://doi.org/10.1109/TCNS.2021.3077712}{doi:10.1109/TCNS.2021.3077712}
+\end{thebibliography}
+
+\end{document}

@@ -12,7 +12,7 @@ each network.
 **Status: work in progress.** Interfaces, configuration formats and model architectures change
 frequently, and the repository carries superseded code from earlier experiments.
 
-## References
+## Main References
 
 Bearing rigidity theory, and the source of the rigidity matrix formulation used here:
 
@@ -130,6 +130,31 @@ exactly with the published one on homogeneous networks. See [THEORY.md](THEORY.m
 
 Numbers reported here are single-seed unless stated otherwise, and measured run-to-run variance at
 this scale is large. Treat them as indicative.
+
+## Evaluation
+
+Every trained policy is scored against the same reference points on the same networks: the graph it
+started from, a uniform random policy, greedy hill-climbing on the same objective, and, on networks
+small enough, exhaustive search for the true optimum. Instances are drawn from a frozen benchmark
+set so a number measured today stays comparable to one measured months later.
+
+![Baseline comparison table](resources/baselines-table.png)
+
+The learned policy reaches the minimal edge count on 95% of networks where greedy hill-climbing
+reaches it on 50%, using the same number of edits. Greedy stalls because the objective has local
+optima that no single edge change escapes, and those are exactly the cases the policy has learned
+to step through.
+
+![Run trajectories](resources/baselines-trajectories.png)
+
+The trajectories show the behaviour behind the table. The policy prunes to the minimal graph within
+about ten edits and then holds it, while a random policy accumulates edges without ever becoming
+reliably rigid. The rigidity margin panel is the quantity the current objective ignores, and the
+reason for the next stage of the work: greedy and the learned policy end on graphs of the same size
+that differ in how much perturbation they survive.
+
+`baselines.py` writes two further figures per run, an outcome distribution across networks and a
+final/best/mean breakdown per method, in both PNG and PDF.
 
 ## Documentation
 
