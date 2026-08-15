@@ -155,6 +155,11 @@ class Network:
                 R_agent = agent.pose.rotation_mat()
                 agent.pose.set_rotation_mat(R @ R_agent)
 
+            # P_i = v v^T is in world coordinates, so a world rotation carries the
+            # controllable axis with it; otherwise this is not a symmetry
+            if agent.rotation_axis is not None:
+                agent.rotation_axis = R @ np.asarray(agent.rotation_axis, dtype=float)
+
     # positions are numpy arrays; the old .x/.y/.z form raised AttributeError.
     # Scale about the centroid, so a uniform scale is the trivial motion of
     # THEORY.md section 3 and leaves every bearing unchanged.
@@ -237,12 +242,13 @@ class Network:
         return rigidity.is_IBR(self, rank_K=rank_K)
 
     # also returns is IBR
-    def is_MBR(self, rank_K=None, brm=None, block_ranks=None):
+    def is_MBR(self, rank_K=None, brm=None, block_ranks=None, rank_brm=None):
         # for agent in self.agents:
         #     if agent.domain not in ["R^2", "R^3"]:
         #         raise Exception("Minimally Bearing Rigidity is not defined for domains other than R^d.")
 
-        return rigidity.is_MBR(self, rank_K=rank_K, brmat=brm, block_ranks=block_ranks)
+        return rigidity.is_MBR(self, rank_K=rank_K, brmat=brm, block_ranks=block_ranks,
+                               rank_brm=rank_brm)
 
     def eigenvalues(self, eps=1e-10):
         brm = self.extended_bearing_rigidity_matrix()

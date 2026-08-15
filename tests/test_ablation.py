@@ -46,8 +46,8 @@ def test_layout_tracks_the_optional_flags(make_env):
     assert "closeness" not in lean and "edge_between" not in lean
     rich = names(graph_features=True, rigidity_flex=True, rigidity_edge=True,
                  rigidity_global=True)
-    assert {"closeness", "edge_between", "flex_mag", "flex_align",
-            "block_rank", "rigidity_glob"} <= rich
+    assert {"closeness", "edge_between", "flex_mag", "add_gain",
+            "block_rank", "add_rank", "rigidity_glob"} <= rich
 
 
 def test_stale_layout_degrades_instead_of_mislabelling(capsys):

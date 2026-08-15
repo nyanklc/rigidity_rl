@@ -4,7 +4,8 @@ A policy trained at one size cannot transfer if its inputs or its internal
 activations grow with n. Both happened: EGNN/GINE aggregated with sum/add over
 n-1 dense neighbours, the flex features carried a sqrt(n) that assumed a fixed
 flex dimension, degree and common-neighbour counts were raw, and the initial-graph
-sampler's spread grew like n^4. See DESIGN_NOTES.md#aggregation-and-scale
+sampler's spread grew like n^4. The pair channels are bounded to [0, 1] by their
+own per-pair normalisation, which is what keeps them flat here. See DESIGN_NOTES.md#aggregation-and-scale
 """
 import numpy as np
 import pytest
@@ -39,7 +40,8 @@ def channel_mean(make_env, n, domain, key, sl, reps=12):
 DRIFTING = [
     ("node_features", slice(5, 7), "degree"),
     ("node_features", slice(10, 11), "flex_mag"),
-    ("edge_features", slice(6, 7), "flex_align"),
+    ("edge_features", slice(6, 7), "add_gain"),
+    ("edge_features", slice(8, 9), "add_rank"),
 ]
 
 

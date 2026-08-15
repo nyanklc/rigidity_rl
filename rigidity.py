@@ -288,7 +288,7 @@ def max_edge_rank(network, brmat_K=None):
 # LOWER BOUND, not a ground truth: keep it out of the reward, use it for
 # reporting and the MBR metric only. Costs n(n-1) rank computations -- cache it.
 # See DESIGN_NOTES.md#required-edge-count
-def required_edge_count(network, rank_K=None, brmat_K=None):
+def required_edge_count(network, rank_K=None, brmat_K=None, block_ranks=None):
     n = len(network.agents)
     if n < 2:
         return 0
@@ -305,11 +305,9 @@ def required_edge_count(network, rank_K=None, brmat_K=None):
         if rank_K is None:
             rank_K = np.linalg.matrix_rank(brmat_K)
 
-    m_K = brmat_K.shape[0] // 3
-    block_ranks = sorted(
-        (np.linalg.matrix_rank(brmat_K[3*k:3*(k+1), :]) for k in range(m_K)),
-        reverse=True,
-    )
+    if block_ranks is None:
+        block_ranks = edge_block_ranks(brmat_K)
+    block_ranks = sorted(block_ranks, reverse=True)
 
     sum_c = 0
     m_req = 0
@@ -431,7 +429,217 @@ def flex_constraint_power(Pi, bearings):
     return np.sqrt(np.maximum(sq_norm - parallel, 0.0))
 
 
-def is_MBR(network, rank_K=None, brmat=None, block_ranks=None):
+# Rank and margin from one thin SVD. The null space costs extra and is only
+# needed by the rigidity features, so it is a separate call.
+# See DESIGN_NOTES.md#null-space-features
+def rigidity_decomposition(brmat, rank_K):
+    """(rank, singular values, lam). lam is 0 unless the framework is rigid.
+
+    rank uses numpy's matrix_rank tolerance, so the IBR verdict is unchanged.
+    """
+    if brmat.size == 0:
+        return 0, np.zeros(0), 0.0
+    s = np.linalg.svd(brmat, compute_uv=False)
+    tol = s.max() * max(brmat.shape) * np.finfo(s.dtype).eps
+    rank = int((s > tol).sum())
+    lam = float(s[rank_K - 1] ** 2) if rank >= rank_K and rank_K - 1 < len(s) else 0.0
+    return rank, s, lam
+
+
+def nullspace(brmat, rank):
+    """Orthonormal basis of ker(B), (6n, 6n - rank), given the rank.
+
+    From eigh(B^T B), which is (6n, 6n) and so much cheaper than an SVD of B
+    whose left factor is (3m, 3m) and never used. Squaring costs precision in the
+    eigen*values*, but the rank is passed in rather than thresholded here, and
+    the span of the smallest 6n - rank eigenvectors is what the features use.
+    """
+    cols = brmat.shape[1]
+    if brmat.size == 0 or rank == 0:
+        return np.eye(cols)
+    if rank >= cols:
+        return np.zeros((cols, 0))
+    _, V = np.linalg.eigh(brmat.T @ brmat)          # eigenvalues ascending
+    return V[:, :cols - rank]
+
+
+def _node_projectors(network):
+    n = network.n
+    S = np.zeros((n, 3, 3))
+    P = np.zeros((n, 3, 3))
+    for i, agent in enumerate(network.agents):
+        S[i], P[i] = node_dof_projectors(agent)
+    return S, P
+
+
+# The exact addition criterion: edge i->j raises rank(B) iff its row block has a
+# component outside the row space, i.e. iff b_ij Z != 0. See THEORY.md section 13.
+def characteristic_length(network):
+    """RMS radius about the centroid: the formation's own length unit."""
+    p = np.array([a.pose.position for a in network.agents], dtype=float)
+    p = p - p.mean(axis=0)
+    return float(max(np.sqrt(np.mean((p ** 2).sum(axis=-1))), 1e-9))
+
+
+# B's position columns carry units of 1/length while its attitude columns are
+# dimensionless, so ker(B) moves under a uniform scaling of the formation. Fixing
+# the length unit to the formation's own size makes it invariant, which is the
+# same normalisation coord_features already applies. See THEORY.md section 13.
+def nullspace_in_scaled_units(Z, n, length_scale):
+    if Z.shape[1] == 0:
+        return Z
+    W = Z.copy()
+    W[:3 * n] /= length_scale
+    q, _ = np.linalg.qr(W)
+    return q[:, :Z.shape[1]]
+
+
+def candidate_block(network, i, j, length_scale=1.0):
+    """The 3 x 6n block b_ij that edge i->j would append to B. See THEORY.md §13.1.
+
+    Built by the matrix routine itself on a network carrying only this edge, so it
+    cannot drift from the construction it describes. length_scale rescales the
+    position columns, matching nullspace_in_scaled_units (THEORY.md §13.4).
+    """
+    single = copy.copy(network)
+    single.edges = np.zeros_like(network.edges)
+    single.edges[i, j] = True
+    b = extended_bearing_rigidity_matrix(single)
+    b[:, :3 * network.n] *= length_scale
+    return b
+
+
+def candidate_gain_reference(network, Z, length_scale=1.0):
+    """candidate_gain written as the formula it implements. The test oracle.
+
+    rank(B with i->j) - rank(B) = rank(b_ij Z), because the row space and the null
+    space are orthogonal complements (THEORY.md §13.1). One pair at a time, forming
+    b_ij explicitly. candidate_gain fuses these steps and is ~3x faster; this is
+    what tests/test_flex.py holds it to.
+    """
+    n = network.n
+    gain = np.zeros((n, n))
+    rank = np.zeros((n, n))
+    if Z.shape[1] == 0:
+        return gain, rank
+
+    for i in range(n):
+        for j in range(n):
+            if i == j:                              # no self bearings
+                continue
+            b = candidate_block(network, i, j, length_scale)
+            bZ = b @ Z                              # (3, dim ker B)
+            norm_b = np.linalg.norm(b)
+            gain[i, j] = np.linalg.norm(bZ) / max(norm_b, 1e-12)
+            # threshold measured, not guessed; see THEORY.md §13.3
+            s = np.linalg.svd(bZ, compute_uv=False)
+            rank[i, j] = int((s > 1e-6 * norm_b).sum())
+    return gain, rank
+
+
+def candidate_gain(network, Z, length_scale=1.0):
+    """(gain, rank) over all ordered pairs, for the edge each pair would add.
+
+    gain[i,j] = ||b_ij Z||_F / ||b_ij||_F in [0, 1], the fraction of the row block
+    edge i->j would contribute that lies outside the current row space, and
+    rank[i,j] = rank(b_ij Z), the rank it would add. gain is zero exactly on the
+    pairs that would add nothing.
+
+    Vectorized restatement of candidate_gain_reference, which is the readable form
+    and the oracle the tests hold this to. b_ij is never built: expanding its three
+    nonzero blocks (THEORY.md §13.1) gives
+
+        b_ij Z = Dp (S_j Z_j - S_i Z_i) - Da P_i Z_i
+
+    and each term becomes one batched product over all pairs.
+
+    Normalised per pair rather than against the spread: on a rigid framework every
+    raw gain is at machine zero, and dividing those by their own RMS turns noise
+    into an O(1) feature. Pass length_scale with a Z from
+    nullspace_in_scaled_units to make gain scale invariant.
+    """
+    n = network.n
+    p = np.array([a.pose.position for a in network.agents], dtype=float)
+    R = np.array([a.pose.rotation_mat() for a in network.agents], dtype=float)
+    S, P = _node_projectors(network)
+    k = Z.shape[1]
+    if k == 0:
+        return np.zeros((n, n)), np.zeros((n, n))
+
+    # Z split into its position and attitude halves, per node
+    Zp = Z[:3 * n].reshape(n, 3, k)
+    Za = Z[3 * n:].reshape(n, 3, k)
+    SZ = np.einsum("iab,ibk->iak", S, Zp)              # S_i Z_p,i
+    PZ = np.einsum("iab,ibk->iak", P, Za)              # P_i Z_a,i
+
+    d = p[None, :, :] - p[:, None, :]                  # p_j - p_i
+    dist = np.linalg.norm(d, axis=-1)
+    np.fill_diagonal(dist, 1.0)
+    pb = d / dist[..., None]
+    # Dp = (L / d_ij) R_i^T P(p_hat_ij),  Da = -R_i^T [p_hat_ij]_x, as in
+    # extended_bearing_rigidity_matrix. "iba" transposes R_i.
+    Proj = np.eye(3) - np.einsum("ija,ijb->ijab", pb, pb)
+    Dp = np.einsum("ij,iba,ijbc->ijac", length_scale / dist, R, Proj)
+    Sk = np.zeros((n, n, 3, 3))
+    Sk[..., 0, 1], Sk[..., 0, 2] = -pb[..., 2], pb[..., 1]
+    Sk[..., 1, 0], Sk[..., 1, 2] = pb[..., 2], -pb[..., 0]
+    Sk[..., 2, 0], Sk[..., 2, 1] = -pb[..., 1], pb[..., 0]
+    Da = -np.einsum("iba,ijbc->ijac", R, Sk)
+
+    # b_ij Z = Dp (S_j Z_j - S_i Z_i) - Da P_i Z_i. The minus on the attitude term
+    # is E_o's -1 at the measuring node; with a plus this looks plausible and is
+    # wrong (ROADMAP.md, WP2 log).
+    rel = SZ[None, :, :, :] - SZ[:, None, :, :]        # S_j Z_j - S_i Z_i
+    blk = np.einsum("ijab,ijbk->ijak", Dp, rel) \
+        - np.einsum("ijab,ibk->ijak", Da, PZ)
+    np.einsum("iiak->iak", blk)[...] = 0.0             # no self bearings
+
+    # the block has 3 rows, so its Gram matrix is 3x3: one small eigendecomposition
+    # per pair gives both the norm and the rank, where a batched SVD of (3, k)
+    # would cost far more
+    G = np.einsum("ijak,ijbk->ijab", blk, blk)
+    gain = np.sqrt(np.maximum(np.einsum("ijaa->ij", G), 0.0))
+
+    # ||b_ij||_F, from its three nonzero blocks, which sit in disjoint columns
+    Bi = np.einsum("ijab,ibc->ijac", Dp, S)
+    Bj = np.einsum("ijab,jbc->ijac", Dp, S)
+    Ba = np.einsum("ijab,ibc->ijac", Da, P)
+    row = np.sqrt((Bi ** 2).sum((2, 3)) + (Bj ** 2).sum((2, 3)) + (Ba ** 2).sum((2, 3)))
+
+    # measured separation between "adds nothing" and "adds rank" is ~8 orders of
+    # magnitude in gain/||b_ij||, so 1e-6 sits far from either side
+    w = np.linalg.eigvalsh(G)
+    ref = np.maximum(row ** 2, 1e-30)
+    rk = (w > ref[..., None] * 1e-12).sum(axis=-1).astype(float)
+
+    gain = gain / np.maximum(row, 1e-12)
+    np.fill_diagonal(gain, 0.0)
+    np.fill_diagonal(rk, 0.0)
+    return gain, rk
+
+
+# The non-trivial flex: ker(B_G) with ker(B_K) removed. By Michieletto Theorem 1
+# the latter IS the trivial variation set, exactly, in every domain and mix, so
+# nothing has to be enumerated by hand. See THEORY.md section 13.
+def flex_space(Z, Z_K, tol=1e-7):
+    if Z.shape[1] == 0 or Z_K.shape[1] == 0:
+        return Z
+    W = Z - Z_K @ (Z_K.T @ Z)
+    u, s, _ = np.linalg.svd(W, full_matrices=False)
+    return u[:, s > tol]
+
+
+def node_flex_magnitude(F, n):
+    """How free each node is: the norm of its own rows of the flex basis."""
+    if F.shape[1] == 0:
+        return np.zeros((n, 1))
+    Fp = F[:3 * n].reshape(n, 3, -1)
+    Fa = F[3 * n:].reshape(n, 3, -1)
+    mag = np.sqrt((Fp ** 2).sum(axis=(1, 2)) + (Fa ** 2).sum(axis=(1, 2)))
+    return mag[:, None]
+
+
+def is_MBR(network, rank_K=None, brmat=None, block_ranks=None, rank_brm=None):
     if int(network.edges.sum()) == 0:
         return False, False, 0
 
@@ -443,7 +651,11 @@ def is_MBR(network, rank_K=None, brmat=None, block_ranks=None):
         brmat_K = extended_bearing_rigidity_matrix(network_K)
         rank_K = np.linalg.matrix_rank(brmat_K)
 
-    isIBR, rank_brmat = is_IBR_explicit(brmat, rank_K=rank_K)
+    if rank_brm is None:
+        isIBR, rank_brmat = is_IBR_explicit(brmat, rank_K=rank_K)
+    else:
+        rank_brmat = int(rank_brm)
+        isIBR = rank_brmat == rank_K
 
     if not isIBR:
         return False, isIBR, rank_brmat

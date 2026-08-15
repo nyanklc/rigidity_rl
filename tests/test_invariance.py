@@ -5,6 +5,7 @@ import pytest
 import torch
 
 from conftest import ALL_DOMAINS, ORIENTED_DOMAINS, RD_DOMAINS, LOOSE_TOL
+from rigidity import rigidity_decomposition
 from policy import build_models
 from policy.gnn_backbone import GNNBackboneEquivariant
 from skrl.utils.spaces.torch import flatten_tensorized_space, tensorize_space
@@ -13,8 +14,11 @@ INVARIANT_CHANNELS = ["node_features", "edge_features", "adj"]
 
 
 def snapshot(e):
+    """Poses may have moved, so the pose-dependent episode constants move too."""
+    e.compute_episode_constants()
     brm = e.network.extended_bearing_rigidity_matrix()
-    e.compute_rigidity_features(brm, np.linalg.matrix_rank(brm), False)
+    rank, _, _ = rigidity_decomposition(brm, e.rank_K)
+    e.compute_rigidity_features(brm, rank, rank == e.rank_K)
     return {k: np.array(v, dtype=float) for k, v in e._get_obs().items()}
 
 

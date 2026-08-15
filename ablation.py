@@ -54,8 +54,9 @@ EDGE_BLOCKS = [
     ("edge_between",  1, "graph_features"),
     ("reciprocity",   1, None),
     ("common_nbrs",   1, None),
-    ("flex_align",    1, "rigidity_flex"),
+    ("add_gain",      1, "rigidity_flex"),
     ("block_rank",    1, "rigidity_edge"),
+    ("add_rank",      1, "rigidity_edge"),
 ]
 
 
@@ -415,7 +416,8 @@ def main():
         if not layout:
             sys.exit(f"no channels matched; available: {[c[0] for c in layout]}")
 
-    meta = (f"model {args.model}  |  n={raw.network.n} {raw.network.agents[0].domain}"
+    meta = (f"model {args.model}  |  env={args.environment}"
+            f"  |  n={raw.network.n} {raw.network.agents[0].domain}"
             f"  |  {raw.action_space_type}  |  {len(layout)} channels"
             f"  |  mode={args.mode}  |  {args.episodes} episodes x {steps} steps"
             f"  |  seed {args.seed}")

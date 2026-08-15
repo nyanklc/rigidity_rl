@@ -315,6 +315,12 @@ unaffected because it used `γ = 0.99`.
 
 ## 9. Flexes — the null space features
 
+> **Superseded by §13 for the observation.** Everything below works on the *position block*
+> `B_p = B[:, :3n]` alone, so it is blind to the attitude columns and measured AUC 0.634 at
+> predicting rank gain in `SE(3)`. §13 derives the replacement from the full `ker(B)`.
+> `flex_tensor` / `flex_constraint_power` are retained and tested as the reference the §10
+> ground-truth check runs against; the environment no longer calls them.
+
 ### The flex space
 
 Let `B_p = B[:, :3n]` be the position block and `N = ker(B_p) ⊆ R^{3n}`. `N` contains the trivial
@@ -588,3 +594,153 @@ which is what `tests/conftest.py::max_rank_K` asserts, and the exact trivial spa
 orthonormal basis of `ker(B_K)` — by Theorem 1 that *is* the trivial variation set. `trivial_modes`
 still hardcodes three translations plus scaling and is therefore wrong for mixes; it is replaced by
 the `ker(B_K)` basis in WP2, together with the rest of the flex rework.
+
+---
+
+## 13. The exact addition criterion
+
+§9 asked "would this edge help?" and answered it with a projector built from the position block.
+That is a heuristic in two ways: it discards the attitude columns, and it measures destroyed flex
+rather than added rank. Both are avoidable — the exact criterion is one line of linear algebra.
+
+### 13.1 The criterion
+
+Adding edge `i -> j` appends its 3-row block `b_ij` to `B`. Let `Z` be an orthonormal basis of
+`ker(B)`. Then
+
+```
+rank([B; b_ij]) - rank(B) = rank(b_ij Z)                                            (13.1)
+```
+
+*Proof.* Row space and null space are orthogonal complements, so `b_ij` raises the rank by exactly
+the dimension of its component outside `rowspace(B) = ker(B)^⊥`. Projecting onto `ker(B)` is
+`b_ij Z Zᵀ`, and `rank(b_ij Z Zᵀ) = rank(b_ij Z)` since `Z` has orthonormal columns. ∎
+
+In particular `rank(B)` is unchanged iff `b_ij Z = 0`. This is exact, needs no threshold on a
+difference of two ranks, and holds in every domain and every heterogeneous mix, because it says
+nothing about what `B` is — only that it is a matrix.
+
+### 13.2 The two features
+
+```
+add_gain[i,j] = ||b_ij Z||_F / ||b_ij||_F  ∈ [0, 1]
+add_rank[i,j] = rank(b_ij Z) / c_max       ∈ [0, 1]
+```
+
+over **all ordered pairs**, not just the absent ones. `add_rank` is the answer to the question;
+`add_gain` is its continuous relaxation, and carries strictly more information — it distinguishes
+an edge that barely escapes the row space from one that is fully outside it, which is what a value
+function needs in order to prefer one of two rank-1 edges.
+
+The normalisation is per pair, by that pair's own `||b_ij||`. Normalising against the spread over
+pairs (as the `flex_mag` channel does) is wrong here: on a rigid framework `ker(B)` is exactly the
+trivial space, every raw gain is at machine zero, and dividing those by their own RMS turns
+rounding noise into an O(1) feature.
+
+`candidate_gain_reference` states (13.1) directly: one pair at a time, with `b_ij` built by calling
+the matrix routine on a network carrying only that edge. `candidate_gain` expands the three nonzero
+blocks by hand,
+
+```
+b_ij Z = D_p (S_j Z_j − S_i Z_i) − D_a P_i Z_i
+```
+
+into batched products over all pairs, and is checked against the reference in every domain. Note the
+minus: `Ē_o` places `−1` at the measuring node only. It is invisible in `R^2`/`R^3`, where `P_i = 0`.
+
+`b_ij` has 3 rows, so `G = (b_ij Z)(b_ij Z)ᵀ` is 3×3. `tr G` gives the norm and `eigvalsh(G)` the
+rank, at a cost that does not grow with `dim ker(B)` — a batched SVD of the (3, k) blocks would.
+
+### 13.3 The rank threshold
+
+`add_rank` counts eigenvalues of `G` above `1e-12 · ||b_ij||²`, i.e. `add_gain > 1e-6`. That cut is
+measured, not guessed. Over 1,501 candidate pairs across all five domains and three mixes:
+
+| | `add_gain` |
+|---|---|
+| pairs that add no rank | max `1.59e-10` |
+| pairs that add rank | min `1.43e-02` |
+
+Eight orders of magnitude of empty space, and `1e-6` sits in the middle of it. The original cut was
+at `1e-18` relative, which is *below* the noise floor of a Gram matrix in double precision, so
+borderline eigenvalues flipped whenever the geometry was translated or scaled and the channel
+drifted by a full rank unit. See §13.5.
+
+### 13.4 Scale invariance and the length unit
+
+`B` is dimensionally inhomogeneous: the position columns carry `1/||p_ij||` and the attitude columns
+are dimensionless (§12.4). Scaling the whole formation by `α` therefore does **not** scale `B`
+uniformly, and `ker(B)` genuinely moves. The features would then depend on the units the poses
+happen to be in, which is unacceptable for a policy meant to transfer.
+
+The fix is to fix the length unit to something the formation carries itself. `characteristic_length`
+returns the RMS radius about the centroid, `nullspace_in_scaled_units` divides the position rows of
+`Z` by it and re-orthonormalises, and `candidate_gain` multiplies `Dp` by the same factor. This is
+the same normalisation `coord_features` already applies to positions, so the observation is
+consistent about what "unit length" means. The rigidity maths itself still runs on the true poses.
+
+A second, easily missed prerequisite: `P_i = v_i v_iᵀ` for `R^dxS^1` is expressed in **world**
+coordinates, so a global rotation has to rotate `agent.rotation_axis` too. `rotate_network` did not,
+which broke `R^3xS^1` rotation invariance for reasons that had nothing to do with these features.
+
+### 13.5 Validation
+
+`add_gain` against ground truth (rebuild `B` with the edge added, recompute the rank), 6-node
+frameworks at 40% density:
+
+| domain | pairs | AUC `add_gain` | AUC `flex_align` (§9) | clean split | exact rank |
+|---|---|---|---|---|---|
+| `R^2` | 111 | **1.000** | 1.000 | yes | 111/111 |
+| `R^3` | 155 | **1.000** | 1.000 | yes | 155/155 |
+| `R^2xS^1` | 264 | **1.000** | 0.678 | yes | 264/264 |
+| `R^3xS^1` | 250 | **1.000** | 0.807 | yes | 250/250 |
+| `SE(3)` | 268 | **1.000** | 0.634 | yes | 268/268 |
+| all five mixed | 160 | **1.000** | 0.767 | yes | 160/160 |
+| `R^2` + `SE(3)` | 118 | **1.000** | 0.648 | yes | 118/118 |
+| `R^2xS^1` + `R^3xS^1` | 115 | **1.000** | 0.567 | yes | 115/115 |
+
+"Clean split" means every rank-adding pair scores above every non-adding pair, with no overlap.
+`flex_align` is at chance in the oriented domains, which is the failure §9's position-only
+derivation predicts: it cannot see a bearing that pins down an attitude.
+
+`dim flex_space` equals `rank_K - rank(B)` exactly in every case, which is (9.2) generalised — and
+note it needs no hand-built trivial modes, because `ker(B_K)` **is** the trivial variation set by
+Michieletto Theorem 1, in every domain and mix.
+
+Invariance, worst channel over 6 instances each (`tests/test_invariance.py`):
+
+| domain | translate | scale | rotate |
+|---|---|---|---|
+| `R^2` | 1.7e-12 | 4.5e-15 | 8.7e-01 (bearings, §11.3) |
+| `R^3` | 2.6e-14 | 5.0e-15 | 8.3e-01 (bearings, §11.3) |
+| `R^2xS^1` | 1.8e-13 | 4.4e-12 | 3.6e-14 |
+| `R^3xS^1` | 1.8e-11 | 3.9e-13 | 1.2e-13 |
+| `SE(3)` | 7.4e-14 | 3.2e-13 | 2.1e-13 |
+| mixed | 2.0e-13 | 3.6e-13 | 8.7e-01 (bearings, §11.3) |
+
+The rotation column is the known `R^d` global-frame bearing artefact of §11.3 and is not these
+features; `add_gain` and `add_rank` are themselves invariant to 1e-13 under all three transforms in
+every domain.
+
+### 13.6 Cost
+
+Single-threaded, at 60% of `m_req` edges, milliseconds:
+
+| n | domain | build `B` | rank (SVD) | `ker` (eigh) | `candidate_gain` | flex | total |
+|---|---|---|---|---|---|---|---|
+| 8 | `R^3` | 0.21 | 0.04 | 0.07 | 0.23 | 0.08 | **0.63** |
+| 8 | `SE(3)` | 0.38 | 0.10 | 0.14 | 0.22 | 0.02 | **0.85** |
+| 16 | `R^3` | 0.44 | 0.19 | 0.28 | 0.69 | 0.29 | **1.90** |
+| 16 | `SE(3)` | 0.89 | 0.48 | 0.52 | 0.59 | 0.03 | **2.50** |
+| 24 | `R^3` | 0.77 | 0.52 | 0.70 | 1.52 | 0.65 | **4.16** |
+| 24 | `SE(3)` | 1.52 | 1.28 | 1.10 | 1.21 | 0.07 | **5.17** |
+
+Two things paid for this. `nullspace` takes `eigh(BᵀB)` rather than an SVD of `B`, whose left factor
+is (3m, 3m) and never used — 13.15 ms to 2.50 ms at n=16. Squaring costs precision in the
+eigen*values*, which is why the rank is still read off the thin SVD in `rigidity_decomposition` and
+only the eigen*vectors* come from `eigh` (taking the rank from `eigh` disagreed with `matrix_rank`
+on 840 of 840 cases). And `candidate_gain` uses the 3×3 Gram matrix instead of a batched SVD, 1.77
+ms to 0.59 ms at n=16.
+
+Measure this pinned to one BLAS thread. Unpinned, `eigh` on a 144×144 matrix was reported at
+anywhere from 0.26 to 16 ms on the same input, which is thread contention rather than the algorithm.

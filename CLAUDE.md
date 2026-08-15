@@ -40,6 +40,16 @@ apply to every task in this repository.
   `tools/`. Ask before adding, and default to keeping rather than discarding: a small library of
   these accumulates into something worth having, and a one-off answer that cannot be re-run is
   worth much less than one that can. This is not only about tests.
+- **Write code to be read, and to match the maths.** The primary audience is a person checking the
+  implementation against the derivation, so name things after the symbols they are: `B`, `Z`, `S_i`,
+  `P_i`, `c_k`, `rank_K`, `m_req`. Where a line implements a numbered equation, say which one
+  (`# (13.1)`). Prefer the form that visibly *is* the formula over the form that is clever. A
+  straightforward loop that mirrors a sum over edges is better than a vectorized expression whose
+  index bookkeeping has to be decoded, unless the loop is a measured bottleneck.
+- **Performance is not the first priority.** This is an experiment setup, not a product. Optimize
+  only against a *measured* bottleneck that actually blocks an experiment (the n≥32 step cost is the
+  real one), and when you do, say in the code what the readable version was and keep it as the
+  reference the tests check against. Do not trade clarity for a speedup nobody asked for or measured.
 - **Keep code comments brief.** One or two lines, saying what is non-obvious, with a pointer to the
   document that explains it (`see THEORY.md §12`). Derivations, measurements, rejected alternatives
   and rationale belong in `THEORY.md` / `DESIGN_NOTES.md` / `ROADMAP.md`, not in a comment block
@@ -124,7 +134,8 @@ uv run train_dqn.py <environment_name> <model_name>
 uv run inference.py <model_name> <environment_name>
 
 # Reference points: initial / random / greedy / learned / optimal, all scored with the same phi
-uv run baselines.py <environment_name> [--episodes N] [--model <name>] [--brute-force] [--methods a,b] [--replay-env]
+uv run baselines.py <environment_name> [--episodes N] [--model <name>] [--brute-force] [--methods a,b] [--restarts K] [--replay-env]
+#   methods: initial, greedy, constructive, random, learned
 #   --benchmark <name> evaluates on a frozen instance set instead of sampling
 
 # Freeze evaluation instances so results stay comparable across config regenerations
@@ -149,13 +160,14 @@ tensorboard --logdir runs
 
 Names are filenames without extension: `<environment_name>` → `environments/<name>.json`, `<scenario_name>` → `scenarios/<name>.json`.
 
-**Tests: `uv run tests/run_all.py`** (fast suite, ~30 s, 510 checks) or
+**Tests: `uv run tests/run_all.py`** (fast suite, ~45 s, 559 checks) or
 `uv run tests/run_all.py --slow` (~3 min, adds training runs, brute force and large n).
 Individual files run standalone: `uv run pytest tests/test_flex.py -v`.
 
 The suite is written against the invariants this project keeps breaking -- the scale-free
 mask sentinel, n-invariance of every observation channel and of both backbones' activations,
-the flex tensor's frame and shape, per-domain `rank_K`/`c_max`/`m_req`,
+the flex tensor's frame and shape, the exact addition criterion against rebuilt-matrix
+ground truth in every domain, per-domain `rank_K`/`c_max`/`m_req`,
 similarity invariance per channel across all five domains, `allow_skip` over every model,
 the legacy obs presets being byte-exact, and phi's closed form. Re-introducing any of the
 six bugs found during the last stretch of work makes a *named* test fail; that is the
@@ -332,11 +344,24 @@ and cost 4.7x the step time at n=16 (43.4 -> 9.2 ms). `_lean` configs turn them 
 
 **Rigidity features are an ablation arm, off by default** (`rigidity_global` / `rigidity_flex` /
 `rigidity_edge` in the env config). They add rank deficit, `m/m_req` and `is_IBR` as node channels,
-plus per-node flex magnitude and a per-pair flex/bearing alignment derived from the rigidity
-matrix's null space. These are tier-3 quantities no distributed agent could compute, so the *gap*
-between arms is the result, not the informed arm's number. Note `c_k` (per-edge block rank) is
-constant in every homogeneous domain and so carries nothing at n=4/8/16 — it has its own flag for
-that reason. See `DESIGN_NOTES.md#rigidity-features`.
+plus per-node flex magnitude and two per-pair channels answering "would this edge raise the rank".
+These are tier-3 quantities no distributed agent could compute, so the *gap* between arms is the
+result, not the informed arm's number. Note `c_k` (per-edge block rank) is constant in every
+homogeneous domain and so carries nothing at n=4/8/16 — it has its own flag for that reason. See
+`DESIGN_NOTES.md#rigidity-features`.
+
+**The pair channels are exact, not heuristic.** With `Z` an orthonormal basis of `ker(B)`, adding
+edge `i -> j` raises the rank by exactly `rank(b_ij Z)`, so `add_gain = ||b_ij Z||/||b_ij||` is zero
+precisely on the pairs that would add nothing and `add_rank = rank(b_ij Z)/c_max` is the gain
+itself. Measured AUC 1.000 with a clean split in all five domains and three heterogeneous mixes,
+exact rank on 1,501 pairs. `candidate_gain_reference` is the readable loop form and
+`candidate_gain` the fast expansion of it, held to the reference by test in every domain. They
+replaced `flex_align`, a position-block-only construction that was
+at chance in the oriented domains (AUC 0.634 in SE(3)) because it could not see the attitude
+columns. Two things they depend on that are easy to break: `ker(B)` is **not** scale-invariant
+(position columns carry `1/length`, attitude columns are dimensionless), so the length unit is fixed
+to the formation's RMS radius; and `rotate_network` must rotate `agent.rotation_axis`, since
+`P_i = v v^T` is in world coordinates. See `THEORY.md` §13.
 
 **Positions are pose-normalized** in the observation (centred, unit RMS radius). Bearings are
 already scale-invariant but EGNN's internal `rel_dist` is not, which is why `pos_limits` used to
@@ -394,11 +419,19 @@ perturbed gets **empty** cells rather than zeros -- a 0.0 there would be average
 evidence of independence, which is the one thing it is not -- and `status` / `feeds_action_mask`
 carry the two caveats above as columns.
 
-What it found, and why it is not the failure it looks like: destroying any geometric channel costs
-the policy nothing, while degree and the global rigidity channels cost it a lot. That is the
-*correct* behaviour under an objective with no geometry in it (`ROADMAP.md` §1.1), not shortcut
-learning. It becomes the acceptance test for WP3: once the margin enters the reward, the geometric
-channels must start costing something.
+What it found, and why it is not the failure it looks like: **destroying any geometric channel costs
+the policy nothing.** That holds in all three modes and is the robust result. It is the *correct*
+behaviour under an objective with no geometry in it (`ROADMAP.md` §1.1), not shortcut learning, and
+it becomes the acceptance test for WP3: once the margin enters the reward, the geometric channels
+must start costing something.
+
+**Run more than one mode before believing a positive.** Under `zero`, `degree`, `rigidity_glob` and
+`add_rank` look enormously important (+14.09, +12.20, +8.48 phi). Under `shuffle` they collapse to
+noise except `degree`. Zeroing a normalized degree channel asserts every node has degree 0, and
+zeroing `rigidity_glob` asserts a contradictory state (deficit 0 *and* `is_IBR` 0) — inputs the
+network never saw, so the reaction measures out-of-distribution surprise rather than dependence. The
+negative results are the ones that survive mode changes, because `zero` is the *aggressive*
+ablation: a channel that costs nothing even when zeroed is genuinely unused.
 
 ### Baselines (`baselines.py`, `agent_loader.py`)
 
@@ -408,6 +441,15 @@ table are measured by the exact φ the agent trains on. `greedy` and `optimal` w
 to the configured action space, and are scored on best-state-visited. `optimal` scans edge count
 ascending and stops at the first level admitting an IBR graph — unlike `MBR_required_Rd` this makes
 no homogeneity assumption, but it is gated at `n ≤ 5`.
+
+**`constructive` is the classical opponent.** From the empty graph, keep any edge that raises
+`rank(B)`, stop at `rank_K`, best of `--restarts` random orders. It is the only method that does
+*not* start from the initial graph, since it is a construction rather than an edit, and it carries
+its own RNG so enabling it does not change the instances the other methods are scored on. Measured
+at n=8/`R^3` (`m_req` = 10): 11.50 edges at 1 restart, 11.00 at 5, 10.75 at 20. Note that in the
+`c_max = 1` domains the independent sets form a matroid and greedy is optimal by construction, so
+beating it is only meaningful in `R^3` / `R^3xS^1` / `SE(3)`. See
+`DESIGN_NOTES.md#constructive-baseline`.
 
 **`greedy` is the expensive baseline**, not brute force: it evaluates all `n(n-1)` candidate
 toggles per single edit, so cost is `O(n^2)` φ-evaluations per improvement. `score_network()`
@@ -605,7 +647,18 @@ Live research questions, not things to silently "fix":
 1. **Termination condition.** There is no way to know the true optimal topology. The only sound stopping test is minimal bearing rigidity: exact via `MBR_required_Rd` for homogeneous `R^d`, otherwise the greedy `is_MBR` heuristic. The heuristic is a *sound lower bound* (rank subadditivity over edge blocks ⇒ no proper subset of the current edges can be rigid with fewer than `m_req` edges), and it reproduces the closed form exactly for homogeneous `R^2` and `R^3`. It can produce **false negatives** in heterogeneous networks, where the greedy sum over the highest-rank blocks may not be jointly realizable — a truly minimal graph is then never recognized and the episode never terminates. **Note the two `m_req`s**: `required_edge_count` accumulates block ranks of the *complete* graph (the true lower bound, and what `env.m_req` holds), while `is_MBR` recomputes from the *current* graph's blocks — which on a heterogeneous network can also **false-positive**, reporting a non-minimal graph as minimal. They coincide in every homogeneous domain, and the false positive does not fire on the `mixed` scenario (0 in 122 rigid graphs), but `is_MBR` should take `env.m_req` instead. WP7 hygiene.
 2. **Initial-graph difficulty.** With `random_graph_with_mean_min_edges` the initial edge count is drawn around `m_req` with `sd = 0.5·m_req`, so `m0/m_req` is centred on 1 at every `n` and domain. With the flag *off* it falls back to `m ~ Uniform{0, …, n²-n}`, which over-constrains badly (~2.8× the requirement at n=8/R^3) and teaches deletion only — so leave it on unless you specifically want that.
 3. **Constructive vs. editing formulation.** Starting from the empty graph and only adding edges is under consideration; the open worry is whether a purely constructive agent can reach *optimal* topologies rather than merely feasible ones. This is also the natural bridge to a distributed protocol (Henneberg-style vertex addition attaches each new agent with `d` edges, which is exactly what `MBR_required_Rd` counts) — see `ROADMAP.md` appendix A.
-4. **Generalization is the blocking problem, and it is now diagnosed rather than open.** The scale and observation fixes helped *within* R^d and not at all *across* domains. Three causes, all in `ROADMAP.md` §1: the reward contains no geometry so nothing forces the policy to read it (§1.1); the domain one-hot columns for unseen domains never receive a gradient, so the domain identity can only inject noise at evaluation (§1.5); and until WP1 the heterogeneous physics was wrong anyway (§1.2). The plan is WP3 (margin in the reward) and WP7 (train across domains); neither is a tuning change.
+4. **Generalization is the blocking problem, and it is partly resolved.** Three causes were
+   identified, all in `ROADMAP.md` §1: the reward contains no geometry so nothing forces the policy
+   to read it (§1.1); the domain one-hot columns for unseen domains never receive a gradient (§1.5);
+   and until WP1 the heterogeneous physics was wrong anyway (§1.2). **WP7 phase A (training on the
+   `mixed` scenario) has now run and fixed the second one:** the catastrophic cross-domain failure
+   is gone (100% rigid on homogeneous `SE(3)`, against 5% for the R^3-specialist). What remains is
+   graded rather than catastrophic — transfer now degrades with agent DOF, matching both classical
+   baselines at 3 DOF per agent and failing at 4 and 6, with the policy accumulating edges instead
+   of pruning. Whether that is composition coverage (phase B resamples the mix, so high-DOF agents
+   can dominate) or a capacity limit is **open**, and phase B carries a pre-registered acceptance
+   criterion so the answer cannot be argued after the fact. WP3 (margin in the reward) addresses
+   §1.1 and is untouched. Neither is a tuning change. Current numbers: `ROADMAP.md` §1.0.
 5. `reset()` with no scenario file rebuilds the network from `agents[0].domain` only, so heterogeneous domains survive only via the `scenario` path (`randomize_scenario`).
 6. Per-step cost is dominated by pure-Python graph features in `obs()` (Floyd–Warshall closeness, Brandes betweenness) plus repeated rigidity-matrix construction: `step()` builds `B`, then calls `is_MBR` unconditionally (a full-matrix rank *plus* one rank per edge, ~25 SVDs at n=8) and `rigidity_eigenvalue` when tracking (which rebuilds `B` and does a 48×48 `eigvalsh`). **`Weighted` needs neither.** Env stepping is several times the network's own cost at n=8, spent on metrics that never enter the reward. `graph_features=False` removes the centralities (4.7x at n=16); the rigidity-matrix work remains. Fine at `n=4–8`, the bottleneck beyond.
 7. **Bearings are not rotation-invariant in `R^d`** (see Invariance above). The task is invariant;

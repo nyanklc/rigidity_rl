@@ -483,9 +483,9 @@ def build_dict_obs(env, define_type, node_set="graph", coords=True, edges=True,
                   else network.get_common_neighbors_features()]
         if rig:
             if env.rigidity_flex:
-                parts.append(rig["flex_align"])
+                parts.append(rig["add_gain"])
             if env.rigidity_edge:
-                parts.append(rig["block_rank"])
+                parts += [rig["block_rank"], rig["add_rank"]]
         e = np.concat(parts, axis=-1)
         obs["edge_features"] = e
         spec["edge_features"] = spaces.Box(-np.inf, np.inf, e.shape)
@@ -687,7 +687,9 @@ class Environment(gym.Env):
 
         # must run before the space is defined, or the declared space is missing
         # the rigidity channels that reset() then produces
-        is_MBR_i, is_IBR_i, rank_i = self.network.is_MBR(rank_K=self.rank_K, brm=self.brm)
+        rank_i, _, _ = rigidity_decomposition(self.brm, self.rank_K)
+        is_MBR_i, is_IBR_i, _ = self.network.is_MBR(
+            rank_K=self.rank_K, brm=self.brm, rank_brm=rank_i)
         self.compute_rigidity_features(self.brm, rank_i, is_IBR_i)
 
         _, self.observation_space = obs(obs_space_type, self, define_type=True)
@@ -859,16 +861,33 @@ class Environment(gym.Env):
         # position block only; equals rank_K unless a domain contributes orientation
         self.rank_K_pos = np.linalg.matrix_rank(brmat_K[:, :3 * self.network.n])
         self.c_max = max_edge_rank(self.network, brmat_K=brmat_K)
+        # one pass of per-edge block ranks serves m_req, c_max and the block_rank
+        # channel; they used to be recomputed independently
+        blocks_K = (edge_block_ranks(brmat_K)
+                    if self.rigidity_edge or len({a.domain for a in self.network.agents}) > 1
+                    else None)
         self.m_req = required_edge_count(
-            self.network, rank_K=self.rank_K, brmat_K=brmat_K
+            self.network, rank_K=self.rank_K, brmat_K=brmat_K, block_ranks=blocks_K
         )
+        # pose-dependent, edge-independent, and needed every step by the rigidity
+        # features: the trivial variation space and every pair's own block rank
+        if self.rigidity_features_enabled():
+            self.length_scale = characteristic_length(self.network)
+            ZK = nullspace(brmat_K, int(self.rank_K))
+            self.Z_K = nullspace_in_scaled_units(ZK, self.network.n, self.length_scale)
+            self.block_rank_K = np.zeros((self.network.n, self.network.n))
+            ii, jj = np.nonzero(network_K.edges)
+            cm = max(int(self.c_max), 1)
+            for k, r in enumerate(blocks_K if blocks_K is not None
+                                  else edge_block_ranks(brmat_K)):
+                self.block_rank_K[ii[k], jj[k]] = r / cm
 
     # -----------------------------------
     # Rigidity-derived observation features for the current graph, cached so obs()
     # does not recompute them. Only filled when some rigidity flag is on -- these
     # are tier-3 information, an ablation arm, not the default.
     # See DESIGN_NOTES.md#rigidity-features
-    def compute_rigidity_features(self, brm, rank_brm, is_IBR):
+    def compute_rigidity_features(self, brm, rank_brm, is_IBR, Z=None):
         if not self.rigidity_features_enabled():
             self.last_rigidity = None
             return
@@ -880,35 +899,34 @@ class Environment(gym.Env):
             "is_IBR": float(is_IBR),
         }
 
+        if Z is None:
+            Z = nullspace(brm, int(rank_brm))
+
+        # lengths in units of the formation's own size, so the null space does not
+        # move under a uniform scaling. See THEORY.md section 13
+        L = self.length_scale
+        Zs = nullspace_in_scaled_units(Z, n, L)
+        cand = candidate_gain(self.network, Zs, length_scale=L)
+
         if self.rigidity_flex:
-            Pi = flex_tensor(brm, n, self.network.get_position_features())
-            # sum_i tr Pi[i,i] = dim F = the rank deficit, which grows with n, so
-            # dividing by sqrt(n) alone leaves the feature scaling with BOTH n and
-            # the deficit. Normalizing by the trace makes the vector's mean square
-            # exactly 1 at any n and any deficit -- it becomes "which nodes are
-            # free", not "how free in absolute terms", which is the part that
-            # transfers. It also removes the rigid/non-rigid scale jump, since the
-            # rigid fallback is a unit eigenvector with trace 1.
-            # See DESIGN_NOTES.md#aggregation-and-scale
-            total = float(np.einsum("iidd->", Pi))
-            scale = np.sqrt(n) / np.sqrt(max(total, 1e-12))
-            # how free node i is; trace of its own projector block. See THEORY.md
-            feats["flex_mag"] = np.sqrt(
-                np.einsum("iidd->i", Pi)
-            )[:, None] * scale
-            # how much of the current flex the edge i->j would remove
-            # world-frame bearings: Pi is a world-frame tensor, while
-            # get_all_pairs_bearings() is the body-frame measurement
-            feats["flex_align"] = flex_constraint_power(
-                Pi, self.network.get_all_pairs_bearings_world()
-            )[:, :, None] * scale
+            # ker(B_K) is exactly the trivial variation set (Michieletto Thm 1),
+            # so nothing has to be enumerated by hand. See THEORY.md section 13
+            F = flex_space(Zs, self.Z_K)
+            mag = node_flex_magnitude(F, n)
+            # normalized to unit mean square, so it says which nodes are free
+            # rather than how free in absolute terms, which is what transfers
+            rms = np.sqrt(max(float((mag ** 2).mean()), 1e-12))
+            feats["flex_mag"] = mag / rms
+
+            # already in [0, 1] per pair; see rigidity.candidate_gain
+            feats["add_gain"] = cand[0][:, :, None]
 
         if self.rigidity_edge:
-            c = np.zeros((n, n, 1))
-            ii, jj = np.nonzero(self.network.edges)
-            for k, r in enumerate(edge_block_ranks(brm)):
-                c[ii[k], jj[k], 0] = r / max(int(self.c_max), 1)
-            feats["block_rank"] = c
+            # from the COMPLETE graph, so a candidate pair reads its own value
+            # rather than 0, which is indistinguishable from "contributes nothing"
+            feats["block_rank"] = self.block_rank_K[:, :, None]
+            _, rk = cand
+            feats["add_rank"] = (rk / max(int(self.c_max), 1))[:, :, None]
 
         self.last_rigidity = feats
 
@@ -1218,8 +1236,10 @@ class Environment(gym.Env):
         # actually taken to reach that graph
         self.step_counter += 1
 
-        # state score, how good is the current state
-        is_MBR, is_IBR, rank_brm = self.network.is_MBR(rank_K=self.rank_K, brm=brm)
+        # one SVD serves rank, null space and margin; see DESIGN_NOTES.md#null-space-features
+        rank_brm, _, lam = rigidity_decomposition(brm, self.rank_K)
+        is_MBR, is_IBR, _ = self.network.is_MBR(
+            rank_K=self.rank_K, brm=brm, rank_brm=rank_brm)
         state_score = self.compute_state_score(brm, is_IBR, is_MBR, rank_brm)
 
         # obs comes after the rigidity computation, not before: the rigidity
@@ -1229,8 +1249,7 @@ class Environment(gym.Env):
 
         # computed once and shared; see DESIGN_NOTES.md#min-eig-caching
         tracking = self.track_data_enable and self.writer is not None
-        min_eig = (rigidity_eigenvalue(self.network, rank_K=self.rank_K)
-                   if (tracking or self.trace_min_eig) else None)
+        min_eig = lam if (tracking or self.trace_min_eig) else None
         self.update_best_state(state_score, is_IBR, is_MBR, rank_brm, min_eig=min_eig)
 
         # everything an outside observer needs about this step, so nothing has to be
@@ -1518,7 +1537,9 @@ class Environment(gym.Env):
         # The reward is the improvement in state score, so the baseline has to be
         # the initial graph's score. Leaving it at 0 would make the first step's
         # reward the *absolute* score of the graph after one action.
-        is_MBR_0, is_IBR_0, rank_brm_0 = self.network.is_MBR(rank_K=self.rank_K, brm=self.brm)
+        rank_brm_0, _, lam0 = rigidity_decomposition(self.brm, self.rank_K)
+        is_MBR_0, is_IBR_0, _ = self.network.is_MBR(
+            rank_K=self.rank_K, brm=self.brm, rank_brm=rank_brm_0)
         self.last_state_score = self.compute_state_score(
             self.brm, is_IBR_0, is_MBR_0, rank_brm_0
         )
@@ -1614,7 +1635,7 @@ if __name__ == "__main__":
 
     ONLY_RANDOMIZE_EDGES = False
 
-    ROTATION_AUGMENTATION = False
+    ROTATION_AUGMENTATION = True
 
     INCLUDE_CANDIDATE_BEARINGS = True
 

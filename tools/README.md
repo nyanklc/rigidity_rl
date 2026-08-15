@@ -22,10 +22,22 @@ PYTHONPATH=. uv run tools/<name>.py
 | `constructive_greedy.py` | how good is the classical baseline, and is the problem a matroid at this domain and size? |
 | `env_report.py` | what is in this environment config: switches, observation layout and channel statistics, episode constants, cost |
 | `compare_runs.py` | how do two or more training runs differ on the metrics that separate a policy from a search? |
+| `verify_results.py` | do the numbers quoted in `ROADMAP.md` §1.0 and the README still reproduce? |
 
-`constructive_greedy.py` is the honest opponent for WP8: it beats the current
-policy everywhere except its training configuration, and it shows that the
-`c_max = 1` domains are a matroid where any greedy is already optimal.
+`constructive_greedy.py` is the standalone version of the `constructive` baseline
+now wired into `baselines.py`, for difficulty sweeps that need no env config. It
+also shows that the `c_max = 1` domains are a matroid where any greedy is already
+optimal, which is why a "beats greedy" claim only means something in the spatial
+domains.
+
+`verify_results.py` is the reproducibility check to run before quoting a number
+anywhere. It builds the environment programmatically rather than reading the
+gitignored `environments/`, so it works on a fresh clone: benchmark digests tie a
+number to an instance set, and `greedy` / `constructive` need no checkpoint. The
+`learned` rows cannot be checked from a clone, because `models/` and `train/` are
+gitignored; it prints the `baselines.py` commands instead of duplicating the
+rollout, since a second rollout path would drift and the check would become the
+thing that is wrong.
 
 `env_report.py` cross-checks the observation layout against `build_dict_obs` and
 warns if the two have drifted, which is the same table `ablation.py` mirrors by

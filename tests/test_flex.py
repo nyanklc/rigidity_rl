@@ -3,8 +3,12 @@ import numpy as np
 import pytest
 
 from conftest import ALL_DOMAINS, TOL
+from conftest import ALL_DOMAINS
 from rigidity import (extended_bearing_rigidity_matrix as B_of, flex_tensor,
-                      flex_constraint_power, trivial_modes)
+                      flex_constraint_power, trivial_modes, rigidity_decomposition,
+                      nullspace, nullspace_in_scaled_units, candidate_gain,
+                      candidate_gain_reference, candidate_block,
+                      flex_space, characteristic_length, rigidity_eigenvalue)
 from scenario import random_scenario
 
 
@@ -140,3 +144,135 @@ def test_constraint_power_uses_world_frame_bearings():
     assert np.allclose(
         flex_constraint_power(Pi_of(N), N.get_all_pairs_bearings_world()),
         before, atol=1e-7)
+
+
+# ------------------------------------------------- null-space features (WP2)
+
+@pytest.mark.parametrize("domains", [[d] * 6 for d in ALL_DOMAINS] + [
+    ["R^2", "R^2xS^1", "R^3", "R^3xS^1", "SE(3)"],
+    ["R^2"] * 3 + ["SE(3)"],
+    ["R^2xS^1"] * 2 + ["R^3xS^1"] * 2,
+])
+def test_add_gain_is_exactly_the_addition_criterion(domains):
+    """Edge i->j raises rank(B) iff b_ij Z != 0, and by rank(b_ij Z)."""
+    n = len(domains)
+    rng = np.random.default_rng(0)
+    net, _ = random_scenario(n, list(domains))
+    pairs = [(i, j) for i in range(n) for j in range(n) if i != j]
+    E = np.zeros((n, n), dtype=bool)
+    for k in rng.choice(len(pairs), size=int(0.4 * len(pairs)), replace=False):
+        E[pairs[k]] = True
+    net.edges = E
+
+    rank_K = np.linalg.matrix_rank(B_of(net.fully_connected()))
+    B = B_of(net)
+    rank, _, _ = rigidity_decomposition(B, rank_K)
+    Z = nullspace(B, rank)
+    gain, rk = candidate_gain(net, Z)
+
+    for i, j in pairs:
+        if E[i, j]:
+            continue
+        net.edges = E.copy()
+        net.edges[i, j] = True
+        true_gain = np.linalg.matrix_rank(B_of(net)) - rank
+        net.edges = E
+        assert int(round(rk[i, j])) == true_gain, (i, j)
+        assert (gain[i, j] > 1e-6) == (true_gain > 0), (i, j)
+    assert gain.min() >= 0.0 and gain.max() <= 1.0 + 1e-12
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+def test_nullspace_matches_an_svd_basis(domain):
+    net, _ = random_scenario(6, domain, edge_count=9)
+    B = B_of(net)
+    rank_K = np.linalg.matrix_rank(B_of(net.fully_connected()))
+    rank, _, _ = rigidity_decomposition(B, rank_K)
+    Z = nullspace(B, rank)
+    assert Z.shape == (B.shape[1], B.shape[1] - rank)
+    assert np.abs(B @ Z).max() / max(np.abs(B).max(), 1e-12) < 1e-9
+    ref = np.linalg.svd(B, full_matrices=True)[2][rank:].T
+    assert np.abs(Z @ Z.T - ref @ ref.T).max() < 1e-8      # same subspace
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+def test_flex_space_is_the_non_trivial_null_space(domain):
+    """dim = rank_K - rank, i.e. ker(B_G) with the trivial variations removed."""
+    net, _ = random_scenario(6, domain, edge_count=8)
+    BK = B_of(net.fully_connected())
+    rank_K = np.linalg.matrix_rank(BK)
+    B = B_of(net)
+    rank, _, _ = rigidity_decomposition(B, rank_K)
+    L = characteristic_length(net)
+    Z = nullspace_in_scaled_units(nullspace(B, rank), net.n, L)
+    ZK = nullspace_in_scaled_units(nullspace(BK, rank_K), net.n, L)
+    assert flex_space(Z, ZK).shape[1] == rank_K - rank
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+def test_rigidity_decomposition_agrees_with_matrix_rank_and_eigenvalue(domain):
+    net, _ = random_scenario(6, domain, edge_count=11)
+    BK = B_of(net.fully_connected())
+    rank_K = np.linalg.matrix_rank(BK)
+    B = B_of(net)
+    rank, _, lam = rigidity_decomposition(B, rank_K)
+    assert rank == np.linalg.matrix_rank(B)
+    assert abs(lam - rigidity_eigenvalue(net, rank_K=rank_K)) < 1e-9
+
+
+def test_scaling_the_formation_leaves_the_null_space_features_alone():
+    """B mixes 1/length with dimensionless columns, so the length unit is fixed
+    to the formation's own size. Without that, ker(B) moves under scaling."""
+    net, _ = random_scenario(6, "SE(3)", edge_count=9)
+    BK = B_of(net.fully_connected())
+    rank_K = np.linalg.matrix_rank(BK)
+
+    def features(net_):
+        B = B_of(net_)
+        rank, _, _ = rigidity_decomposition(B, rank_K)
+        L = characteristic_length(net_)
+        Z = nullspace_in_scaled_units(nullspace(B, rank), net_.n, L)
+        return candidate_gain(net_, Z, length_scale=L)[0]
+
+    before = features(net)
+    net.scale_network(7.5)
+    assert np.abs(before - features(net)).max() < 1e-7
+
+
+@pytest.mark.parametrize("domains", [[d] * 6 for d in ALL_DOMAINS] + [
+    ["R^2", "R^2xS^1", "R^3", "R^3xS^1", "SE(3)", "R^3"],
+])
+def test_fast_candidate_gain_matches_the_readable_one(domains):
+    """candidate_gain is a hand-expanded candidate_gain_reference; if the two ever
+    disagree the expansion is wrong, which is how the sign error was found."""
+    n = len(domains)
+    rng = np.random.default_rng(1)
+    net, _ = random_scenario(n, list(domains))
+    pairs = [(i, j) for i in range(n) for j in range(n) if i != j]
+    E = np.zeros((n, n), dtype=bool)
+    for k in rng.choice(len(pairs), size=int(0.4 * len(pairs)), replace=False):
+        E[pairs[k]] = True
+    net.edges = E
+
+    rank_K = np.linalg.matrix_rank(B_of(net.fully_connected()))
+    B = B_of(net)
+    rank, _, _ = rigidity_decomposition(B, rank_K)
+    L = characteristic_length(net)
+    Z = nullspace_in_scaled_units(nullspace(B, rank), n, L)
+
+    g_fast, r_fast = candidate_gain(net, Z, length_scale=L)
+    g_ref, r_ref = candidate_gain_reference(net, Z, length_scale=L)
+    assert np.abs(g_fast - g_ref).max() < 1e-9
+    assert np.array_equal(r_fast, r_ref)
+
+
+def test_candidate_block_is_the_row_block_the_edge_would_append():
+    """b_ij is literally B's rows for that edge, so B on {i->j} alone must be it."""
+    net, _ = random_scenario(5, ["R^2", "R^3", "R^2xS^1", "R^3xS^1", "SE(3)"])
+    E = np.zeros((5, 5), dtype=bool)
+    E[0, 2] = E[3, 1] = True
+    net.edges = E
+    B = B_of(net)                       # rows in np.nonzero(edges) order
+    for k, (i, j) in enumerate(zip(*np.nonzero(E))):
+        b = candidate_block(net, i, j)
+        assert np.abs(b - B[3 * k:3 * k + 3]).max() < 1e-12

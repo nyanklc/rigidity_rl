@@ -13,7 +13,7 @@ greedy gets stuck exactly where RL should win: states where no single edit impro
 swap of two does. That is the interesting comparison.
 
 usage:
-  uv run baselines.py <environment_name> [--episodes N] [--model NAME] [--brute-force] [--steps K] [--tag NAME] [--device cpu|cuda] [--methods a,b,c] [--policy-mode sample|greedy]
+  uv run baselines.py <environment_name> [--episodes N] [--model NAME] [--brute-force] [--steps K] [--tag NAME] [--device cpu|cuda] [--methods a,b,c] [--restarts K] [--policy-mode sample|greedy]
   [--no-plots] [--plot-episodes N] [--brief] [--out-dir PATH] [--replay-env]
 
 Writes one directory per run under runs_baselines/: the table, per-episode results,
@@ -192,6 +192,86 @@ def run_greedy(env, max_steps=200, verbose=True, trace=None, episode=0):
                   work=steps, best_at=steps, min_eig=st["min_eig"])
 
 
+def _construct_once(env, order, rng):
+    """One restart. From the empty graph, keep any edge that raises rank(B).
+
+    Returns (edges, additions in order, rank reached). The order is reshuffled between
+    rounds, so a pair rejected early gets another chance once the graph has grown.
+
+    rng is private to this baseline: drawing from the global stream would change the
+    instances every *other* method is scored on. See DESIGN_NOTES.md#constructive-baseline.
+    """
+    n = env.network.n
+    E = np.zeros((n, n), dtype=bool)
+    added, rank, progress = [], 0, True
+
+    while rank < env.rank_K and progress:
+        progress = False
+        for k in rng.permutation(len(order)):
+            i, j = order[k]
+            if E[i, j]:
+                continue
+            E[i, j] = True
+            env.network.edges = E
+            new_rank = np.linalg.matrix_rank(env.network.extended_bearing_rigidity_matrix())
+            if new_rank > rank:          # the edge is independent of the ones already in
+                rank, progress = new_rank, True
+                added.append((i, j))
+            else:
+                E[i, j] = False
+
+    env.network.edges = E
+    return E, added, rank
+
+
+def run_constructive(env, rng, restarts=20, verbose=True, trace=None, episode=0):
+    """Randomized constructive greedy, best of `restarts` independent orders.
+
+    The classical algorithm for this problem, and the one to beat: no rigidity theory
+    beyond rank(B), no learning. Unlike every other method it starts from the **empty
+    graph** rather than the initial one, because it is a construction and not an edit.
+    See DESIGN_NOTES.md#constructive-baseline.
+    """
+    n = env.network.n
+    order = [(i, j) for i in range(n) for j in range(n) if i != j]
+
+    best = None
+    bar = tqdm(total=restarts, desc="    constructive", unit="restart",
+               leave=False) if verbose else None
+    for _ in range(restarts):
+        _, added, rank = _construct_once(env, order, rng)
+        score, is_IBR, is_MBR, _, m = score_network(env)
+        # among rigid graphs phi is monotone decreasing in m, so this picks fewest edges
+        if rank == env.rank_K and (best is None or score > best[0]):
+            best = (score, list(added))
+        if bar is not None:
+            bar.update(1)
+            bar.set_postfix(m=m, best=f"{best[0]:.0f}" if best else "-")
+    if bar is not None:
+        bar.close()
+
+    if best is None:                     # no restart reached rank_K
+        env.network.edges = np.zeros((n, n), dtype=bool)
+        st = stats_now(env)
+        record(trace, "constructive", episode, 0, st)
+        return result("constructive", st["score"], st["is_IBR"], st["is_MBR"], st["m"])
+
+    # replay the winner, so only it pays for the per-step statistics
+    added = best[1]
+    E = np.zeros((n, n), dtype=bool)
+    env.network.edges = E.copy()
+    record(trace, "constructive", episode, 0, stats_now(env))
+    for k, (i, j) in enumerate(added, start=1):
+        E[i, j] = True
+        env.network.edges = E.copy()
+        record(trace, "constructive", episode, k, stats_now(env))
+
+    st = stats_now(env)
+    # monotone construction: it ends on its own best graph
+    return result("constructive", st["score"], st["is_IBR"], st["is_MBR"], st["m"],
+                  work=len(added), best_at=len(added), min_eig=st["min_eig"])
+
+
 def rollout_result(method, env, work):
     """Best graph the rollout visited, not the one it happened to stop on."""
     return result(method, env.best_state_score, env.best_stats["is_IBR"],
@@ -356,9 +436,11 @@ def main():
                         help="how many individual episodes get their own detail figure")
     parser.add_argument("--brief", action="store_true",
                         help="print the table without the explanatory legend")
-    parser.add_argument("--methods", default="initial,greedy,random,learned",
-                        help="comma-separated subset of initial,greedy,random,learned "
-                             "(greedy is the expensive one at large n)")
+    parser.add_argument("--methods", default="initial,greedy,constructive,random,learned",
+                        help="comma-separated subset of initial,greedy,constructive,random,"
+                             "learned (greedy and constructive are the expensive ones at large n)")
+    parser.add_argument("--restarts", type=int, default=20,
+                        help="restarts for the constructive baseline; it reports the best of them")
     parser.add_argument("--policy-mode", default="sample", choices=("sample", "greedy"),
                         help="sample (default): sampled actions, i.e. the policy used as a "
                              "sampling search over the horizon, scored on the best state it "
@@ -371,7 +453,8 @@ def main():
     args = parser.parse_args()
 
     methods = [m.strip() for m in args.methods.split(",") if m.strip()]
-    unknown = [m for m in methods if m not in ("initial", "greedy", "random", "learned")]
+    unknown = [m for m in methods
+               if m not in ("initial", "greedy", "constructive", "random", "learned")]
     if unknown:
         print(f"unknown method(s): {unknown}")
         return 1
@@ -446,6 +529,9 @@ def main():
     # --policy-mode sample repeatable for a given seed
     torch.manual_seed(args.seed)
 
+    # private to the constructive baseline; see the note in _construct_once
+    construct_rng = np.random.default_rng(args.seed)
+
     frozen = None
     if args.benchmark:
         frozen, bench_meta = benchmark.load(args.benchmark)
@@ -480,6 +566,11 @@ def main():
         if "greedy" in methods:
             restore()
             episode_rows.append(run_greedy(env, trace=traces, episode=ep))
+
+        if "constructive" in methods:
+            restore()
+            episode_rows.append(run_constructive(env, construct_rng, restarts=args.restarts,
+                                                 trace=traces, episode=ep))
 
         if "random" in methods:
             restore()

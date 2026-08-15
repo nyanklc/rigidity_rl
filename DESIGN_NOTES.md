@@ -257,6 +257,13 @@ and it matters on `mixed`, where four of ten agents are frameless.
 90% / 10.10 rotated. One instance in twenty, within noise at that sample size. The augmentation is
 free and principled, not a fix for a large defect -- do not oversell it.
 
+**But the effect is model-dependent, and larger than this row suggests.** The same paired benchmark
+run against `letsgo_dqn_gine` (trained on `mixed` **with** `rotation_augmentation` on, evaluated
+out of distribution at n=8/`R^3`) flips **8 of 20** instances: 10 minimal unrotated against 14
+rotated. Every classical method is byte-identical across the pair, so the churn is entirely the
+policy. Read the flip count, not the net, and do not conclude the augmentation fixed anything --
+this policy had it enabled during training and still moves. See `ROADMAP.md` §1.0.
+
 **Only the z axis is admissible when any planar agent is present** -- an arbitrary axis would lift
 it out of its plane. `rotate_network` rotates about the centroid and leaves the z component
 untouched under a z rotation, so planar agents stay at z=0 exactly (asserted).
@@ -376,8 +383,8 @@ is the deliverable. Three graded flags, so several information levels can be com
 | flag | node channels | edge channels |
 |---|---|---|
 | `rigidity_global` | `(rank_K-rank)/rank_K`, `m/m_req`, `is_IBR` | — |
-| `rigidity_flex` | `flex_mag` | `flex_align` |
-| `rigidity_edge` | — | `c_k / c_max` |
+| `rigidity_flex` | `flex_mag` | `add_gain` |
+| `rigidity_edge` | — | `c_k / c_max`, `add_rank` |
 
 **`c_k` is nearly useless on its own, and that is why the flags are graded.** Per-edge block rank is
 *constant* in every homogeneous configuration — measured 2 for every edge in R^3 and 1 in R^2, at
@@ -385,43 +392,81 @@ n=4/8/16 — so it is a dead channel in all three configurations currently train
 varies only on heterogeneous networks. It is kept as its own flag rather than bundled, so it never
 silently pads the feature vector in the runs where it means nothing.
 
+### null-space-features
+
+`rigidity_decomposition(B, rank_K)` returns `(rank, singular values, lam)` from **one** thin SVD.
+`step()` used to do three decompositions of the same matrix: `matrix_rank(B)`, one rank per edge
+inside `is_MBR`, and an `eigvalsh(B^T B)` for the rigidity eigenvalue. The rank now flows into
+`is_MBR` as `rank_brm`, and the margin is `s[rank_K - 1]**2` off the same singular values, which is
+the rigidity eigenvalue by definition (`THEORY.md` §4). This is what makes WP3 and WP4 affordable
+rather than a second full decomposition per step.
+
+`lam` is 0 unless the framework is rigid, deliberately: below `rank_K` the `rank_K`-th singular
+value is a numerical zero and reporting it as a margin would be meaningless.
+
+The remaining `rigidity_eigenvalue()` calls in `compute_state_score` are the score types that
+actually read it. `WeightedNormalized` has `w_eig = 0` and does not reach them, so the shared value
+covers every path currently trained.
+
 #### The flex features
 
-`B`'s position block `B_p = B[:, :3n]` has a null space whose non-trivial directions are the
-infinitesimal flexes: the motions the framework cannot resist. `flex_tensor()` returns the per-node
-`(n, 3, 3)` diagonal blocks `G_i` of the projector onto that space.
+Both channels come from `ker(B)` of the **whole** matrix, positions and attitudes together.
 
-Two things this must get right, both of which bit during implementation:
+- `add_gain[i,j] = ||b_ij Z||_F / ||b_ij||_F` — the fraction of edge `i->j`'s row block that lies
+  outside the current row space. It is zero exactly on the pairs that would add no rank, which is
+  not an approximation: rank gain **is** `rank(b_ij Z)` (`THEORY.md` §13.1).
+- `add_rank[i,j] = rank(b_ij Z) / c_max` — the same thing as an integer. It rides on `rigidity_edge`
+  with `c_k`, since both are per-edge rank quantities.
+- `flex_mag[i]` — how free node `i` is, from `flex_space(Z, Z_K)`, the non-trivial part of the null
+  space. `ker(B_K)` *is* the trivial variation set (Michieletto Theorem 1), so nothing has to be
+  enumerated by hand, in any domain or mix.
 
-1. **The trivial modes have to be projected out explicitly.** `eigh` returns an arbitrary
-   orthonormal basis of the *whole* null space, so "take the columns after the first `3n - rank_K`"
-   does not skip translations and scaling — it skips an arbitrary mixture containing them. The
-   symptom was a flex that failed to localise on an obviously under-constrained node and was not
-   rotation-invariant. `trivial_modes()` builds the 3 translations and the uniform scaling
-   analytically, and they are projected out before the flex space is taken.
-2. **Return the projector, not an eigenvector.** The flex space is usually multi-dimensional, and
-   any single vector inside a degenerate eigenspace is a basis artefact — not reproducible between
-   calls on the same graph. `G_i = sum_c v_i^(c) v_i^(c)^T` is basis-independent, and transforms as
-   a tensor, so scalars read off it are rotation-invariant.
+**This replaced a position-only construction, and the replacement is not cosmetic.** The previous
+`flex_align` used a projector built from `B_p = B[:, :3n]` alone and measured *destroyed flex*
+rather than *added rank*. Blind to the attitude columns, it was at chance in the oriented domains:
+AUC 0.634 in `SE(3)`, 0.678 in `R^2xS^1`, against 1.000 with a clean split for `add_gain` in all
+five domains and three mixes. `flex_tensor` / `flex_constraint_power` are kept and tested as the
+reference for `THEORY.md` §10, but the environment no longer calls them.
 
-When the framework is already rigid the flex space is empty; the weakest resisted direction (the
-rigidity eigenvalue's eigenvector) is used instead, so the feature degrades from "where it is free"
-to "where it is nearly free".
+`candidate_gain_reference` is the readable statement of this: it loops over pairs, builds `b_ij` by
+calling `extended_bearing_rigidity_matrix` on a network carrying only that edge, and takes
+`||b_ij Z||` and `rank(b_ij Z)` directly. `candidate_gain` is the same thing with the three nonzero
+blocks expanded by hand into batched products, ~3x faster, and the tests hold it to the reference in
+every domain. That pairing is the point: flipping the attitude sign in the fast version makes
+`test_fast_candidate_gain_matches_the_readable_one` fail in `R^2xS^1`, `R^3xS^1` and `SE(3)` and
+**pass** in `R^2`/`R^3`, since `P_i = 0` there and the term is invisible. That is exactly why the
+bug survived the first round of checking.
 
-The two scalars read off `G_i` are both invariant, which is the point — a flex **vector** fed as node
-features would be rotation-*equivariant* data consumed as invariant scalars, the same error §2.3
-records for bearings:
+Three implementation details that each cost a debugging cycle:
 
-- `flex_mag = sqrt(trace(G_i)) * sqrt(n)` — how free node `i` is. The `sqrt(n)` matters: the basis
-  is globally unit-norm, so without it the feature shrinks as `n` grows, which is exactly wrong for
-  a policy meant to span several `n`.
-- `flex_align[i,j] = sqrt(p_hat_ij^T G_i p_hat_ij) * sqrt(n)` — how much of the bearing to `j` lies
-  in what `i` cannot resist, i.e. *would measuring `j` help*. This is the addition criterion, which
-  is the half of the failure the geometry-only policy is worst at. Reuses the all-pairs bearings.
+1. **`Ē_o` contributes `-y_i`**, so the attitude term enters `b_ij Z` with a minus. With a plus the
+   AUC was 0.906-0.947 and looked plausible — good enough to ship, wrong enough to matter.
+2. **`ker(B)` is not scale-invariant.** `B`'s position columns carry `1/length` and its attitude
+   columns are dimensionless, so a uniform scaling of the formation moves the null space. The length
+   unit is fixed to the formation's own RMS radius (`characteristic_length` /
+   `nullspace_in_scaled_units`), the same normalisation `coord_features` uses. Related and separate:
+   `P_i = v_i v_i^T` is in world coordinates, so `rotate_network` has to rotate
+   `agent.rotation_axis` too — it did not, which broke `R^3xS^1` rotation invariance.
+3. **The rank threshold has to be measured.** `add_rank` cuts at `add_gain > 1e-6`, which sits in
+   the middle of an eight-order-of-magnitude gap (`THEORY.md` §13.3). The first cut was at `1e-18`
+   relative, below the noise floor of a Gram matrix in double precision, so the channel flipped by a
+   whole rank unit when the geometry was translated or scaled.
 
-Verified: a detached node scores 1.58 against 0.22-0.35 for the rigid remainder; the same node held
-by one edge scores 0.88 against 0.09-0.25; rotation invariance holds to 1e-15; `flex_align` from the
-loose node averages 1.69 against 0.24 for nodes in the rigid part.
+Normalisation is **per pair**, by that pair's own `||b_ij||`, not against the spread over pairs. On
+a rigid framework every raw gain is at machine zero, and dividing those by their own RMS turns
+rounding noise into an O(1) feature.
+
+#### Cost
+
+The per-component breakdown is `THEORY.md` §13.6. Two choices earned most of it: `nullspace` uses
+`eigh(B^T B)` rather than an SVD of `B` whose left factor is (3m, 3m) and never used (13.15 -> 2.50
+ms at n=16), and `candidate_gain` reads norm and rank off the 3x3 Gram matrix rather than a batched
+SVD (1.77 -> 0.59 ms). The rank still comes from the thin SVD, not from `eigh`: squaring halves the
+precision of the eigenvalues, and thresholding them disagreed with `matrix_rank` on 840 of 840
+cases. Only the eigen*vectors* come from `eigh`.
+
+Profile pinned to one BLAS thread. Unpinned, the same 144x144 `eigh` was timed at anywhere from 0.26
+to 16 ms on the same input.
 
 #### Ordering
 
@@ -432,11 +477,15 @@ described the previous step's graph. `_get_obs()` now runs after the state score
 is missing channels that `reset()` then produces (`ValueError: Output array is the wrong shape` from
 the vector-env concatenate).
 
-#### Cost
+#### Cost of the arm as a whole
 
-Same graph, n=8: `{}` 1.93 ms/step, `{global}` 2.16, `{global,flex}` 2.42, `{global,flex,edge}` 2.68
-(+39% for the widest arm). At n=16: 21.6 -> 23.1 ms (+7%), since the fixed graph-feature cost
-dominates there.
+Same fixed graph, single-threaded, ms/step. n=8: `{}` 2.13, `{global}` 2.59, `{global,flex}` 2.66,
+`{global,flex,edge}` 2.67 (+25% for the widest arm). n=16: 7.85 -> 9.16 -> 9.58 -> 9.52 (+21%).
+
+Most of the cost is `{global}`, which is `is_IBR` and `m/m_req`; the null-space channels on top of
+it are nearly free, because `rigidity_decomposition` and `nullspace` run for the state score
+anyway. `rigidity_edge` measures at or below `rigidity_flex` here — `add_rank` comes out of the same
+Gram matrix `add_gain` already formed, so the marginal cost is within noise.
 
 ### all-pairs-bearings
 
@@ -562,6 +611,41 @@ Cost is `n(n-1)` small rank computations, so call it once per episode and cache 
 ---
 
 ## train_ppo.py
+
+### constructive-baseline
+
+`baselines.py --methods constructive`. From the empty graph, keep any edge that raises `rank(B)`,
+stop at `rank_K`; best of `--restarts` independent random orders. This is the classical algorithm
+for the problem and the one the learned policy has to beat. `tools/constructive_greedy.py` is the
+standalone version, used for difficulty sweeps that do not need an env config.
+
+**It is the only method that does not start from the initial graph.** It throws those edges away and
+builds from nothing, because it is a construction and not an edit. The report says so, in the
+`summary.txt` legend and on the figure card, since "all methods see the same networks" is otherwise
+the reader's default assumption and it would be wrong here.
+
+**Why it is the right opponent, and why `greedy` is not enough on its own.** `greedy` hill-climbs phi
+from the initial random graph, so it mostly prunes an over-dense graph downward. `constructive`
+never sees the initial edges and has to find an independent set from scratch, which is the harder
+and more standard framing. Reporting only the first invites "why not compare against the obvious
+constructive algorithm".
+
+Measured at n=8/`R^3` (`m_req` = 10), 4 instances: 11.50 edges at 1 restart, 11.00 at 5, 10.75 at 20.
+Every instance is order-sensitive, never a matroid, as `c_max = 2` predicts. In the `c_max = 1`
+domains (`R^2`, `R^2xS^1`) the independent sets *are* a matroid and greedy is optimal by
+construction, so a "beats greedy" claim is only meaningful in the spatial domains.
+
+**It gets its own RNG.** `np.random` is the stream `reset()` draws instances from, so shuffling the
+candidate order there changes which networks *every other method* is scored on — enabling the method
+silently moved the `initial` row from 15.33 to 13.00 edges. `run_constructive` takes an
+`np.random.default_rng(seed)` of its own. `greedy` uses no randomness and `random` uses the action
+space's own seeded RNG, so the instance sequence stays independent of `--methods`, which is what
+makes two runs comparable.
+
+Selection among restarts is by phi rather than by edge count. Among rigid graphs the two agree,
+since `WeightedNormalized` is monotone decreasing in `m` at fixed rank, and phi keeps the choice
+consistent with the column the table reports. Per-step statistics are computed only for the winning
+restart, by replaying its additions from empty.
 
 ### ppo-rollout-size
 

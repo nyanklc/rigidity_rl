@@ -111,22 +111,52 @@ would carry over and what provably would not.
 Results move as the formulation changes. The authoritative, dated summary is
 [ROADMAP.md](ROADMAP.md) section 1; the short version:
 
-**Works.** At 8 agents in `R^3` a trained DQN policy reaches 10.05 edges against a proven optimum
-of 10, rigid on every instance and minimal on 95% of them, compared with 50% for greedy
-hill-climbing on the same objective and the same instances. It converges in roughly 7 edits and
-computes no rigidity matrix at inference.
+**Works.** On heterogeneous networks of 10 agents spanning all five domains at once, a trained DQN
+policy reaches 17.05 edges against a proven lower bound of 17, rigid on every instance of a frozen
+20-instance benchmark and minimal on 95% of them. Greedy hill-climbing on the same objective and
+the same instances reaches 80%, and a 20-restart constructive-greedy oracle reaches 50%. The policy
+gets there with roughly 270x fewer rigidity-matrix evaluations than the oracle.
 
-**Does not work yet.** Transfer to unseen domains is below doing nothing: the same policy scores 5%
-rigid on 8 agents in `SE(3)`, where the untouched initial graph scores 35%. The cause is identified
-rather than suspected, and it is not a tuning problem.
+**Transfer degrades with agent complexity.** Without retraining the policy runs at 5, 8 and 16
+agents. At 8 agents in homogeneous `R^3` it ties both classical baselines, reaching 50% minimal
+where a random policy reaches 0%; at 16 it ties the weaker one and loses to greedy (23.20 edges and
+0% minimal against 22.65 and 45%). The one configuration where it beats both classical methods is
+the heterogeneous mixture it trained on. Across homogeneous domains at 8 agents,
+however, transfer tracks the degrees of freedom each agent carries: it matches the baselines at 3
+DOF per agent (`R^3`, `R^2xS^1`) and fails at 4 and 6 (`R^3xS^1` 10% minimal against 85-100% for the
+baselines, `SE(3)` 25% against 100%). On `SE(3)` it scores below a uniform random policy on the
+objective while remaining rigid everywhere, so the failure is over-density rather than
+infeasibility.
+
+The edge-count trajectory identifies what breaks. Wherever the policy works it prunes downward
+toward the bound (18.1 to 17.6 on the training mixture, 11.2 to 10.6 at 8 agents in `R^3`); where it
+fails it never enters a pruning phase and climbs instead, by +1.5 edges at 4 DOF and +8.2 at 6. It
+reaches rigidity there by accumulation rather than by construction.
+
+The leading explanation is coverage: the training mixture holds two agents of each domain, so
+high-DOF agents are never in the majority, and the policy handles exactly those agents well when
+they are a minority. That is not yet established against a capacity explanation, and separating them
+is the next experiment. Generalization across agent domains remains the oldest open problem here and
+is not resolved by these results.
+
+**Does not work yet: the geometry.** Channel-wise ablation, run in three independent modes, shows
+the policy solves the problem from graph structure alone and reads no geometry at all. Destroying
+the bearings, the agent coordinates and the null-space channels costs it nothing in any mode. That
+is the correct response to an objective that contains no geometric term, and the price is visible
+in the figures below: the rigidity margin of the graphs it produces falls by an order of magnitude
+over training, and a random policy ends up holding a better margin than any method that actually
+solves the problem. Extending the objective past the combinatorial rank is the next stage of the
+work, and the ablation supplies its acceptance test, since the geometric channels have to start
+costing something.
 
 **Two findings that reframed the project.** The rank of the rigidity matrix is generically
 independent of the agent configuration, which means a rank-based objective is purely combinatorial
-and cannot motivate the geometric machinery usually paired with it. Separately, the standard
-heterogeneous rigidity matrix construction attaches degree-of-freedom restrictions per edge rather
-than per node, which lets a planar agent gain a degree of freedom it does not have; the corrected
-construction is validated against its own definition by numerical differentiation and agrees
-exactly with the published one on homogeneous networks. See [THEORY.md](THEORY.md) section 12.
+and cannot motivate the geometric machinery usually paired with it. The ablation above is that
+argument confirmed in a trained network. Separately, the standard heterogeneous rigidity matrix
+construction attaches degree-of-freedom restrictions per edge rather than per node, which lets a
+planar agent gain a degree of freedom it does not have; the corrected construction is validated
+against its own definition by numerical differentiation and agrees exactly with the published one
+on homogeneous networks. See [THEORY.md](THEORY.md) section 12.
 
 Numbers reported here are single-seed unless stated otherwise, and measured run-to-run variance at
 this scale is large. Treat them as indicative.
@@ -134,38 +164,43 @@ this scale is large. Treat them as indicative.
 ## Evaluation
 
 Every trained policy is scored against the same reference points on the same networks: the graph it
-started from, a uniform random policy, greedy hill-climbing on the same objective, and, on networks
-small enough, exhaustive search for the true optimum. Instances are drawn from a frozen benchmark
-set so a number measured today stays comparable to one measured months later.
+started from, a uniform random policy, greedy hill-climbing on the same objective, a randomized
+constructive greedy that builds from the empty graph and is the classical algorithm for this
+problem, and, on networks small enough, exhaustive search for the true optimum. Instances are drawn
+from a frozen benchmark set so a number measured today stays comparable to one measured months
+later.
 
 ![Baseline comparison table](resources/baselines-table.png)
 
-The learned policy reaches the minimal edge count on 95% of networks where greedy hill-climbing
-reaches it on 50%, using the same number of edits. Greedy stalls because the objective has local
-optima that no single edge change escapes, and those are exactly the cases the policy has learned
-to step through.
+The learned policy reaches the minimal edge count on 95% of networks, against 80% for greedy
+hill-climbing and 50% for constructive greedy on the same instances. Its spread is also the
+narrowest of the three, so the mean is not an average over wildly different outcomes. The `work`
+column is not a fair cost comparison for the policy: this configuration masks out the stop action,
+so it is obliged to keep editing for the whole horizon. `best at` is the step it actually converged
+on, and there it is comparable to greedy.
 
 ![Run trajectories](resources/baselines-trajectories.png)
 
-The trajectories show the behaviour behind the table. The policy prunes to the minimal graph within
-about ten edits and then holds it, while a random policy accumulates edges without ever becoming
-reliably rigid.
+The learned policy and greedy both reach the optimum within about fifteen steps and hold it, while
+constructive greedy starts from nothing and climbs to the same place, and a random policy
+accumulates edges without ever becoming reliably rigid. The rigidity margin panel is the one that
+sets up the next stage of the work: the random policy holds a margin two orders of magnitude better
+than every method that actually solves the problem, because the objective charges for each edge and
+pays nothing for robustness.
 
 ![Outcome across networks](resources/baselines-summary.png)
 
-Per network rather than averaged over them. The learned policy collapses to a flat line at ten
-edges with a single outlier, so the mean in the table is not hiding a spread: it lands on the same
-answer almost every time. Greedy is rigid just as often and minimal on half as many networks, and
-the two need a comparable number of edits to get there.
+Per network rather than averaged over them. The learned policy collapses to a flat line at 17 edges
+with a single outlier: it lands on the same answer almost every time. Greedy and constructive are
+rigid just as often and minimal on fewer networks, and the spread of their edge counts is visibly
+wider.
 
 ![Final, best and mean outcome per method](resources/baselines-outcomes.png)
 
 Three views of each run: the network it ended on, the best one it passed through, and the average
 over every step. The gap between the first two bars is the difference between finding a good
-topology and stopping on it. It is small for the learned policy and large for a random one, which
-drifts from 13.8 edges at its best to 20.1 by the end. The rigidity margin panel is the quantity
-the current objective ignores, and the reason for the next stage of the work: greedy and the
-learned policy end on graphs of the same size that differ in how much perturbation they survive.
+topology and stopping on it. Here it is structural rather than a failure, since the stop action is
+masked and the policy cannot hold still; the metric it is scored on is the best graph visited.
 
 All four figures are written in both PNG and PDF for every evaluation run.
 

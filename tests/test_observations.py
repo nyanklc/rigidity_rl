@@ -69,7 +69,7 @@ def test_graph_features_flag_drops_the_centralities(make_env):
     ((False, False, False), 0, 0),
     ((True, False, False), 3, 0),
     ((True, True, False), 4, 1),
-    ((True, True, True), 4, 2),
+    ((True, True, True), 4, 3),
 ])
 def test_rigidity_flags_add_the_expected_channels(make_env, flags, dn, de):
     g, f, ed = flags

@@ -29,8 +29,8 @@ NODE_BLOCKS = [("domain", 5, None), ("degree", 2, None),
                ("rigidity_glob", 3, "rigidity_global"), ("flex_mag", 1, "rigidity_flex")]
 EDGE_BLOCKS = [("bearings", 3, None), ("edge_exists", 1, None),
                ("edge_between", 1, "graph_features"), ("reciprocity", 1, None),
-               ("common_nbrs", 1, None), ("flex_align", 1, "rigidity_flex"),
-               ("block_rank", 1, "rigidity_edge")]
+               ("common_nbrs", 1, None), ("add_gain", 1, "rigidity_flex"),
+               ("block_rank", 1, "rigidity_edge"), ("add_rank", 1, "rigidity_edge")]
 
 
 def blocks(spec, cfg, width, label):

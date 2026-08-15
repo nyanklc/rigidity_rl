@@ -20,14 +20,14 @@ conversation history** can read it and continue. If you are picking this up cold
 | WP12 | Freeze benchmark instances to disk | 0 | **done** (2026-08-12) |
 | WP11 | Random global rotation at reset | 0 | **done** (2026-08-12) |
 | — | `mixed5` scenario as the ground-truth debug case | 0 | **done** (user-provided) |
-| WP2 | Null-space features: fix flex, add the exact addition oracle | 1 | **next** |
-| WP5 | Pairwise action head (level 2 default, level 3 arm) | 1 | not started |
+| WP2 | Null-space features: fix flex, add the exact addition oracle | 1 | **done** (2026-08-14) |
+| WP5 | Pairwise action head (level 2 default, level 3 arm) | 1 | **next** |
 | WP10 | Input embedder for the EGNN | 1 | not started |
 | WP13 | DQN hygiene: target time constant, DDQN, seeding | 1 | not started |
-| WP7 | Heterogeneous training (phase A / phase B) | 2 | not started |
+| WP7 | Heterogeneous training (phase A / phase B) | 2 | **phase A run, partial** (2026-08-15) |
 | WP3 | Rigidity margin in the reward (κ = 0.9) | 2 | not started |
 | WP4 | Margin-aware observation (softest mode) | 2 | not started |
-| WP8 | Baselines: constructive restart greedy | 3 | not started |
+| WP8 | Baselines: constructive restart greedy | 3 | **partly done** (2026-08-15) |
 | WP9 | Multi-n training | parked | — |
 | — | UCT / model-based planning | future work | deferred by decision |
 | — | Sensing range, degree budgets, geometric limits | future work | deferred by decision |
@@ -64,6 +64,116 @@ the method so they can be reproduced. Where a claim is inference rather than mea
 ---
 
 ## §1 Corrected diagnosis
+
+### 1.0 Measured results, 2026-08-15
+
+`letsgo_dqn_gine`: DQN + GINE, trained 400k steps on the `mixed` scenario (n=10, two agents each of
+the five domains), informed arm (`rigidity_global`/`flex`/`edge` all on), single seed. All rows are
+20 frozen benchmark instances, `--policy-mode sample`, 100-step budget.
+
+**Reproducing these numbers:** `PYTHONPATH=. uv run tools/verify_results.py` re-derives every
+digest, `rank_K`/`c_max`/`m_req`, and both classical baselines from the tracked `benchmarks/`, with
+the environment built programmatically so a fresh clone suffices. The `learned` rows need the
+checkpoint, which `models/`/`train/` do not track. Instance sets, by digest:
+`bench_mixed` 83a53b8677d9, `bench_mixed5` ee7ce6e6da7d, `bench_n8_R3` a678a0266a20,
+`bench_n8_R3_rot` 803938347f8e, `bench_n8_SE3` 94c9396becab, `bench_n8_R3xS1` 72b1d517025f,
+`bench_n8_R2xS1` 7805a3bd2f6f, `bench_n16_R3` 333864562507.
+
+**In distribution** (`bench_mixed`, `m_req` = 17, phi ceiling 74.24):
+
+| method | edges | phi | rigid | minimal | best at |
+|---|---|---|---|---|---|
+| initial | 18.15 | 48.26 | 15% | 0% | — |
+| random | 22.10 | 63.64 | 40% | 10% | 19.1 |
+| greedy | 17.40 | 73.64 | 100% | 80% | 9.6 |
+| constructive (20 restarts) | 17.70 | 73.18 | 100% | 50% | 17.7 |
+| **learned** | **17.05** | **74.17** | **100%** | **95%** | 10.3 |
+
+Reaching `m_req` with a rigid graph *proves* per-instance optimality, since `m_req` is a sound lower
+bound (rank subadditivity over edge blocks). This does not rely on the `is_MBR` heuristic.
+
+Under argmax rather than sampling (the ablation reference row): 17.20 edges, 100% rigid, 90%
+minimal.
+
+**Transfer, no retraining:**
+
+| benchmark | learned | best classical | verdict |
+|---|---|---|---|
+| `bench_mixed5` (n=5) | 8.15, 85% | 8.00, 100% (= brute force) | task saturated, policy just behind |
+| `bench_n8_R3` | 10.75, 50% | 10.45, 55% | tie |
+| `bench_n16_R3` | 23.20, 0%, 95% rigid | **greedy 22.65, 45%**; constructive 23.20, 0% | **loses to greedy** |
+| `bench_n8_SE3` (`m_req` 21) | **26.10, 25%** | **21.00, 100%** (both) | **fails** |
+
+**Correction, from `tools/verify_results.py`:** the n=16 row above originally read "tie", because
+`greedy` was absent from that run and only `constructive` was there to compare against. Measured
+since on the same frozen instances, greedy reaches 22.65 edges and 45% minimal, against 23.20 and 0%
+for both constructive and the policy. At n=16 the policy therefore **loses to greedy**, and ties
+only the weaker baseline. The one configuration where it beats both classical methods remains the
+heterogeneous mixture it trained on.
+
+**Transfer degrades monotonically with agent DOF.** Homogeneous n=8, all five run against the same
+policy, 20 frozen instances each:
+
+| domain | DOF/agent | `c_max` | `m_req` | learned | greedy | constructive | learned edges, step 0 -> 24 |
+|---|---|---|---|---|---|---|---|
+| `R^3` | 3 | 2 | 10 | 10.75, **50%** | 10.50, 50% | 10.45, 55% | 11.2 -> 10.6, prunes |
+| `R^2xS^1` | 3 | 1 | 20 | 20.00, **100%** | 20.00, 100% | 20.00, 100% | 21.4 -> 19.4, prunes |
+| `R^3xS^1` | 4 | 2 | 14 | 15.40, **10%** (85% rigid) | 14.15, 85% | 14.00, 100% | 15.2 -> 16.7, accumulates |
+| `SE(3)` | 6 | 2 | 21 | 26.10, **25%** | 21.00, 100% | 21.00, 100% | 23.7 -> 31.9, accumulates |
+
+The split is at 3 versus 4 DOF per agent, and the accumulation magnitude is monotone in DOF: +0 at
+3, +1.5 at 4, +8.2 at 6. Wherever the policy works it prunes toward `m_req`; where it fails it never
+enters a pruning phase and reaches rigidity by accumulation instead. On `SE(3)` it scores phi 68.17
+against 70.37 for a *uniform random policy*, while remaining rigid on 100% of instances, so the
+failure is purely over-density.
+
+Two qualifications on the two successes. `R^2xS^1` has `c_max = 1`, so its independent sets form a
+matroid, greedy is optimal by construction and even a random policy reaches 45% minimal; that row
+does not discriminate. `R^3` does discriminate (random 0% minimal, learned 50% = both baselines) and
+is a genuine transfer success.
+
+**Coverage is the leading explanation, and is not yet established.** The training mixture is 2 agents
+each of the five domains, so only 20% of nodes are 6-DOF and 20% are 4-DOF, and the policy never saw
+a network where high-DOF agents dominate. In favour: it handles `SE(3)` and `R^3xS^1` agents *well*
+when they are a minority, reaching 95% minimal in distribution, and fails only when they are the
+majority, which is a composition-shift signature rather than an inability to represent those domains.
+Not ruled out: a capacity or architecture limit that only bites when the constraint density is high.
+The two are separated by one experiment, training on a high-DOF-weighted mixture or on homogeneous
+`SE(3)` and re-evaluating. Cross-domain generalization (issue 4) is **not** resolved by these
+results.
+
+**Cost.** Per instance, measured by counting rigidity-matrix builds: constructive greedy 1864,
+learned 7 — **266x**. Wall clock is only 2.6x on CPU, where the GNN forward dominates.
+
+**Rotation dependence, quantified.** `bench_n8_R3_rot` is `bench_n8_R3` under an exact global
+rotation (residual 4e-16, det R = +1, identical edges and pairwise distances). Every classical
+method is byte-identical across the two, as invariance requires. Only the policy moves. **8 of the
+20 instances change their minimality verdict** (10 minimal unrotated, 14 rotated, but 8 individual
+flips), from a transformation that changes nothing about the problem. Read the churn, not the net:
+40% of instances changing outcome establishes the dependence, while the net direction (+4) is noise
+at this sample size. This is §2.3 / known issue 7 measured on a deployed policy rather than argued.
+Note the policy was trained *with* `rotation_augmentation` on, so the augmentation did not remove
+the dependence here.
+
+**Ablation** (`dummy/abl_letsgo_dqn_gine*`, three modes). The large `degree` / `rigidity_glob` /
+`add_rank` costs seen under `--mode zero` are out-of-distribution artifacts: zeroing normalized
+degree asserts every node has degree 0. Under `shuffle`, which preserves the marginal, everything
+collapses to noise except `degree` (35% of minimality) and the `adj` mask control. What holds in
+**all three modes** is the finding that matters: `bearings`, `coord_features`, `add_gain` and
+`flex_mag` cost nothing. The policy solves the task from graph structure and reads no geometry.
+
+**Margin collapse over training:** mean min-eig 0.058 -> 0.003 (19x), best 0.009 -> 0.001. The
+policy trades robustness for sparsity because phi has `w_eig = 0`. In the baselines table the
+*random* policy holds a better margin than any method that solves the problem.
+
+Together these are one finding, and the case for WP3: the objective is combinatorial, so the policy
+solved it combinatorially, discarded the geometry, and produced fragile topologies. WP3's acceptance
+test is this same ablation — the geometric channels must start costing something.
+
+*Caveats:* single seed; 20 instances, so the 95/80/50 gaps are 3, 4 and 10 instances; the informed
+arm carries an exact rank oracle (`add_rank`), so this is closer to constructive-greedy-with-learned-
+ordering than to learning rigidity from scratch. The uninformed arm is untrained and is the
+comparison that would settle it.
 
 ### 1.1 The objective is combinatorial; the geometry is not in it
 
@@ -198,6 +308,14 @@ columns against 0.074 on the trained one. Evaluating in SE(3) flips the one-hot 
 column: the domain identity cannot inform the policy, only inject noise. **No observation or
 architecture change fixes this; only training across domains does** (WP7).
 
+**Update, 2026-08-15: WP7 phase A has now run and the prediction is half right.** Training on
+`mixed` (2 agents of each domain) removed the catastrophic failure — `letsgo_dqn_gine` is rigid on
+100% of `SE(3)` instances where `generaldqngine` managed 5%, i.e. the one-hot column is no longer
+untrained. But it did **not** deliver minimality: 25% against 100% for both classical baselines, and
+transfer now degrades with agent DOF rather than collapsing outright. Full table in §1.0. Domain
+coverage was necessary and is not sufficient; the open question is whether *composition* coverage
+(high-DOF agents in the majority) closes the rest.
+
 ### 1.6 Checked and found fine — do not spend time here
 
 - **Observation channel scales are all O(1)** on `mixed` (domain 0.20±0.40, degree 1.18±0.81,
@@ -297,7 +415,7 @@ rotations about z are admissible** — an arbitrary axis would lift them out of 
 
 ### Tier 1 — observation and architecture
 
-#### WP2 — null-space features
+#### WP2 — null-space features  **[done 2026-08-14; see the work log entry]**
 
 *Why:* `flex_tensor` takes `Bp = brmat[:, :3n]`, the position block only, so the flex space ignores
 that agents can rotate. In `R^d` that is the whole space; in the oriented domains it is the wrong
@@ -348,8 +466,9 @@ rank":
 The backbone carries most of it — an earlier claim that the head was structurally blind was too
 strong. The real loss is narrower and still matters: a perfect pairwise signal exists in `e_ij` and
 reaches the head degraded to 0.955, and that gap is where the hard end-game decisions live. In
-SE(3) the pair feature is currently the *worse* source, but only because `flex_align` is broken
-there. **WP5 without WP2 is half-pointless; WP2 without WP5 is half-used.** (Linear probes
+SE(3) the pair feature was the *worse* source only because `flex_align` was broken there; WP2 fixed
+that, so `e_ij` should now be re-probed before WP5 fixes a head width to it.
+**WP5 without WP2 is half-pointless; WP2 without WP5 is half-used.** (Linear probes
 lower-bound what an MLP head could extract.)
 
 *What — level 2 is the default, decided:*
@@ -440,6 +559,27 @@ should not lose more than ~10 points of minimality at n=8/R^3 relative to the sp
 does not, the diagnosis is wrong and the problem is capacity or credit assignment, not domain
 coverage — and the next move is the constructive formulation, not more features.
 
+*Outcome of phase A, scored against that prediction (2026-08-15).* **Clause 1 nearly holds.** Rigid
+at n=8: `SE(3)` 100%, `R^3` 100%, `R^2xS^1` 100%, `R^3xS^1` **85%** — three corners clear the 90%
+bar and one just misses, against 5% and 25% before. The untrained-one-hot failure of §1.5 is gone.
+**Clause 2 fails badly.** At n=8/`R^3` the mix-trained policy is 50% minimal against the specialist
+`generaldqngine`'s 95%, a 45-point loss where the allowance was ~10. It now merely ties greedy (50%)
+and constructive (55%) where the specialist beat them outright.
+
+So phase A bought reliability and cost specialism, and did not deliver minimality on the high-DOF
+corners (§1.0). Taken literally the pre-registered rule points at capacity or credit assignment
+rather than coverage. Two reasons not to conclude that yet: phase A used a **fixed** 2-of-each
+composition, so high-DOF agents are never in the majority and homogeneous corners are never drawn —
+that is precisely what phase B changes; and the specialist comparison is across two different
+training budgets and one seed each.
+
+*Pre-register phase B before running it,* or the coverage hypothesis becomes unfalsifiable and the
+answer to every failure is more coverage. Proposed criterion: with `domain_sampler: "uniform"` over
+compositions (so homogeneous corners are drawn during training), the policy must reach **≥80%
+minimal on homogeneous `SE(3)` and `R^3xS^1` at n=8**, where both classical baselines reach 100%.
+Below that, coverage is not the explanation and the next move is the constructive formulation or a
+capacity change, as the original rule says.
+
 #### WP3 — the rigidity margin in the reward
 
 ```
@@ -482,7 +622,30 @@ modelling choice and must be named as one — it matters most in `SE(3)` and in 
 *Acceptance:* edge count and minimality unchanged within noise at κ = 0.9; geometric-mean margin up
 5–10× at n=8/R^3. And the decisive one: **the ablation should finally show a nonzero cost for
 destroying the geometric channels.** That single figure is the acceptance test for the entire
-geometric half of the thesis.
+geometric half of the thesis. Run it in at least two ablation modes — `zero` alone produced three
+false positives in the 2026-08-15 ablation (`DESIGN_NOTES.md#rigidity-features`).
+
+**Two questions, and only one of them needs a weight.** They are worth separating in the writing
+because they have different scientific status:
+
+1. *Among equally sparse graphs, pick the best-conditioned one.* At `m = m_req` the margin spans
+   ~10^5 on the same poses (§1.3), so this is a **tie-break, not a trade-off**, and κ < 1 is the
+   principled choice rather than an arbitrary one: it is exactly the condition that the entire
+   margin range is worth less than one edge, so sparsity can never be overturned. There is no free
+   parameter to justify here, and the available headroom is enormous. This is the cleaner result
+   and should carry the geometric half of the thesis.
+2. *Buy margin with extra edges.* This is the genuine trade-off, it is κ > 1, and there is no
+   optimal κ because the answer is application-specific. The deliverable is a **Pareto front**, not
+   a number.
+
+**Covering the κ range without one training run per κ.** Condition the policy on κ: sample it per
+episode, feed it as a global channel tiled across nodes like the other globals, and train once. The
+front is then traced at inference by sweeping κ on a single checkpoint. Potential-based shaping
+survives because κ is fixed within an episode, so `phi_κ` is still a per-episode potential. This is
+standard preference-conditioned multi-objective RL and it is the difference between a workstation
+and a cluster: one run instead of |κ| × seeds. **Validate it** against two specialist runs at the
+endpoints (κ = 0, κ = κ_max); a conditioned policy can underfit relative to specialists, and if it
+does the whole front is biased inward and the trade-off curve is not trustworthy.
 
 #### WP4 — margin-aware observation (softest mode)
 
@@ -563,6 +726,171 @@ domain distribution and the reward in one run would make a bad result uninterpre
 ## §5 Work log
 
 Newest first. One entry per work package or per material finding.
+
+### 2026-08-15 — first full evaluation of a heterogeneously-trained policy
+
+`letsgo_dqn_gine` (DQN + GINE, 400k steps on `mixed`, informed arm, single seed) evaluated on frozen
+benchmarks in distribution and on four homogeneous corners. Numbers in §1.0; what they mean:
+
+**It beats both classical baselines in distribution** — 95% minimal against 80% (greedy) and 50%
+(constructive) at n=10 on the five-domain mixture, at the proven lower bound of 17 edges and 266x
+fewer rigidity-matrix builds. This is the first configuration where the learned policy beats the
+classical algorithm rather than matching it, and it is the heterogeneous case, which is the one WP1
+made physically correct.
+
+**Transfer degrades monotonically with agent DOF**, and the mechanism is a clean behavioural switch:
+where the policy works it prunes toward `m_req`, where it fails it never enters a pruning phase and
+accumulates instead (+0 edges at 3 DOF, +1.5 at 4, +8.2 at 6). On homogeneous `SE(3)` it scores
+below a *uniform random policy* on phi while staying rigid everywhere, so the failure is purely
+over-density. WP7 phase A's pre-registered prediction is scored in its own section: clause 1 nearly
+holds, clause 2 fails by 45 points.
+
+**The ablation's negative result is the robust one.** Destroying any geometric channel costs the
+policy nothing in all three modes. The large `degree` / `rigidity_glob` / `add_rank` costs seen
+under `--mode zero` do not survive `shuffle` and are out-of-distribution artifacts — zeroing a
+normalized degree asserts every node has degree 0. This is now recorded as a methodological rule in
+`CLAUDE.md`: never believe a positive from one ablation mode. The negative survives because `zero`
+is the aggressive ablation.
+
+**Two of my own earlier claims were corrected in this pass.** The rotation finding was first written
+as "a 20-point swing"; the honest statement is that 8 of 20 instances change verdict while the net
+direction is noise at that sample size, and the policy had `rotation_augmentation` enabled during
+training and still moves. And the README briefly claimed transfer to unseen homogeneous compositions
+in general, which the `SE(3)` and `R^3xS^1` runs falsified within the hour; it is now scoped to
+comparable agent complexity.
+
+**Tooling.** `constructive` wired into `baselines.py` with a private RNG (drawing from the global
+stream changed the instances every *other* method was scored on). `report.py`'s env-name shortener
+was returning the literal string `env` for every current-format config, so every recent run
+directory and figure title was unlabelled. README figures regenerated from the `mixed` benchmark.
+
+### 2026-08-15 — constructive greedy wired into baselines; the problem is harder than assumed
+
+`baselines.py --methods constructive` (`--restarts K`, default 20). Implementation notes in
+`DESIGN_NOTES.md#constructive-baseline`. WP8's *measurement* protocol is still open; this is the
+baseline itself.
+
+**The premise this was built on turned out to be wrong, in a useful direction.** The working
+assumption was that finding a minimally rigid graph is easy for classical methods, so RL would have
+to move to the margin objective (WP3) to have a defensible claim. Measured on `R^3` against the
+closed-form optimum:
+
+| | n=8 (`m_req` 10) | n=12 (`m_req` 16) |
+|---|---|---|
+| 1 restart | 11.25 | 18.67 |
+| 5 restarts | 10.75 | 17.33 |
+| 20 restarts | 10.50 | 16.33 |
+| hit the optimum at 20 restarts | 2 of 4 | 2 of 3 |
+| cost per instance | 0.7 s | 4.5 s |
+
+Every instance reported `order matters`, never `matroid`, which is what `c_max = 2` predicts. The
+gap to optimum *widens* with n (12.5% at n=8, 16.7% at n=12 for a single restart). So the
+combinatorial problem is not solved by the classical algorithm at these sizes, and WP3 is no longer
+a prerequisite for having a result — it remains the more distinctive contribution.
+
+Sample sizes are 4 and 3 instances. This is a signal to run the experiment properly, not a result.
+
+**Measured since (2026-08-15):** the paired comparison ran on frozen instances and the learned
+policy wins in distribution, 95% minimal against 80% for greedy and 50% for constructive. See §1.0.
+
+**A caveat on the existing resume claim.** In a 3-instance smoke run, `greedy` (phi hill-climbing
+from the initial graph) reached 10.00 edges and 100% minimal — against the 50% minimal recorded for
+it in the current claim. Three instances is far too small to conclude anything, but it is a reason
+to re-measure `greedy` on the frozen benchmark before quoting the 50% figure anywhere.
+
+**One regression caught during verification, worth remembering.** The first version shuffled the
+candidate order with `np.random`, which is the stream `reset()` draws instances from. Enabling the
+method therefore changed the networks *every other method* was scored on — the `initial` row moved
+from 15.33 to 13.00 edges. `greedy` uses no RNG and `random` uses the action space's own seeded
+stream, so the instance sequence had been independent of `--methods`; the fix gives `constructive` a
+private `default_rng(seed)` and restores that. Verified byte-identical `initial`/`random` rows with
+and without the method selected.
+
+### 2026-08-14 — WP2 done
+
+`flex_align` is gone, replaced by two channels derived from `ker(B)` of the **whole** matrix.
+
+**The criterion is exact, not a heuristic.** With `Z` an orthonormal basis of `ker(B)`, adding edge
+`i -> j` raises the rank by exactly `rank(b_ij Z)`, because row space and null space are orthogonal
+complements (`THEORY.md` §13.1). So `add_gain = ||b_ij Z||/||b_ij||` is zero precisely on the pairs
+that contribute nothing, and `add_rank = rank(b_ij Z)/c_max` is the gain itself. Measured against
+ground truth (rebuild `B` with the edge added, recompute the rank): **AUC 1.000 with a clean split
+in all five domains and three heterogeneous mixes, exact rank on 1,501 pairs**, against
+`flex_align`'s 0.634 in `SE(3)` and 0.567 on the `R^2xS^1`+`R^3xS^1` mix. `flex_mag` now comes from
+`flex_space(Z, Z_K)` and needs no hand-built trivial modes, since `ker(B_K)` *is* the trivial
+variation set by Michieletto Theorem 1 — that closes the `trivial_modes()` item flagged under WP1.
+`block_rank` is filled from the complete graph for all pairs, so candidates no longer read 0.
+
+Done as specified except that item 1's "one SVD" is one SVD *plus* one `eigh`, for a measured
+reason below.
+
+**Four things went wrong, all worth recording.**
+
+1. **Sign.** `Ē_o` contributes `-y_i`, so the attitude term enters `b_ij Z` with a minus. With a
+   plus the AUC was 0.906-0.947 — plausible enough to have shipped, wrong enough to matter. Only
+   the exact-rank check caught it, not the AUC.
+2. **`ker(B)` is not scale-invariant.** `B`'s position columns carry `1/length` and its attitude
+   columns are dimensionless (§12.4 / `THEORY.md` §13.4), so a uniform scaling genuinely moves the
+   null space. Fixed by pinning the length unit to the formation's own RMS radius, the same
+   normalisation `coord_features` uses. Separately, `rotate_network` did not rotate
+   `agent.rotation_axis`, and `P_i = v v^T` is in world coordinates — that broke `R^3xS^1` rotation
+   invariance for reasons unrelated to these features.
+3. **The rank threshold was below the noise floor.** The first cut was `1e-18` relative, which for
+   a Gram matrix in double precision is *inside* the rounding error, so `add_rank` flipped by a
+   whole rank unit whenever the geometry was translated or scaled. Measured separation: pairs that
+   add nothing reach `add_gain` at most `1.59e-10`, pairs that add rank at least `1.43e-02`. The cut
+   is now `1e-6`, in the middle of eight empty orders of magnitude.
+4. **Normalising against the spread amplified noise.** On a rigid framework every raw gain is at
+   machine zero; dividing by their RMS turned rounding error into an O(1) feature. Normalisation is
+   per pair now, by that pair's own `||b_ij||`, which also bounds the channel to `[0, 1]`.
+
+**Cost.** The whole rigidity block is 0.63 ms at n=8/`R^3` and 2.50 ms at n=16/`SE(3)`,
+single-threaded. As a fraction of the step, the widest arm is +25% at n=8 and +21% at n=16 over no
+rigidity features at all — and nearly all of that is `{global}`, since the null-space channels reuse
+a decomposition the state score already needs.
+
+Two decisions bought this. `nullspace` takes `eigh(B^T B)` rather than an SVD of `B`, whose left
+factor is (3m, 3m) and never used: 13.15 -> 2.50 ms at n=16. The rank is **not** taken from `eigh`,
+though — squaring halves the precision of the eigenvalues and thresholding them disagreed with
+`matrix_rank` on 840 of 840 cases, so the rank still comes off the thin SVD and only the
+eigenvectors come from `eigh`. And `candidate_gain` reads norm and rank off the 3x3 Gram matrix
+`b_ij Z (b_ij Z)^T` rather than a batched SVD of the (3, k) blocks: 1.77 -> 0.59 ms.
+
+Profile this pinned to one BLAS thread. Unpinned, the same 144x144 `eigh` timed anywhere from 0.26
+to 16 ms on identical input, which is contention, not the algorithm — worth stating because it is
+the kind of number that silently justifies a wrong optimisation.
+
+**Verification.** Invariance holds to 1e-13 under translation, scaling and rotation in every domain
+and on the mix, with the single expected exception of the `R^d` global-frame bearing artefact
+(§2.3), which is not these channels. Full suite 527 passed. Six new tests in `tests/test_flex.py`
+pin the addition criterion against ground truth per domain, `nullspace` against an SVD basis,
+`flex_space`'s dimension, `rigidity_decomposition` against `matrix_rank` and `rigidity_eigenvalue`,
+and scale invariance.
+
+**Honest framing, restated.** `add_gain` makes the informed arm approximately
+constructive-greedy-with-learned-ordering, and now it does so *exactly* rather than approximately.
+That raises the bar on the framing rather than lowering it: the arm is only interesting because a
+20-restart constructive greedy reaches the optimum 65% of the time at n=8/`R^3` and 20% at n=12, so
+a perfect one-step oracle is demonstrably not sufficient. The uninformed arm stays the headline, and
+WP8 has to actually measure that greedy baseline before the comparison can be made.
+
+**Readable form kept as the oracle** (added 2026-08-15, after the `CLAUDE.md` instruction on
+readability). `candidate_gain_reference` loops over pairs and builds `b_ij` by calling
+`extended_bearing_rigidity_matrix` on a one-edge network, so it states (13.1) as written and cannot
+drift from the construction it checks. `candidate_gain` stays as the hand-expanded version, ~3x
+faster, and a test pins it to the reference in all five domains and the mix. The 1.2 ms/step this
+buys is not a bottleneck by the standard now recorded in `CLAUDE.md`; it is kept because the pairing
+costs nothing and turns the derivation into something executable.
+
+Worth noting what the pairing catches: flipping the attitude sign in the fast version fails the
+comparison in `R^2xS^1`, `R^3xS^1` and `SE(3)` and **passes** in `R^2`/`R^3`, because `P_i = 0` there
+and the term does not exist. Every configuration trained to date is homogeneous `R^d`, so this class
+of bug is structurally invisible to the experiments actually being run.
+
+**Not carried over.** `flex_tensor` / `flex_constraint_power` stay in `rigidity.py`, tested, as the
+reference implementation `THEORY.md` §10's ground-truth check runs against. The environment no
+longer calls them. `THEORY.md` §9 is marked superseded rather than deleted, since the derivation
+explains why a position-only construction fails in the oriented domains.
 
 ### 2026-08-14 — tools/ started
 
@@ -858,10 +1186,11 @@ fix.
 Docs updated in the same change: `THEORY.md` §2 (assembly), §4 (`c_k` for mixes) and new §12;
 `DESIGN_NOTES.md#per-node-dof`; `CLAUDE.md` rigidity-core bullets and known issues 1 and 4.
 
-**Still open, deliberately deferred to WP2:** `trivial_modes()` hardcodes three translations plus
-scaling and is wrong for mixes. The correct replacement is an orthonormal basis of `ker(B_K)`, which
-changes its shape from `R^{3n}` to `R^{6n}` and only makes sense with the full-null-space flex
-rework.
+**Still open, deliberately deferred to WP2** (*closed there on 2026-08-14*): `trivial_modes()`
+hardcodes three translations plus scaling and is wrong for mixes. The correct replacement is an
+orthonormal basis of `ker(B_K)`, which changes its shape from `R^{3n}` to `R^{6n}` and only makes
+sense with the full-null-space flex rework. WP2's `flex_space(Z, Z_K)` does exactly this;
+`trivial_modes()` survives only for the `THEORY.md` §10 reference check.
 
 ### 2026-08-12 — branch created
 

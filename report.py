@@ -28,18 +28,20 @@ METHOD_STYLE = {
     "greedy":  {"color": "#2a78d6", "ls": "-",  "z": 3},   # categorical slot 1
     "learned": {"color": "#eb6834", "ls": "-",  "z": 4},   # slot 2
     "random":  {"color": "#1baf7a", "ls": "-",  "z": 2},   # slot 3
+    "constructive": {"color": "#7d4bb5", "ls": "-", "z": 3},   # slot 4
     "initial": {"color": MUTED,     "ls": ":",  "z": 1},   # reference
     "optimal": {"color": INK_2,     "ls": "--", "z": 5},   # reference
 }
 # slot 3 (aqua) sits below 3:1 on the light surface, so the relief rule applies: every
 # series carries a direct label at its line end, and the table view always ships.
 
-METHOD_ORDER = ["initial", "random", "greedy", "learned", "optimal"]
+METHOD_ORDER = ["initial", "random", "greedy", "constructive", "learned", "optimal"]
 
 METHOD_BLURB = {
     "initial": "the random graph each method starts from",
     "random":  "uniform random actions - the floor any method should beat",
     "greedy":  "repeatedly applies the single best edge change until none helps",
+    "constructive": "builds from the empty graph, keeping any edge that raises rank(B)",
     "learned": "the trained policy",
     "optimal": "exhaustive search over every graph (small networks only)",
 }
@@ -56,9 +58,9 @@ ACTION_SHORT = {
 
 # ── run directory ─────────────────────────────────────────────────────────────────────
 def short_env_name(env_name):
-    action = re.search(r"_action([A-Za-z0-9]+?)_obs", env_name)
+    action = re.search(r"_action([A-Za-z0-9]+?)_(?:obs|reward)", env_name)
     action = ACTION_SHORT.get(action.group(1), action.group(1)) if action else "env"
-    tail = re.search(r"_(n\d+_[A-Za-z0-9]+|hetero[A-Za-z0-9]*)$", env_name)
+    tail = re.search(r"_(n\d+_[A-Za-z0-9]+|mixed\d*|hetero[A-Za-z0-9]*)$", env_name)
     return f"{action}-{tail.group(1)}" if tail else action
 
 
@@ -247,6 +249,9 @@ def format_table(rows, context, brief=False):
     lines.append("  every method starts from 'initial', and 'optimal' is the best achievable.")
     lines.append("  A method is doing well when it approaches 'optimal' with low 'work'.")
     lines.append("  All methods are run on the same networks, so rows compare directly.")
+    if any(r["method"] == "constructive" for r in rows):
+        lines.append("  'constructive' is the one exception: it throws the initial edges away")
+        lines.append("  and builds from nothing, because it is a construction, not an edit.")
     lines.append("=" * w)
     return "\n".join(lines)
 
@@ -884,7 +889,9 @@ TABLE_NOTES = [
     "added nothing.",
     "= best: share of networks where the method tied the exhaustive optimum.",
     "initial and optimal are reference rows, not competing methods: every method starts "
-    "from initial, and optimal is the best achievable. All methods see the same networks.",
+    "from initial, and optimal is the best achievable. All methods see the same networks. "
+    "constructive is the exception: it discards the initial edges and builds from empty, "
+    "because it is a construction algorithm rather than an edit one.",
     "Every value is a mean over the networks and ± is the standard deviation across them. "
     "The percentage columns carry no ±: they are already means of a yes/no outcome, whose "
     "spread is fixed by the percentage itself.",

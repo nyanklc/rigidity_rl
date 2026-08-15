@@ -83,7 +83,11 @@ with open(filepath, "r") as f:
     # a pre-merge obs_type implied its backbone; honour that over the constant
     backbone = OBS_BACKBONE.get(obs_type, BACKBONE)
     n = config.get("n")
-    domains_str = config.get("domains", "domain").replace("^", "").replace("(", "").replace(")", "")
+    # scenario configs carry the full per-agent list, homogeneous ones a bare string
+    domains = config.get("domains", "domain")
+    if isinstance(domains, list):
+        domains = "-".join(sorted(set(domains)))
+    domains_str = domains.replace("^", "").replace("(", "").replace(")", "")
     n_domains = f"n{n}_{domains_str}"
 
 if "prefix=" in sys.argv[2]:
