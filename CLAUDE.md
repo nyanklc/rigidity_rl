@@ -192,6 +192,12 @@ There is no linter or CI.
 - `is_MBR(network, rank_K, brmat)` — the **minimality heuristic**. Per-edge block rank `c_k = rank(B[3k:3k+3, :])`, sorted descending, greedily accumulated until `Σ c ≥ rank_K`, giving `m_req`; minimal iff IBR and `m == m_req`. See "Known issues / open questions" below for its reliability.
 - `MBR_required_Rd(n, d)` — closed-form minimum edge count, **valid only for homogeneous `R^d`**.
 - `max_edge_rank(network, brmat_K)` → `c_max`, the most rank a single edge can contribute. **Exact.** This is what `WeightedNormalized` normalizes by.
+- **`S -> rank(B_S)` is monotone submodular**, so minimum-edge rigidity is minimum submodular cover
+  and the `constructive` baseline is Wolsey's greedy with an `H(c_max)` guarantee: exact at
+  `c_max = 1`, 1.5 at `c_max = 2`. Measured, greedy sits 0–5% above `m_req`, so the headroom for any
+  method on edge count is small. **The rigidity margin is *not* submodular** (59% of tested triples
+  violate diminishing returns), so greedy carries no guarantee there. That asymmetry is the
+  structural argument for WP3. See `THEORY.md` §14.
 - `required_edge_count(network, ...)` → `m_req`, fewest edges that could make these poses rigid: closed form for homogeneous `R^d`, greedy block-rank accumulation otherwise. **A lower bound, not a ground truth** — it stays out of the reward and is used for reporting and the MBR metric only. Brute force finds it tight on everything checkable (24/24 at n=4, 6/6 at n=5, all five domains), which is evidence, not proof.
 
 ### Environment (`environment.py`)

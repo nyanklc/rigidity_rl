@@ -23,6 +23,7 @@ PYTHONPATH=. uv run tools/<name>.py
 | `env_report.py` | what is in this environment config: switches, observation layout and channel statistics, episode constants, cost |
 | `compare_runs.py` | how do two or more training runs differ on the metrics that separate a policy from a search? |
 | `verify_results.py` | do the numbers quoted in `ROADMAP.md` §1.0 and the README still reproduce? |
+| `submodularity.py` | which objectives have diminishing returns, and therefore which ones greedy is guaranteed on? |
 
 `constructive_greedy.py` is the standalone version of the `constructive` baseline
 now wired into `baselines.py`, for difficulty sweeps that need no env config. It
@@ -46,3 +47,7 @@ hand.
 `compare_runs.py` reads `runs/` directly so it works mid-run. Read its docstring
 before drawing conclusions from training curves: epsilon exploration makes them
 understate any arm with short episodes.
+
+`submodularity.py` reproduces `THEORY.md` §14. It is slow (a few minutes) because
+every triple costs three rank or eigenvalue computations; the conclusion is not
+close to the noise floor, so the default trial count is enough.

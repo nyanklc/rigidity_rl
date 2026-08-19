@@ -1,0 +1,254 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.6cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{microtype}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{remark}[theorem]{Remark}
+\newtheorem{example}[theorem]{Example}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\SEthree}{\mathrm{SE}(3)}
+\newcommand{\rank}{\operatorname{rk}}
+
+\title{\bf How many bearings does a heterogeneous formation need?\\
+       A counting lower bound and what it does not settle}
+\author{Noyan Erdin Kilic}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+For homogeneous formations of points in $\R^d$, Trinh, Tran and Ahn
+\cite{trinh2020} determine the minimum number of bearings exactly: their
+Theorem~4.1 states that a graph is minimally bearing rigid if and only if it is
+generically bearing rigid and has $f(n,d)$ edges, and their constructive
+algorithms show $f(n,d)$ is attained. The argument behind $f(n,d)$ is a counting
+bound: each bearing constrains $d-1$ directions, so $m(d-1)\ge dn-d-1$. In a
+heterogeneous formation the amount a bearing constrains depends on the manifolds
+of its two endpoints, so the count is no longer uniform. We record the
+generalisation used in our implementation: sort the per-edge contributions of
+the complete graph in decreasing order and accumulate until the total reaches
+$\rank\mathbf B_{\mathcal K}$. The resulting $m_{\text{req}}$ is a sound lower
+bound, it reduces exactly to $f(n,d)$ in homogeneous $\R^d$, and it is attained
+on every configuration we could search exhaustively. Whether it is attained in
+general is open, and we state precisely what would have to be proved.
+\end{abstract}
+
+\section{Summary}
+
+Write $c=\sum_i c_i$ for the total degrees of freedom of the formation, $q_t$
+for the dimension of the trivial variations, and
+$\rank\mathbf B_{\mathcal K}=c-q_t$ for the rank of the rigidity matrix of the
+complete graph. Let $c_k$ denote the rank of the $3$-row block that edge $e_k$
+contributes, and $c_{\max}=\max_k c_k$.
+
+\begin{center}
+\begin{tabular}{lccccc}
+\toprule
+$\mathcal D$ & $\R^2$ & $\R^3$ & $\R^2\times S^1$ & $\R^3\times S^1$ & $\SEthree$\\
+\midrule
+$c_i$                          & $2$ & $3$ & $3$ & $4$ & $6$\\
+$\rank\mathbf B_{\mathcal K}$  & $2n-3$ & $3n-4$ & $3n-4$ & $4n-5$ & $6n-7$\\
+$c_{\max}$                     & $1$ & $2$ & $1$ & $2$ & $2$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+$c_{\max}$ is $1$ in the planar domains and $2$ in the spatial ones because a
+bearing is one angle in the plane and two in space. For $\R^d$ this is
+$c_{\max}=d-1$ and the table reproduces $\rank\mathbf B_{\mathcal K}=dn-d-1$,
+which is the quantity Trinh et al.\ count against.
+
+The bound of this note is
+\begin{equation}\label{eq:bound}
+  m_{\text{req}}
+  \;=\;\min\Bigl\{\,m\;:\;\textstyle\sum_{k=1}^{m}c_{(k)}
+       \;\ge\;\rank\mathbf B_{\mathcal K}\Bigr\},
+\end{equation}
+where $c_{(1)}\ge c_{(2)}\ge\cdots$ are the per-edge contributions of the
+complete graph sorted in decreasing order. In a homogeneous formation every
+$c_k$ equals $c_{\max}$ and \eqref{eq:bound} collapses to
+$\lceil \rank\mathbf B_{\mathcal K}/c_{\max}\rceil$, which for $\R^d$ is
+$f(n,d)$.
+
+\section{The homogeneous case, after Trinh et al.}
+
+We recall the argument of \cite[Thm.~4.1]{trinh2020} in the notation above. A
+generic configuration of $n$ points in $\R^d$ takes $dn$ scalars; an
+infinitesimally bearing rigid framework is determined only up to $d$
+translations and one scaling, so it is fixed by $dn-d-1$ independent
+constraints. Each bearing is a unit vector in $\R^d$ and therefore contributes
+$d-1$ constraints, giving
+\begin{equation}\label{eq:trinh}
+  m\,(d-1)\;\ge\;dn-d-1 .
+\end{equation}
+Their $f(n,d)$ is the least integer satisfying \eqref{eq:trinh}, written in
+closed form; we verified $f(n,d)=\lceil (dn-d-1)/(d-1)\rceil$ for $d\in\{2,3\}$
+and $3\le n\le 24$.
+
+Two things in \cite{trinh2020} go beyond the bound, and it is worth being clear
+that we do not reproduce them. First, Theorem~4.1 is an \emph{if and only if}:
+a graph is minimally bearing rigid exactly when it is generically bearing rigid
+and has $f(n,d)$ edges, so the bound is known to be attained. Second, they give
+constructions that attain it --- growing a graph by open ears
+(their Algorithm~1, justified by Theorems~3.2 and~3.3) and merging two rigid
+graphs (Theorems~3.4--3.7) --- together with the necessary condition that a
+generically bearing rigid graph is two-vertex connected (their Lemma~4.1).
+Their setting throughout is undirected graphs of points in $\R^d$, with no
+attitudes.
+
+\section{The heterogeneous bound}
+
+In a heterogeneous formation \eqref{eq:trinh} fails because the left-hand side
+is not $m$ copies of one number. The contribution of an edge depends on which
+manifolds its endpoints live in: an edge between two planar agents contributes
+rank $1$, an edge between a planar and a spatial agent contributes rank $2$.
+This is not a marginal effect; it is what Example~4 of \cite{note_v2} turns on.
+
+\begin{proposition}\label{prop:bound}
+Let $\mathcal S$ be any edge set for which $(\mathcal G_{\mathcal S},\chi)$ is
+infinitesimally bearing rigid. Then $|\mathcal S|\ge m_{\text{req}}$ with
+$m_{\text{req}}$ as in \eqref{eq:bound}.
+\end{proposition}
+
+\begin{proof}
+The rows of $\mathbf B_{\mathcal S}$ are the union of the row blocks of its
+edges, so rank is subadditive over them:
+$\rank\mathbf B_{\mathcal S}\le\sum_{k\in\mathcal S}c_k^{\mathcal S}$, where
+$c_k^{\mathcal S}$ is the rank of block $k$. A block's rank does not depend on
+which other edges are present, and every edge of $\mathcal S$ is an edge of
+$\mathcal K$, so $c_k^{\mathcal S}=c_k$. Rigidity means
+$\rank\mathbf B_{\mathcal S}=\rank\mathbf B_{\mathcal K}$, hence
+$\sum_{k\in\mathcal S}c_k\ge\rank\mathbf B_{\mathcal K}$. Among all subsets of
+size $m$ the largest possible value of $\sum_{k}c_k$ is
+$\sum_{k=1}^{m}c_{(k)}$, so no set smaller than $m_{\text{req}}$ can reach
+$\rank\mathbf B_{\mathcal K}$.
+\end{proof}
+
+The bound is therefore sound for every configuration and every mix, with no
+genericity assumption: it is arithmetic about ranks, not about geometry.
+
+\section{What the bound does not give}
+
+\begin{remark}[it is a bound, not a count]\label{rem:notcount}
+Nothing in Proposition~\ref{prop:bound} says the $m_{\text{req}}$ largest blocks
+can be chosen \emph{jointly independent}. They are individually large; a set of
+them may still overlap. So $m_{\text{req}}$ can in principle be strictly smaller
+than the true minimum, in which case a genuinely minimal graph has
+$m>m_{\text{req}}$ and the test $m=m_{\text{req}}$ never fires. Used as a
+termination condition this is a false negative: the episode never ends. Used as
+a reported quantity it is a lower bound and is safe.
+\end{remark}
+
+\begin{remark}[two different $m_{\text{req}}$, and only one is a bound]
+Evaluating \eqref{eq:bound} on the blocks of the \emph{current} graph rather
+than of $\mathcal K$ gives a different number, because the current graph's
+multiset of $c_k$ is a sub-multiset of $\mathcal K$'s. That variant is not a
+lower bound on the minimum over all graphs, and it can report a non-minimal
+graph as minimal. We looked for the failure on two five-agent mixes and did not
+find it (0 in $48$ rigid graphs), which is reassuring rather than conclusive;
+the bound should be evaluated on $\mathcal K$.
+\end{remark}
+
+\begin{remark}[what is lost relative to $\R^d$]
+The closed form $f(n,d)$ is a function of $n$ and $d$ alone. Its heterogeneous
+analogue is not: $m_{\text{req}}$ depends on the multiset of per-edge
+contributions, hence on the assignment of manifolds to nodes, and computing it
+requires the rank of every block of $\mathcal K$, i.e.\ $n(n-1)$ small rank
+computations. We know of no closed form.
+\end{remark}
+
+\section{Is it attained?}
+
+For homogeneous $\R^d$ the answer is yes, by \cite[Thm.~4.1]{trinh2020}. For
+the remaining manifolds and for mixes we have only exhaustive search at small
+$n$. Over nine configurations at $n=4$ --- the five homogeneous manifolds and
+four heterogeneous mixes, two random configurations each --- the smallest edge
+set admitting a rigid framework equals $m_{\text{req}}$ in all $18$ cases.
+
+That is evidence and not a proof, and $n=4$ is small enough that one should be
+careful reading much into it: at $n=4$ there are only $12$ ordered pairs, so
+the search space is exhausted long before the combinatorics become
+interesting.
+
+\paragraph{What a proof would need.}
+The missing statement is a heterogeneous analogue of the ``if'' direction of
+Theorem~4.1: that for a generic configuration there exists an edge set of size
+$m_{\text{req}}$ whose blocks are jointly independent. In $\R^d$ this follows
+from the constructive algorithms of \cite{trinh2020}, which build a rigid graph
+edge by edge while keeping the count at $f(n,d)$. A heterogeneous construction
+would have to decide, at each step, not only \emph{where} to attach an edge but
+\emph{between which manifolds}, since those choices carry different
+contributions. We do not have such a construction.
+
+\section{Numerical checks}
+
+All numbers below are produced by \texttt{docs/check\_min\_edges.py}, which
+takes a fixed seed and prints each stated value beside the measured one.
+
+\begin{center}
+\begin{tabular}{lc}
+\toprule
+check & result\\
+\midrule
+$f(n,d)=\lceil(dn-d-1)/(d-1)\rceil$, $d\in\{2,3\}$, $3\le n\le24$ & $44/44$ agree\\
+\eqref{eq:bound} reduces to $f(n,d)$, homogeneous $\R^2$ and $\R^3$ & $24/24$ agree\\
+$m_{\text{req}}$ attained, $n=4$, five manifolds and four mixes & $18/18$ attained\\
+current-graph variant reports a false minimum & $0/48$ rigid graphs\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Open questions}
+
+\begin{enumerate}
+\item Is $m_{\text{req}}$ attained for every heterogeneous formation at a
+generic configuration? Exhaustive search says yes at $n=4$; we have no argument
+for general $n$.
+\item Is there a constructive analogue of \cite[Alg.~1]{trinh2020} for
+heterogeneous formations, and does the choice of which manifolds to connect
+admit a greedy rule?
+\item Does \cite[Lem.~4.1]{trinh2020} generalise: must a generically bearing
+rigid heterogeneous graph be two-vertex connected? The proof there moves a
+vertex along a direction that a constrained agent may not be able to move
+along, so it does not transfer unchanged.
+\item The directed setting. \cite{trinh2020} works with undirected graphs. In
+$\R^d$ the two coincide, since the constraint $P(\hat p_{ij})(u_j-u_i)=0$ is
+symmetric in $i$ and $j$; once attitudes enter, only the measuring agent's
+attitude appears, and the direction matters. We observed the rank of
+$\mathbf B$ change under reversal of every edge in $\R^3\times S^1$ but not in
+the other four manifolds, which we do not have an explanation for and record
+only as an observation.
+\end{enumerate}
+
+\begin{thebibliography}{9}
+\bibitem{trinh2020}
+M.~H. Trinh, Q.~V. Tran, and H.-S. Ahn,
+``Minimal and Redundant Bearing Rigidity: Conditions and Applications,''
+\emph{IEEE Transactions on Automatic Control}, vol.~65, no.~10,
+pp.~4186--4200, Oct.~2020.
+\href{https://doi.org/10.1109/TAC.2019.2958563}{doi:10.1109/TAC.2019.2958563}
+
+\bibitem{note_v2}
+N.~E. Kilic, ``Restricting the degrees of freedom node-wise in the extended
+bearing rigidity matrix,'' companion note.
+
+\bibitem{michieletto2021}
+G.~Michieletto, A.~Cenedese, and D.~Zelazo,
+``A Unified Dissertation on Bearing Rigidity Theory,''
+\emph{IEEE Transactions on Control of Network Systems}, vol.~8, no.~4,
+pp.~1624--1636, Dec.~2021.
+\href{https://doi.org/10.1109/TCNS.2021.3077712}{doi:10.1109/TCNS.2021.3077712}
+\end{thebibliography}
+
+\end{document}

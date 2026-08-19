@@ -285,6 +285,24 @@ Darvariu et al. (2024) make the same point structurally: their survey's inclusio
 no satisfactory exact or approximate algorithm exists, and only the `c_max = 2` and heterogeneous
 regimes qualify.
 
+**The matroid statement generalizes, and it cuts both ways** (`THEORY.md` §14). `S -> rank(B_S)` is
+monotone **submodular**: an edge contributes a subspace, rank is the dimension of their sum, and the
+part not already spanned can only shrink as the graph grows. Proved in §14.2, and measured at 0
+violations in 1920 triples across all five domains and a mix (`tools/submodularity.py`). So minimum-edge rigidity is **minimum
+submodular cover**, and by Wolsey (1982) the constructive baseline is an `H(c_max)` approximation:
+exact at `c_max = 1` (the matroid rows above), 1.5 at `c_max = 2`.
+
+That makes `constructive` the principled opponent rather than an ad-hoc one. It also caps the prize:
+measured against `m_req`, greedy is only 0–5% above the bound, so **no method can gain much on edge
+count**, and §1.0 shows the policy already closing ~88% of that gap in distribution. Darvariu §6.2
+predicts exactly this — RL gains little where shallow horizons suffice.
+
+**The margin escapes it.** `lambda_r(S)` is monotone (Weyl) but **not** submodular: 887 of 1493
+triples violate diminishing returns, worst gap -4.16e-01. Two edges can be worth more together than
+apart, which is invisible to any one-edge-at-a-time method. Greedy therefore has **no guarantee** on
+the margin, and that is the structural case for WP3 — the geometric objective is a different problem
+class, not just a different reward.
+
 ### 1.5 The baseline that has to be beaten
 
 Constructive restart greedy — ten lines, no learning, no geometry — against the best checkpoint

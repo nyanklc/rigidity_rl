@@ -744,3 +744,100 @@ ms to 0.59 ms at n=16.
 
 Measure this pinned to one BLAS thread. Unpinned, `eigh` on a 144×144 matrix was reported at
 anywhere from 0.26 to 16 ms on the same input, which is thread contention rather than the algorithm.
+
+---
+
+## 14. Submodularity: why greedy is strong on the edge count and weak on the margin
+
+This section explains what kind of optimization problem each objective is. It is the reason the
+constructive baseline is hard to beat, and the reason the margin is worth switching to.
+
+### 14.1 What submodular means
+
+A **set function** `f(S)` assigns a number to every subset `S` of the candidate edges. It is
+**monotone** if adding an edge never decreases it, and **submodular** if it has *diminishing
+returns*: an edge is worth less once you already have more edges. Formally, for `S ⊆ T` and
+`e ∉ T`,
+
+```
+f(S ∪ {e}) − f(S)   ≥   f(T ∪ {e}) − f(T)                                            (14.1)
+```
+
+The left side is the edge's marginal value in the small graph, the right side in the big one.
+Submodular means the small graph gets at least as much out of it.
+
+### 14.2 `rank(B_S)` is monotone submodular
+
+Each edge `e` contributes a 3-row block to `B`, so it contributes a small subspace `V_e` (that
+block's row space). The rank of the assembled matrix is the dimension of the sum of those
+subspaces:
+
+```
+f(S) = dim( Σ_{e ∈ S} V_e )
+```
+
+Monotone is immediate. For submodularity, the marginal value of `e` is the part of `V_e` not
+already spanned:
+
+```
+f(S ∪ {e}) − f(S) = dim(V_e) − dim(V_e ∩ V_S)                                        (14.2)
+```
+
+`S ⊆ T` gives `V_S ⊆ V_T`, so `dim(V_e ∩ V_S) ≤ dim(V_e ∩ V_T)` and the marginal can only shrink.
+That is (14.1). ∎
+
+*Measured* (`tools/submodularity.py`): 1920 (S, T, e) triples across all five domains and a
+heterogeneous mix, **0 violations**, worst marginal gap exactly 0.
+
+### 14.3 What that buys, and what it costs us
+
+"Fewest edges making the framework rigid" is therefore **minimum submodular cover**, a named
+problem. Wolsey (1982) proved that greedy — repeatedly take the edge with the largest marginal
+gain — is an `H(d)` approximation for integer-valued monotone submodular cover, where
+`d = max_e f({e})` and `H(k) = 1 + 1/2 + … + 1/k`. Here `d = c_max`:
+
+| domain class | `c_max` | greedy guarantee |
+|---|---|---|
+| `R^2`, `R^2xS^1` | 1 | `H(1) = 1`, i.e. **exact** |
+| `R^3`, `R^3xS^1`, `SE(3)` | 2 | `H(2) = 1.5` |
+
+The `c_max = 1` row is the matroid statement of §1.4 recovered from a different direction.
+
+Two consequences, and the second is uncomfortable:
+
+- **The constructive baseline is not ad hoc.** It is the standard algorithm for this problem class,
+  with a proof behind it. That makes it the right opponent, and makes beating it meaningful.
+- **The headroom above greedy is small.** Measured against the proven lower bound `m_req`, greedy
+  lands 0–5% above it (0% in `SE(3)` and `R^2xS^1` at n=8, +2.4% on `mixed`, +5.0% at n=8/`R^3`,
+  +3.0% at n=16/`R^3`) — far better than its 50% worst case. So no method, learned or otherwise,
+  can gain much on edge count. `ROADMAP.md` §1.0 records the policy closing ~88% of that gap on the
+  training mixture, which is close to all there was.
+
+This is the structural reason a rank-based objective cannot carry the thesis on its own, and it
+agrees with Darvariu et al. (2024) §6.2: RL is not expected to gain much where shallow decision
+horizons already suffice.
+
+### 14.4 The margin is **not** submodular
+
+The rigidity eigenvalue `λ_r(S)` is still **monotone** — adding an edge adds a PSD term to `BᵀB`,
+and by Weyl's inequality every eigenvalue can only move up. But it is not submodular.
+
+*Measured* (`tools/submodularity.py`): 1493 triples with both `S` and `T` rigid, across all five
+domains and a mix: **887 violations of (14.1), 59.4%**, worst marginal gap −4.16e-01.
+Non-submodularity needs only one valid counterexample; there are 887, far above numerical noise.
+
+The intuition is that eigenvalues are global and coupled in a way ranks are not. Two edges can be
+worth more together than the sum of their separate contributions — a complementary pair bracing a
+direction that neither braces alone. That is *increasing* returns, the exact opposite of (14.1), and
+it is invisible to a method that only ever evaluates one edge at a time.
+
+**So greedy carries no approximation guarantee on the margin.** That is the principled reason to
+expect a sequential, long-horizon method to have room there when it has almost none on edge count,
+and it is the argument WP3 rests on. Stated as a prediction rather than a result: a margin-aware
+policy should beat greedy on margin by a wider relative margin than the ~2% it wins on edge count.
+The spectral first-order heuristic (`ROADMAP.md` WP3) is the honest opponent to hold it to, since
+greedy-on-margin is a weak one.
+
+*Caveat.* §14.2 is proved and then confirmed numerically; §14.4 is numerical only, but for a
+*negative* result that is the stronger position — one counterexample refutes submodularity, whereas
+no number of confirmations would prove it.
