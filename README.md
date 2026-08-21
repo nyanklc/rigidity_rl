@@ -16,33 +16,37 @@ frequently, and the repository carries superseded code from earlier experiments.
 
 Bearing rigidity theory, and the source of the rigidity matrix formulation used here:
 
-1. G. Michieletto, A. Cenedese, and D. Zelazo, "A Unified Dissertation on Bearing Rigidity Theory,"
+1. The extended bearing rigidity matrix used here restricts degrees of freedom per node rather than
+   per edge, which only matters once a formation mixes domains. The construction, and why it differs
+   from the one in [2], are written up in
+   [docs/dof_restriction_note.pdf](docs/dof_restriction_note.pdf).
+2. G. Michieletto, A. Cenedese, and D. Zelazo, "A Unified Dissertation on Bearing Rigidity Theory,"
    *IEEE Transactions on Control of Network Systems*, vol. 8, no. 4, pp. 1624-1636, Dec. 2021.
    [doi:10.1109/TCNS.2021.3077712](https://doi.org/10.1109/TCNS.2021.3077712)
-2. M. H. Trinh, Q. Van Tran, and H.-S. Ahn, "Minimal and Redundant Bearing Rigidity: Conditions and
+3. M. H. Trinh, Q. Van Tran, and H.-S. Ahn, "Minimal and Redundant Bearing Rigidity: Conditions and
    Applications," *IEEE Transactions on Automatic Control*, vol. 65, no. 10, pp. 4186-4200,
    Oct. 2020. [doi:10.1109/TAC.2019.2958563](https://doi.org/10.1109/TAC.2019.2958563)
 
 Combinatorial structure of the objective:
 
-3. L. A. Wolsey, "An analysis of the greedy algorithm for the submodular set covering problem,"
+4. L. A. Wolsey, "An analysis of the greedy algorithm for the submodular set covering problem,"
    *Combinatorica*, vol. 2, no. 4, pp. 385-393, 1982.
    [doi:10.1007/BF02579435](https://doi.org/10.1007/BF02579435)
 
 Reinforcement learning over graph structure:
 
-4. V.-A. Darvariu, S. Hailes, and M. Musolesi, "Graph Reinforcement Learning for Combinatorial
+5. V.-A. Darvariu, S. Hailes, and M. Musolesi, "Graph Reinforcement Learning for Combinatorial
    Optimization: A Survey and Unifying Perspective," *Transactions on Machine Learning Research*,
    Aug. 2024. [arXiv:2404.06492](https://arxiv.org/abs/2404.06492)
-5. V.-A. Darvariu, S. Hailes, and M. Musolesi, "Goal-directed graph construction using reinforcement
+6. V.-A. Darvariu, S. Hailes, and M. Musolesi, "Goal-directed graph construction using reinforcement
    learning," *Proceedings of the Royal Society A*, vol. 477, no. 2254, 2021.
    [doi:10.1098/rspa.2021.0168](https://doi.org/10.1098/rspa.2021.0168)
 
 Architectures:
 
-6. V. G. Satorras, E. Hoogeboom, and M. Welling, "E(n) Equivariant Graph Neural Networks,"
+7. V. G. Satorras, E. Hoogeboom, and M. Welling, "E(n) Equivariant Graph Neural Networks,"
    *ICML*, 2021. [arXiv:2102.09844](https://arxiv.org/abs/2102.09844)
-7. K. Xu, W. Hu, J. Leskovec, and S. Jegelka, "How Powerful are Graph Neural Networks?," *ICLR*,
+8. K. Xu, W. Hu, J. Leskovec, and S. Jegelka, "How Powerful are Graph Neural Networks?," *ICLR*,
    2019. [arXiv:1810.00826](https://arxiv.org/abs/1810.00826)
 
 A [draft presentation](resources/rigidity_rl_260807-1.pdf) covers the same material with figures.

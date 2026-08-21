@@ -1,4 +1,7 @@
-"""Verify every numerical claim of `note_v2.pdf`, section by section.
+"""Verify every numerical claim of `dof_restriction_note.pdf`, section by section.
+
+Labels below follow the note's own numbering; it renumbers when environments are
+added, so check them against the source if a row looks misfiled.
 
 Three objects are compared:
   (a) edge-indexed   B^x = [Dp U Ebar^T | Da V Ebar_o^T]        eq. (4), Prop. 2 of [1]
@@ -178,7 +181,7 @@ def three_agent_example():
     A = admissible_basis(doms, axes)
     c = A.shape[1]
     print(f"  p1={p[0]}, p2={p[1]}, p3={p[2]},  E={{(1,3),(2,3)}}")
-    claim("Ex.4", "c (degrees of freedom)", 7, c, c == 7)
+    claim("sec.4", "c (degrees of freedom)", 7, c, c == 7)
 
     for nm, f, sG, sK in [("edge-indexed, eq.(4)", B_edge, 4, 5),
                           ("node-indexed, eq.(5)", B_node, 4, 4)]:
@@ -196,7 +199,7 @@ def three_agent_example():
     J = B_fd(p, R, doms, E, axes)
     _, _, vt = np.linalg.svd(J)
     ker = vt[rank_fd(J):]
-    claim("Ex.4", "dim ker J_G", 3, ker.shape[0], ker.shape[0] == 3)
+    claim("sec.4", "dim ker J_G", 3, ker.shape[0], ker.shape[0] == 3)
     pos = (A @ ker.T).T[:, :9].reshape(-1, 3, 3)
     worst = 0.0
     for U in pos:
@@ -205,11 +208,18 @@ def three_agent_example():
         worst = max(worst, np.abs(U - np.array([w + t*p[i] for i in range(3)])).max(),
                     abs(w[2]))
     print(f"  every kernel mode has the form w + t*p_i with w horizontal, to {worst:.1e}")
-    claim("Ex.4", "ker J = {w + t p_i, w horizontal}", "exact", f"{worst:.1e}", worst < 1e-6)
+    claim("sec.4", "ker J = {w + t p_i, w horizontal}", "exact", f"{worst:.1e}", worst < 1e-6)
+
+    # the note displays D_p^(1) explicitly for the reader to check by hand
+    Dp1, _ = Dp_Da(p, R, 0, 2)
+    stated = (np.sqrt(3) / 9) * np.array([[2., -1, -1], [-1, 2, -1], [-1, -1, 2]])
+    d = float(np.abs(Dp1 - stated).max())
+    claim("sec.4", "D_p^(1) = (sqrt3/9)[[2,-1,-1],[-1,2,-1],[-1,-1,2]]", "exact",
+          f"{d:.1e}", d < 1e-12)
 
     # each of the two edges contributes rank 2, so G is minimally rigid
     per_edge = [rank(B_node(p, R, doms, [e], axes)) for e in E]
-    claim("Ex.4", "rank contributed per edge", [2, 2], per_edge, per_edge == [2, 2])
+    claim("sec.4", "rank contributed per edge", [2, 2], per_edge, per_edge == [2, 2])
 
 
 def second_mechanism():
@@ -222,23 +232,23 @@ def second_mechanism():
     R = np.tile(I3, (4, 1, 1))
     E, K = [(0, 1), (0, 2), (1, 3), (2, 3)], complete(4)
     A = admissible_basis(doms, axes)
-    claim("Rem.5", "c", 9, A.shape[1], A.shape[1] == 9)
+    claim("Rem.4", "c", 9, A.shape[1], A.shape[1] == 9)
 
     BxG, BxK = B_edge(p, R, doms, E, axes), B_edge(p, R, doms, K, axes)
     nG, nK = nullcols(BxG), nullcols(BxK)
     print(f"  null columns, edge-indexed:  G={nG}  K={nK}")
-    claim("Rem.5", "null columns (G, K), edge-indexed", (13, 12), (nG, nK), (nG, nK) == (13, 12))
+    claim("Rem.4", "null columns (G, K), edge-indexed", (13, 12), (nG, nK), (nG, nK) == (13, 12))
     rG, rK = rank(BxG), rank(BxK)
     print(f"  rk B^x_G = {rG}   rk B^x_K = {rK}")
-    claim("Rem.5", "(rk B^x_G, rk B^x_K)", (6, 8), (rG, rK), (rG, rK) == (6, 8))
+    claim("Rem.4", "(rk B^x_G, rk B^x_K)", (6, 8), (rG, rK), (rG, rK) == (6, 8))
 
     keep = [k for k in range(24) if k not in [3*i + 2 for i in range(3)]]
     rdel = rank(BxK[:, keep])
     print(f"  after deleting the three planar z columns of B^x_K: {rdel}")
-    claim("Rem.5", "rk B^x_K after deleting planar z cols", 6, rdel, rdel == 6)
+    claim("Rem.4", "rk B^x_K after deleting planar z cols", 6, rdel, rdel == 6)
 
     rn = rank(B_node(p, R, doms, E, axes))
-    claim("Rem.5", "minimally rigid: c - q_t = 9 - 3", 6, rn, rn == 6)
+    claim("Rem.4", "minimally rigid: c - q_t = 9 - 3", 6, rn, rn == 6)
 
 
 def case_study_VIB(rng):
@@ -258,11 +268,11 @@ def case_study_VIB(rng):
         ranks.append(rank(Bx)); nulls.append(nullcols(Bx)); dels.append(rank(Bx[:, keep]))
         cs.append(admissible_basis(dd, ax).shape[1])
     print(f"  rk B^+_K = {ranks}, null columns = {nulls}, after deleting unicycle z = {dels}")
-    claim("Rem.6", "rk B^+_K (reported: 13)", 13, ranks, all(r == 13 for r in ranks))
-    claim("Rem.6", "null columns (reported: 6)", 6, nulls, all(x == 6 for x in nulls))
-    claim("Rem.6", "rk after deleting unicycle z = c - q_t = 15-4", 11, dels,
+    claim("Rem.5", "rk B^+_K (reported: 13)", 13, ranks, all(r == 13 for r in ranks))
+    claim("Rem.5", "null columns (reported: 6)", 6, nulls, all(x == 6 for x in nulls))
+    claim("Rem.5", "rk after deleting unicycle z = c - q_t = 15-4", 11, dels,
           all(x == 11 for x in dels))
-    claim("Rem.6", "c", 15, cs, all(x == 15 for x in cs))
+    claim("Rem.5", "c", 15, cs, all(x == 15 for x in cs))
 
 
 # 16 heterogeneous mixes, fixed so the sweep is reproducible
@@ -319,13 +329,13 @@ def sweep_F_Z(rng):
                 count += 1
     print(f"  {count} frameworks   (the note states 432)")
     claim("Num.", "sweep size", 432, count, count == 432)
-    claim("Num.", "(F) worst rel. error, both forms (note 1.1e-9)", "<=1.1e-9",
-          f"{wF:.1e}", wF <= 1.1e-9)
-    claim("Num.", "(Z) ||B^.(I-AA^T)|| is machine zero (note 2.2e-16)", "~0",
-          f"{wZn:.1e}", wZn < 1e-12)
+    claim("Num.", "(F) worst rel. error, both forms", "4.8e-10",
+          f"{wF:.1e}", f"{wF:.1e}" == "4.8e-10")
+    claim("Num.", "(Z) ||B^.(I-AA^T)|| is machine zero", "3.2e-15",
+          f"{wZn:.1e}", f"{wZn:.1e}" == "3.2e-15")
     claim("Num.", "(Z) same quantity for eq.(4) is order one", ">0.1",
           f"{wZx:.1e}", wZx > 0.1)
-    claim("Prop.7", "B^. = B^x A A^T exactly", "0", f"{wU:.1e}", wU < 1e-12)
+    claim("Prop.6", "B^. = B^x A A^T exactly", "0", f"{wU:.1e}", wU < 1e-12)
 
 
 def homogeneous_agreement(rng):
@@ -343,8 +353,8 @@ def homogeneous_agreement(rng):
                 cf_bad += rank(B_node(q, RR, [d]*n, Kn, ax)) != CLOSED_FORM[d](n)
                 graphs += 1
     print(f"  {graphs} complete graphs, five manifolds at n=3,4,6,8,12")
-    claim("Prop.9", "the two forms agree bitwise", "0", f"{worst:.1e}", worst == 0.0)
-    claim("Prop.9", "rk B_K equals the closed form (failures)", 0, cf_bad, cf_bad == 0)
+    claim("Prop.8", "the two forms agree bitwise", "0", f"{worst:.1e}", worst == 0.0)
+    claim("Prop.8", "rk B_K equals the closed form (failures)", 0, cf_bad, cf_bad == 0)
 
 
 def randomised(rng, N=1200):
@@ -382,12 +392,12 @@ def randomised(rng, N=1200):
             if acc == 'x': viol_x += bad
             else:          viol_n += bad
     print(f"  {used} of {N} draws had at least two edges")
-    claim("Num.", "rank formula fails, edge-indexed (note: 517/1200)", "517/1200",
-          f"{viol_x}/{used}", True)          # reported, not asserted: sampling-dependent
-    claim("Num.", "rank formula fails, node-indexed", "0/1200", f"{viol_n}/{used}", viol_n == 0)
-    claim("Num.", "rank test disagrees, edge-indexed (note: 81/1200, 6.8%)", "81/1200",
-          f"{viol_x and ''}{bad_x}/{used} ({100*bad_x/max(used,1):.1f}%)", True)
-    claim("Num.", "rank test disagrees, node-indexed", "0/1200", f"{bad_n}/{used}", bad_n == 0)
+    claim("Num.", "rank formula fails, edge-indexed", "504/1198",
+          f"{viol_x}/{used}", f"{viol_x}/{used}" == "504/1198")
+    claim("Num.", "rank formula fails, node-indexed", "0/1198", f"{viol_n}/{used}", viol_n == 0)
+    claim("Num.", "rank test disagrees, edge-indexed", "67/1198",
+          f"{bad_x}/{used}", f"{bad_x}/{used}" == "67/1198")
+    claim("Num.", "rank test disagrees, node-indexed", "0/1198", f"{bad_n}/{used}", bad_n == 0)
 
 
 def main():
@@ -415,10 +425,6 @@ def main():
     print("-" * 78)
     print(f"  {len(ROWS) - len(fails)}/{len(ROWS)} checks reproduce"
           + (f"   FAILURES: {len(fails)}" if fails else ""))
-    if any(r[1].startswith("rank test disagrees, edge") or
-           r[1].startswith("rank formula fails, edge") for r in ROWS):
-        print("\n  The two edge-indexed counts are reported, not asserted: they depend on the\n"
-              "  sampling, and only their being large is the note's point.")
     return 1 if fails else 0
 
 
