@@ -23,7 +23,7 @@ conversation history** can read it and continue. If you are picking this up cold
 | WP2 | Null-space features: fix flex, add the exact addition oracle | 1 | **done** (2026-08-14) |
 | WP5 | Pairwise action head (level 2 default, level 3 arm) | 1 | **next** |
 | WP10 | Input embedder for the EGNN | 1 | not started |
-| WP13 | DQN hygiene: target time constant, DDQN, seeding | 1 | not started |
+| WP13 | DQN hygiene: target time constant, DDQN, seeding | 1 | **code done (2026-08-21), control run pending** |
 | WP7 | Heterogeneous training (phase A / phase B) | 2 | **phase A run, partial** (2026-08-15) |
 | WP3 | Rigidity margin in the reward (κ = 0.9) | 2 | not started |
 | WP4 | Margin-aware observation (softest mode) | 2 | not started |
@@ -550,11 +550,29 @@ unintended hybrid of the two standard conventions.
 *What:* pick one convention — hard update (`polyak = 1`) every 200 updates, or soft update
 (`polyak ≈ 0.005`) every update. Either gives a time constant near 800 timesteps. Also: **Double
 DQN** (skrl supports it as a drop-in; with 181 actions on `mixed` the max-operator overestimation
-bias is not negligible), and **seeding** — `np.random.seed(SEED)` runs after the sub-envs are
-constructed and the envs use global `np.random` rather than `self.np_random`, so the three-seed
-protocol in WP8 is not reproducible until that is fixed.
+bias is not negligible).
 
-*Acceptance:* one control run before and after; this changes learning dynamics.
+*Done 2026-08-21 (code only; the control run is still owed).*
+
+- **Soft convention chosen**, by decision: `cfg.polyak = 0.005`, `cfg.target_update_interval = 1`,
+  so the constant is `update_interval / polyak` = 800 timesteps against the previous ~160k.
+  `polyak` is now set explicitly rather than inherited from skrl's default, so it reaches the
+  manifest. Hard updates remain a one-line alternative if soft disappoints.
+- **DDQN is an `ALGORITHM` env-var arm, default `DQN`.** skrl's `DDQN` shares `DQN`'s config
+  fields, models dict and argmax rollout, so it is a genuine drop-in. `train_dqn.py` writes the
+  manifest and the checkpoint under the selected algorithm, and `agent_loader.build_agent` rebuilds
+  the class the run actually used instead of always DQN.
+- **Seeding needed no change — the roadmap's claim above was wrong.** Measured directly, in
+  `train_dqn.py`'s own construction order (`SyncVectorEnv` built, *then* seeded): two runs at
+  `SEED=0` produce a byte-identical digest over the first reset and 20 vector steps, and `SEED=1`
+  differs. `initialize()` does draw a network from the unseeded global stream at construction, but
+  the first `reset()` discards it, and sharing one global stream across sub-envs is deterministic
+  under `SyncVectorEnv`'s fixed stepping order. *Scope of the check:* CPU environment sampling only.
+  Bitwise reproducibility of a CUDA training run is a separate question and was not tested.
+
+*Acceptance, still open:* one control run before and after, at n=8/`R^3` or on `mixed`. This
+changes learning dynamics, and it lands together with the head fix below, so the two are
+confounded unless run separately — see the work log.
 
 ### Tier 2 — the science
 
@@ -744,6 +762,46 @@ domain distribution and the reward in one run would make a bad result uninterpre
 ## §5 Work log
 
 Newest first. One entry per work package or per material finding.
+
+### 2026-08-21 — WP13 code, and the affine q-head
+
+**The GINE q-networks had no nonlinearity in their pair head.** `nn.Sequential(Linear, Linear)`
+composes to one affine map, so `DQN_QNetwork_GINE_AddRemoveEdgeDiscreteNoSelfLoops` scored every
+candidate pair *linearly* in `[h_i, h_j, adj_ij]`, however wide the head looked. Its sibling
+`GINE_AddEdgeDiscreteNoSkipNoSelfLoops` had the same gap; every `Equivariant` model and every
+`*_SelectNodesSequentially` model carried the `LeakyReLU`, and so did this file's own `skip_head`,
+so it was an outlier rather than a convention. The obsolete `Default` backbone is affected
+throughout (13 heads) and is deliberately left alone.
+
+`letsgo_dqn_gine` — every number in §1.0 — was trained with the affine head, confirmed from the
+manifest's archived `q_network_architecture`. **This does not invalidate those numbers**; it says
+what architecture produced them. It does sharpen WP5: the `[h_i, h_j]` linear probe at 0.955 AUC was
+measuring the deployed head's actual ceiling, not a lower bound on what an MLP head could extract,
+so the gap WP5 is meant to close was partly this.
+
+`tests/test_models_registry.py::test_live_models_have_no_linear_stacked_on_a_linear` walks every
+registered `Equivariant`/`GINE` model and names the offending `Sequential`. Mutation-checked: reverting
+the fix fails it with the offending layer pair in the message.
+
+**Reproducibility held, and was verified rather than assumed.** `tools/checkpoint_fingerprint.py`
+loaded `letsgo_dqn_gine` and digested its q-values on a fixed observation before and after the edit: the
+loader reports `DQN_QNetwork_GINE_AddRemoveEdgeDiscreteNoSelfLoops changed since this run; using the
+archived version`, and the q-sum, min/max and argmax are bit-identical (1.995017700195e+02,
+argmax 150). The `backbone_source` + `q_network_architecture` archive does exactly what it was built
+for.
+
+**WP13 as recorded in its own section:** soft updates at a 800-timestep constant, DDQN as an
+`ALGORITHM` arm, and the seeding item withdrawn after measurement.
+
+**What is confounded, and what to do about it.** The head fix and the target time constant both land
+in the next run and both change learning dynamics. A single new run against `letsgo_dqn_gine` cannot
+attribute a difference to either. Cheapest honest split, in order of value: (1) soft-update alone,
+head reverted, is *not* worth a run — the head fix is a defect repair, not an arm; (2) run the fixed
+head + soft updates as the new baseline and compare to `letsgo_dqn_gine` as a package, stating it as
+a package; (3) only if that package regresses, bisect. DDQN stays off until (2) has a number.
+
+Suite: 564 -> **576 passed**, 24 skipped, 9 xfailed. One new slow test runs the DDQN arm end to end
+and asserts the manifest's algorithm, the `models/complete/DDQN/` path and the target time constant.
 
 ### 2026-08-15 — first full evaluation of a heterogeneously-trained policy
 

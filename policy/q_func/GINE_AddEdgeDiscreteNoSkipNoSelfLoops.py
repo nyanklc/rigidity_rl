@@ -31,6 +31,7 @@ class DQN_QNetwork_GINE_AddEdgeDiscreteNoSkipNoSelfLoops(TabularMixin, Model):
 
         self.head = nn.Sequential(
             nn.Linear(2 * gnn_hidden_dim + 1, head_hidden_dim),
+            nn.LeakyReLU(),
             nn.Linear(head_hidden_dim, 1),
         )
 

@@ -20,7 +20,7 @@ KNOWN_BROKEN = {
 }
 
 
-def build_and_forward(make_env, role, bb, act, n=6):
+def build_model(make_env, role, bb, act, n=6):
     e = make_env(n=n, domains="R^3", action_space_type=act)
     obs, _ = e.reset()
     algo = "PPO" if role in ("policy", "value") else "DQN"
@@ -30,9 +30,14 @@ def build_and_forward(make_env, role, bb, act, n=6):
                      gnn_hidden_dim=16, head_hidden_dim=16,
                      observation_space=e.observation_space,
                      action_space=e.action_space, device="cpu", allow_skip=False)
+    return e, obs, m[role]
+
+
+def build_and_forward(make_env, role, bb, act, n=6):
+    e, obs, model = build_model(make_env, role, bb, act, n=n)
     f = flatten_tensorized_space(tensorize_space(e.observation_space, obs, device="cpu"))
     with torch.no_grad():
-        out, _ = m[role].compute({"observations": f}, role=role)
+        out, _ = model.compute({"observations": f}, role=role)
     return e, out
 
 
@@ -126,3 +131,31 @@ def test_both_backbones_see_candidate_edge_features(backbone, make_env):
         d = (g(feats=nodes, coors=coors, edges=pert)
              - g(feats=nodes, coors=coors, edges=edges)).abs().max().item()
     assert d > 1e-6, f"{backbone} ignores candidate-edge features"
+
+
+# Two Linears with nothing between them compose to one affine map, so the head
+# scores each pair linearly however wide it looks. The GINE q-networks shipped
+# that way; every sibling had the LeakyReLU. See ROADMAP.md WP5.
+LIVE_BACKBONES = ("Equivariant", "GINE")
+LIVE_COMBOS = [c for c in COMBOS if c[1] in LIVE_BACKBONES]
+
+
+def stacked_linears(model):
+    """Every place a Linear feeds another Linear with no nonlinearity between."""
+    found = []
+    for name, sub in model.named_modules():
+        if not isinstance(sub, torch.nn.Sequential):
+            continue
+        layers = list(sub)
+        for a, b in zip(layers, layers[1:]):
+            if isinstance(a, torch.nn.Linear) and isinstance(b, torch.nn.Linear):
+                found.append(f"{name or '<root>'}: {a} -> {b}")
+    return found
+
+
+@pytest.mark.parametrize("role,bb,act", LIVE_COMBOS,
+                         ids=[f"{r}-{b}-{a}" for r, b, a in LIVE_COMBOS])
+def test_live_models_have_no_linear_stacked_on_a_linear(make_env, role, bb, act):
+    _e, _obs, model = build_model(make_env, role, bb, act)
+    bad = stacked_linears(model)
+    assert not bad, f"{type(model).__name__} collapses to an affine map in: " + "; ".join(bad)

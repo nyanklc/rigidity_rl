@@ -13,6 +13,7 @@ import skrl
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
 from skrl.agents.torch.dqn import DQN, DQN_CFG
+from skrl.agents.torch.ddqn import DDQN
 from skrl.trainers.torch import SequentialTrainer, SequentialTrainerCfg
 import policy.gnn_backbone
 from policy import *
@@ -27,6 +28,7 @@ NR_ENVS = 4
 MEM_SIZE = 10000
 SEED = int(os.environ.get("SEED", 0))
 EGREEDY_STEPS = TOTAL_TIMESTEPS * 0.5
+ALGORITHM = os.environ.get("ALGORITHM", "DQN")
 
 # which GNN serves the model; the observation is one type now, so the backbone
 # is a model choice. One of policy.BACKBONES.
@@ -42,7 +44,8 @@ PROBE_EPISODES = 3
 cfg = DQN_CFG()
 cfg.experiment.directory = "runs"
 cfg.batch_size = 256
-cfg.target_update_interval = 200
+cfg.polyak = 0.005
+cfg.target_update_interval = 1
 cfg.update_interval = 4
 cfg.learning_rate = 3e-4
 cfg.learning_starts = MEM_SIZE + 1
@@ -96,7 +99,7 @@ if "prefix=" in sys.argv[2]:
 train_dir = "./train"
 os.makedirs(train_dir, exist_ok=True)
 descriptor_path = os.path.join(train_dir, f"{model_name}.json")
-model_save_path = f"./models/complete/DQN/{model_name}.pt"
+model_save_path = f"./models/complete/{ALGORITHM}/{model_name}.pt"
 
 resume = False
 if os.path.exists(descriptor_path) or os.path.exists(model_save_path):
@@ -159,9 +162,10 @@ memory = RandomMemory(memory_size=MEM_SIZE, num_envs=env.num_envs, device=DEVICE
 cfg.experiment.experiment_name = model_name
 
 os.makedirs("./models", exist_ok=True)
-os.makedirs("./models/complete/DQN", exist_ok=True)
+os.makedirs(f"./models/complete/{ALGORITHM}", exist_ok=True)
 
-agent = DQN(
+agent_class = {"DQN": DQN, "DDQN": DDQN}[ALGORITHM]
+agent = agent_class(
     models=models,
     memory=memory,
     cfg=cfg,
@@ -189,6 +193,7 @@ print("="*40)
 print(f"obs space: {trainer.env.observation_space}")
 print(f"action space: {trainer.env.action_space}")
 print(f"model: {models['q_network'].__class__.__name__}")
+print(f"ALGORITHM: {ALGORITHM}")
 print(f"TOTAL_TIMESTEPS: {TOTAL_TIMESTEPS}")
 print(f"NR_ENVS: {NR_ENVS}")
 print(f"MEM_SIZE: {MEM_SIZE}")
@@ -215,7 +220,7 @@ with open("environments/"+filename+".json", "r") as env_file:
     env_config_data = json.load(env_file)
 
 descriptor = {
-    "algorithm": "DQN",
+    "algorithm": ALGORITHM,
     "model_name": model_name,
     "environment_config": filename,
     "timestamp_started": datetime.now().isoformat(),

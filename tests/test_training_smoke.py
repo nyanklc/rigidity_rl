@@ -64,6 +64,36 @@ def test_training_runs_and_logs(tmp_path, temp_run_name, algo, backbone, action)
             os.remove(cfg_path)
 
 
+def test_dqn_run_records_its_algorithm_and_target_time_constant(temp_run_name):
+    """ALGORITHM reaches the manifest and the checkpoint path; polyak and
+    target_update_interval stay on one convention. See ROADMAP.md WP13."""
+    cfg_name = f"pytest_cfg_{temp_run_name}"
+    cfg_path = write_env_config(cfg_name, action_type="AddRemoveEdgeDiscreteNoSelfLoops")
+    original = patch_script("train_dqn.py", "GINE")
+    try:
+        proc = subprocess.run(
+            [sys.executable, "train_dqn.py", cfg_name, temp_run_name],
+            cwd=ROOT, capture_output=True, text=True, timeout=240, input="",
+            env={**os.environ, "PYTEST_TRAINING_SMOKE": "1", "ALGORITHM": "DDQN"})
+        combined = proc.stdout + proc.stderr
+        assert "Traceback" not in combined, combined[-2500:]
+        with open(os.path.join(ROOT, "train", f"{temp_run_name}.json")) as f:
+            info = json.load(f)
+        assert info["algorithm"] == "DDQN"
+        assert os.path.exists(
+            os.path.join(ROOT, "models", "complete", "DDQN", f"{temp_run_name}.pt"))
+        hp = info["hyperparameters"]
+        # soft updates blend every update; a large interval on top of a small polyak
+        # is the mixed convention that gave a ~160k-timestep target
+        assert hp["target_update_interval"] == 1
+        tau = hp["update_interval"] / hp["polyak"]
+        assert 100 <= tau <= 5000, f"target time constant {tau} timesteps"
+    finally:
+        open(os.path.join(ROOT, "train_dqn.py"), "w").write(original)
+        if os.path.exists(cfg_path):
+            os.remove(cfg_path)
+
+
 def test_logged_tags_cover_the_decision_panel(temp_run_name):
     """One full run, checked for the metric groups we actually watch."""
     from tensorboard.backend.event_processing.event_accumulator import EventAccumulator

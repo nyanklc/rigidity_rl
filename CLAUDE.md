@@ -604,10 +604,18 @@ gradient. This mismatch existed only at commit `809f13a` and is what broke
 constant for both. Do not reintroduce a separate `MEM_SIZE` — the "to ensure we don't get garbage
 data from memory" comment was aimed at this and got it backwards.
 
-**DQN target updates are slower than they look.** `polyak=0.005` combined with
-`target_update_interval=200` (counted in *updates*, which happen every `update_interval=4`
-timesteps) gives a target-network time constant of roughly 160k timesteps — effectively a frozen
-target. It works, but if you are reasoning about DQN stability, that is the actual number.
+**DQN target updates are soft, on one convention.** `polyak=0.005` with
+`target_update_interval=1` (counted in *updates*, which happen every `update_interval=4`
+timesteps) gives a target-network time constant of `update_interval/polyak` = 800 timesteps.
+It used to pair that polyak with `target_update_interval=200`, mixing the soft and hard
+conventions into a ~160k-timestep constant — effectively a frozen target across a 400k run.
+Every checkpoint up to and including `letsgo_dqn_gine` was trained that way. Do not raise the
+interval without dropping polyak to 1: `tests/test_training_smoke.py` asserts the constant.
+
+**`ALGORITHM` selects DQN or DDQN** (`train_dqn.py`, env-var overridable, default `DQN`). They
+share a config, a models dict and an argmax rollout, and differ only in the target value, so a
+checkpoint is loadable either way — but the manifest and `models/complete/<ALGORITHM>/` both
+follow the switch. DDQN is an arm needing its own control run, not a default.
 
 **Decision-quality metrics and the training probe.** `Best`/`Final` cannot distinguish a policy
 from a search, which is how two runs failed undetected. `Decision/ {useful,wasted,overshoot,converge}`

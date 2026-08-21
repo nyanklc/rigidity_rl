@@ -24,12 +24,19 @@ PYTHONPATH=. uv run tools/<name>.py
 | `compare_runs.py` | how do two or more training runs differ on the metrics that separate a policy from a search? |
 | `verify_results.py` | do the numbers quoted in `ROADMAP.md` §1.0 and the README still reproduce? |
 | `submodularity.py` | which objectives have diminishing returns, and therefore which ones greedy is guaranteed on? |
+| `checkpoint_fingerprint.py` | does an edit to `policy/` change what an already-trained checkpoint computes? |
 
 `constructive_greedy.py` is the standalone version of the `constructive` baseline
 now wired into `baselines.py`, for difficulty sweeps that need no env config. It
 also shows that the `c_max = 1` domains are a matroid where any greedy is already
 optimal, which is why a "beats greedy" claim only means something in the spatial
 domains.
+
+`checkpoint_fingerprint.py` is the check to run either side of a change to a model
+class or to `policy/gnn_backbone.py`. The manifest archives both, and the loader
+replays the archived text, so an old checkpoint is supposed to be unaffected by
+those edits -- this prints a digest that makes "supposed to" testable. It needs
+`models/` and `train/`, which are gitignored, so it does not run on a fresh clone.
 
 `verify_results.py` is the reproducibility check to run before quoting a number
 anywhere. It builds the environment programmatically rather than reading the
