@@ -23,8 +23,8 @@ from probe import Probe
 ######################################
 # env-var overridable so an A/B or a 3-seed sweep does not need a source edit;
 # both land in the manifest
-TOTAL_TIMESTEPS = int(float(os.environ.get("TOTAL_TIMESTEPS", 4e5)))
-NR_ENVS = 4
+TOTAL_TIMESTEPS = int(float(os.environ.get("TOTAL_TIMESTEPS", 2.5e5)))
+NR_ENVS = 1
 MEM_SIZE = 10000
 SEED = int(os.environ.get("SEED", 0))
 EGREEDY_STEPS = TOTAL_TIMESTEPS * 0.5
@@ -32,7 +32,7 @@ ALGORITHM = os.environ.get("ALGORITHM", "DQN")
 
 # which GNN serves the model; the observation is one type now, so the backbone
 # is a model choice. One of policy.BACKBONES.
-BACKBONE = "GINE"
+BACKBONE = "Equivariant"
 GNN_HIDDEN_DIM = 128
 QNETWORK_HEAD_HIDDEN_DIM = 256
 

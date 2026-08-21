@@ -22,7 +22,7 @@ conversation history** can read it and continue. If you are picking this up cold
 | — | `mixed5` scenario as the ground-truth debug case | 0 | **done** (user-provided) |
 | WP2 | Null-space features: fix flex, add the exact addition oracle | 1 | **done** (2026-08-14) |
 | WP5 | Pairwise action head (level 2 default, level 3 arm) | 1 | **next** |
-| WP10 | Input embedder for the EGNN | 1 | not started |
+| WP10 | Input embedder for the EGNN | 1 | **done (2026-08-21)** |
 | WP13 | DQN hygiene: target time constant, DDQN, seeding | 1 | **code done (2026-08-21), control run pending** |
 | WP7 | Heterogeneous training (phase A / phase B) | 2 | **phase A run, partial** (2026-08-15) |
 | WP3 | Rigidity margin in the reward (κ = 0.9) | 2 | not started |
@@ -526,7 +526,24 @@ independently of the p ≈ 0.34 power problem.
 *What:* `nn.Sequential(Linear(node_feat_dim, 128), LeakyReLU(), Linear(128, 128))` before the EGNN
 stack, then `EGNN(dim=128, …)`. **This does not break equivariance** — the EGNN's equivariance is
 with respect to `coors`, and `feats` are invariant scalars throughout. (Embedding `coors` would
-break it.) ~18k parameters.
+break it.) ~~~18k parameters.~~
+
+*Done 2026-08-21.* `GNNBackboneEquivariant.embed`, stack at `dim=hidden_dim`; the seven
+`Equivariant_*` models now size their heads on `gnn_hidden_dim` instead of `node_feat_dim`, so
+**both backbones output the same width** and the head arithmetic is the same either way.
+`test_both_backbones_output_the_same_width` pins it. Equivariance and n-invariance both re-measured
+and intact (numbers in `DESIGN_NOTES.md#egnn-input-embedder`). Four archived checkpoints
+(`generaldqnequi`, `phase4_dqn_equi_n8_SE3`, `heynewppo`, `letsgo_dqn_gine`) re-fingerprint
+bit-identically through `tools/checkpoint_fingerprint.py`.
+
+**The "~18k parameters" above was wrong, and the error matters.** It counted the embedder only.
+Raising `dim` from 11 to 128 widens every layer's `edge_mlp` and `node_mlp` too, so the stack goes
+40,407 -> 940,956 parameters — **10.9x GINE's 86,499**. Matched width and matched parameters cannot
+both hold: parameter parity would need `dim ~= 32`, a quarter of GINE's width. Width is what is
+implemented, because width was the diagnosed defect and stage 1's criterion is stated as equal
+width — but the comparison must now be reported as *equal width, unequal capacity*. An EGNN that
+wins at 10.9x the parameters has not beaten GINE at message passing. A matched-parameter arm needs
+`m_dim` separated from `hidden_dim` in the constructor and is deliberately not a knob yet; `tools/backbone_capacity.py` prints what it would buy at any given `node_feat_dim`/`hidden_dim`.
 
 *The harder question this exposes.* EGNN consumes coordinates only through `‖x_i − x_j‖²`. Bearing
 rigidity is scale-invariant and depends on *directions*, so distance is close to the wrong
@@ -762,6 +779,30 @@ domain distribution and the reward in one run would make a bad result uninterpre
 ## §5 Work log
 
 Newest first. One entry per work package or per material finding.
+
+### 2026-08-21 — WP10: the EGNN input embedder
+
+The EGNN-vs-GINE comparison was 11 dimensions against 128; it is now 128 against 128. Details and
+the measured invariance/scale checks in WP10 above and `DESIGN_NOTES.md#egnn-input-embedder`.
+
+**The finding worth carrying forward is the one that contradicts the WP10 spec.** Equalizing width
+costs parameter parity, by 10.9x, because `dim` widens the EGNN's own MLPs and not just the input.
+The spec's "~18k parameters" counted the embedder in isolation. There is no setting where both
+controls hold, so the backbone comparison has to name which control it ran. This does not change the
+decision — width was the defect, and stage 1 says equal width — but it changes what a win would
+mean, and it should be stated in the thesis rather than discovered by a reader.
+
+WP10's own text already anticipated the honest outcome being *"equivariance is not exercised by this
+objective"*. That is now more likely rather than less: a 10.9x-larger EGNN that still ties GINE
+would be strong evidence for it. As recorded there, the real test comes after WP3 puts geometry in
+the reward — running the backbone comparison now, on a combinatorial objective, measures the wrong
+thing whichever way it lands.
+
+Checkpoint replay verified rather than assumed, on three Equivariant runs plus the GINE headline.
+`tools/checkpoint_fingerprint.py` reports `(archived source)` for all four and identical digests, so
+a backbone change is exactly the case the archive was built for.
+
+Suite: **578 passed**, 25 skipped, 9 xfailed.
 
 ### 2026-08-21 — WP13 code, and the affine q-head
 

@@ -757,6 +757,46 @@ Verified: perturbing a **non-edge**'s features changes the GINE output (0.86 on 
 with a single layer `d(h_0)/d(edge_attr[0,1])` is nonzero while `d(h_0)/d(edge_attr[1,0])` is
 exactly zero — so the outgoing-edge direction below is preserved.
 
+### egnn-input-embedder
+
+`EGNN` preserves the feature dimension: `dim` in equals `dim` out. `GNNBackboneEquivariant` was
+constructed with `dim=node_feat_dim`, so the node representation it handed the action head was as
+wide as the raw observation — **11 on `mixed`** (5 domain + 2 degree + 3 rigidity_global + 1
+flex_mag) — while `GNNBackboneGINE` output `gnn_hidden_dim = 128`. Confirmed in a checkpoint:
+`gnn.conv1.edge_mlp.0.weight` had shape `(62, 31) = (2*m_dim, 2*11+1+8)`. Every EGNN-vs-GINE
+comparison run before 2026-08-21 was therefore an 11-dimensional model against a 128-dimensional
+one, not a comparison of message-passing schemes.
+
+`self.embed` is `Linear(node_feat_dim, hidden) -> LeakyReLU -> Linear(hidden, hidden)` applied
+before the stack, and the stack now runs at `dim=hidden_dim`. Two properties it must not break, both
+measured:
+
+- **Equivariance survives.** The EGNN's equivariance is with respect to `coors`; `feats` are
+  invariant scalars throughout, so embedding them is free. Embedding `coors` would break it.
+  Rotating `coors` alone moves the output by 3.0e-8 at `init_eps=1e-2` and 9.5e-6 at trained-scale
+  `1e-1` — float32 accumulation through three 128-wide layers, ~3e-7 relative to `mean|h| = 7.8`.
+- **No `n` dependence.** The embedder is applied per node, so it cannot introduce the scaling that
+  [aggregation-and-scale](#aggregation-and-scale) is about. `mean|h|` is 7.80 / 4.48 / 5.46 at
+  n = 8 / 16 / 32, non-monotone, i.e. sampling noise rather than drift.
+
+**Equal width is not equal capacity, and the roadmap's "~18k parameters" was wrong.** It counted the
+embedder only. Raising `dim` from 11 to 128 also grows the EGNN stack itself, because every layer's
+`edge_mlp` and `node_mlp` widen with `dim`:
+
+| | width | params | x GINE |
+|---|---|---|---|
+| EGNN before (`dim=11`, `m_dim=128`) | 11 | 40,407 | 0.5x |
+| **EGNN after (`dim=m_dim=128`)** | **128** | **940,956** | **10.9x** |
+| GINE (`hidden=128`) | 128 | 86,499 | 1.0x |
+| embedder alone | — | 18,048 | — |
+
+So the two controls cannot both be satisfied: matched width puts the EGNN at 10.9x the parameters,
+and matched parameters (~86k) puts it at `dim ~= 32`, a quarter of GINE's width. **Width is the one
+implemented**, because width was the diagnosed defect and `ROADMAP.md` §3 stage 1 states the
+criterion as "EGNN ~= GINE at equal width". A matched-parameter arm would need `m_dim` separated
+from `hidden_dim` in the constructor; it is not currently a knob. Whichever is reported, say which
+control it is — an EGNN that wins at 10.9x the parameters has not beaten GINE at message passing.
+
 ### egnn-init-eps
 
 `egnn_pytorch` applies `nn.init.normal_(weight, std=init_eps)` to *every* Linear in an `EGNN` layer,

@@ -27,10 +27,10 @@ class DQN_QNetwork_Equivariant_AddEdgeDiscreteNoSkipNoSelfLoops(TabularMixin, Mo
 
         self.gnn = GNNBackboneEquivariant(
             node_feat_dim, edge_feat_dim, gnn_hidden_dim
-        )  # output dim = node_feat_dim
+        )  # output dim = gnn_hidden_dim
 
         self.head = nn.Sequential(
-            nn.Linear(2 * node_feat_dim + 1, head_hidden_dim),
+            nn.Linear(2 * gnn_hidden_dim + 1, head_hidden_dim),
             nn.LeakyReLU(),
             nn.Linear(head_hidden_dim, 1),  # two logits ("add", "remove")
         )

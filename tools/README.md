@@ -25,6 +25,7 @@ PYTHONPATH=. uv run tools/<name>.py
 | `verify_results.py` | do the numbers quoted in `ROADMAP.md` §1.0 and the README still reproduce? |
 | `submodularity.py` | which objectives have diminishing returns, and therefore which ones greedy is guaranteed on? |
 | `checkpoint_fingerprint.py` | does an edit to `policy/` change what an already-trained checkpoint computes? |
+| `backbone_capacity.py` | at these settings, is the EGNN-vs-GINE comparison matched on width, on parameters, or on neither? |
 
 `constructive_greedy.py` is the standalone version of the `constructive` baseline
 now wired into `baselines.py`, for difficulty sweeps that need no env config. It
@@ -37,6 +38,14 @@ class or to `policy/gnn_backbone.py`. The manifest archives both, and the loader
 replays the archived text, so an old checkpoint is supposed to be unaffected by
 those edits -- this prints a digest that makes "supposed to" testable. It needs
 `models/` and `train/`, which are gitignored, so it does not run on a fresh clone.
+
+`backbone_capacity.py` exists because the two controls conflict. Equalizing the
+EGNN's width against GINE (WP10) puts it at 10.9x GINE's parameters, and matching
+parameters instead would put it at a quarter of GINE's width -- so "we compared
+the backbones" is not a complete statement. Run it for whatever `node_feat_dim`
+and `gnn_hidden_dim` an experiment actually uses, and report which control it
+ran. Widths are measured by forwarding rather than assumed, since assuming them
+is what hid the original 11-vs-128 mismatch.
 
 `verify_results.py` is the reproducibility check to run before quoting a number
 anywhere. It builds the environment programmatically rather than reading the

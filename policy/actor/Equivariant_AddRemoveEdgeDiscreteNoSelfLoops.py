@@ -27,11 +27,11 @@ class PPO_ActorModel_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(CategoricalMix
 
         self.gnn = GNNBackboneEquivariant(
             node_feat_dim, edge_feat_dim, gnn_hidden_dim
-        )  # output dim = node_feat_dim
+        )  # output dim = gnn_hidden_dim
 
         # input cat[node features, selected node's features(zeros if no selected)]
         self.head = nn.Sequential(
-            nn.Linear(2 * node_feat_dim + 1, head_hidden_dim),
+            nn.Linear(2 * gnn_hidden_dim + 1, head_hidden_dim),
             nn.LeakyReLU(),
             nn.Linear(head_hidden_dim, 2),
         )
@@ -39,7 +39,7 @@ class PPO_ActorModel_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(CategoricalMix
         # input graph embedding
         self.allow_skip = allow_skip
         self.skip_head = nn.Sequential(
-            nn.Linear(node_feat_dim, head_hidden_dim),
+            nn.Linear(gnn_hidden_dim, head_hidden_dim),
             nn.LeakyReLU(),
             nn.Linear(head_hidden_dim, 1),
         )

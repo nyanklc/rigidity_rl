@@ -35,11 +35,11 @@ class DQN_QNetwork_Equivariant_SelectNodesSequentially(TabularMixin, Model):
 
         self.gnn = GNNBackboneEquivariant(
             node_feat_dim,edge_feat_dim, gnn_hidden_dim
-        )  # output dim = node_feat_dim
+        )  # output dim = gnn_hidden_dim
 
         # input cat[node features, selected node's features(zeros if no selected)]
         self.head = nn.Sequential(
-            nn.Linear(2 * node_feat_dim, head_hidden_dim),
+            nn.Linear(2 * gnn_hidden_dim, head_hidden_dim),
             nn.LeakyReLU(),
             nn.Linear(head_hidden_dim, 1),
         )
@@ -47,7 +47,7 @@ class DQN_QNetwork_Equivariant_SelectNodesSequentially(TabularMixin, Model):
         # input graph embedding
         if allow_skip:
             self.skip_head = nn.Sequential(
-                nn.Linear(node_feat_dim, head_hidden_dim),
+                nn.Linear(gnn_hidden_dim, head_hidden_dim),
                 nn.LeakyReLU(),
                 nn.Linear(head_hidden_dim, 1),
             )

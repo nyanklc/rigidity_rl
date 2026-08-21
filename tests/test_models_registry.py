@@ -112,6 +112,21 @@ def test_feature_dims_propagate_from_the_observation(make_env):
 
 
 @pytest.mark.parametrize("backbone", ["Equivariant", "GINE"])
+def test_both_backbones_output_the_same_width(backbone):
+    """EGNN preserves the feature width, so without an input embedder the node
+    representation was node_feat_dim wide against GINE's hidden. ROADMAP.md WP10."""
+    from policy.gnn_backbone import GNNBackboneEquivariant, GNNBackboneGINE
+    node_feat_dim, edge_feat_dim, hidden, n = 11, 8, 32, 5
+    nodes, edges = torch.randn(2, n, node_feat_dim), torch.randn(2, n, n, edge_feat_dim)
+    if backbone == "GINE":
+        out = GNNBackboneGINE(node_feat_dim, edge_feat_dim, hidden)(nodes, edges)
+    else:
+        g = GNNBackboneEquivariant(node_feat_dim, edge_feat_dim, hidden)
+        out = g(feats=nodes, coors=torch.randn(2, n, 3), edges=edges)
+    assert out.shape[-1] == hidden
+
+
+@pytest.mark.parametrize("backbone", ["Equivariant", "GINE"])
 def test_both_backbones_see_candidate_edge_features(backbone, make_env):
     """GINE used to message-pass over existing edges only, discarding candidates."""
     from policy.gnn_backbone import GNNBackboneEquivariant, GNNBackboneGINE

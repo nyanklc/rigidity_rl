@@ -121,8 +121,19 @@ class GNNBackboneEquivariant(_GNNBackbone):
         self.init_args = dict(
             node_feat_dim=node_feat_dim, edge_dim=edge_dim, hidden_dim=hidden_dim
         )
+        # EGNN preserves the feature width, so without this the node representation
+        # is node_feat_dim wide (11 on `mixed`) against GINE's hidden_dim, and a
+        # backbone comparison measures the width instead. Embedding `feats` leaves
+        # equivariance alone -- they are invariant scalars, and the equivariance is
+        # with respect to `coors`, which is untouched. Applied per node, so nothing
+        # here depends on n. See DESIGN_NOTES.md#egnn-input-embedder
+        self.embed = nn.Sequential(
+            nn.Linear(node_feat_dim, hidden_dim),
+            nn.LeakyReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
         self._register_convs([
-            EGNN(dim=node_feat_dim, m_dim=hidden_dim, edge_dim=edge_dim,
+            EGNN(dim=hidden_dim, m_dim=hidden_dim, edge_dim=edge_dim,
                  init_eps=init_eps, m_pool_method=m_pool, update_coors=update_coors)
             for _ in range(num_layers)
         ])
@@ -134,6 +145,8 @@ class GNNBackboneEquivariant(_GNNBackbone):
                 edges=None):
         batch_size = feats.shape[0]
         n = feats.shape[1]
+
+        feats = self.embed(feats)
 
         # adj_mat is accepted but NOT forwarded: egnn_pytorch only reads it in
         # nearest-neighbour mode, so passing it was a silent no-op. Message
