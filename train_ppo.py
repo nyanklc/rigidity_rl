@@ -20,18 +20,13 @@ from probe import Probe
 ######################################
 TOTAL_TIMESTEPS = int(6e5)
 NR_ENVS = 4
-# Feeds both memory_size and cfg.rollouts, which MUST stay equal.
 ROLLOUT_SIZE = 256
-SEED = 0  # recorded in the manifest; training was unseeded before this
+SEED = 0
 
-# which GNN serves the model; the observation is one type now, so the backbone
-# is a model choice. One of policy.BACKBONES.
 BACKBONE = "Equivariant"
 GNN_HIDDEN_DIM = 128
 ACTOR_HEAD_HIDDEN_DIM = 256
 
-# Periodic deterministic evaluation during training: is the policy a decision
-# rule or only a sampler?
 PROBE_INTERVAL = 25_000
 PROBE_EPISODES = 3
 CRITIC_HEAD_HIDDEN_DIM = 256
@@ -39,7 +34,6 @@ CRITIC_HEAD_HIDDEN_DIM = 256
 cfg = PPO_CFG()
 cfg.rollouts = ROLLOUT_SIZE
 cfg.experiment.directory = "runs"
-# incentivize exploration more
 cfg.entropy_loss_scale = 0.01
 cfg.learning_rate = 3e-4
 cfg.learning_epochs = 2
@@ -49,8 +43,6 @@ cfg.kl_threshold = 0.015
 cfg.value_preprocessor = RunningStandardScaler
 cfg.value_preprocessor_kwargs = {"size": 1, "device": "cuda"}
 cfg.time_limit_bootstrap = True # this is crucial since we do not want skrl to treat the final state having value=0
-# MUST stay < 1: the reward is potential-based, so gamma=1 makes the advantage
-# identically zero.
 cfg.discount_factor = 0.99
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -74,12 +66,9 @@ with open(filepath, "r") as f:
     scenario_name = config.get("scenario")
     action_type = config.get("action_type")
     obs_type = config.get("obs_type")
-    # skip is opt-out: see policy/*/SelectNodesSequentially.py for why
     allow_skip = config.get("skip_enabled", True)
-    # a pre-merge obs_type implied its backbone; honour that over the constant
     backbone = OBS_BACKBONE.get(obs_type, BACKBONE)
     n = config.get("n")
-    # scenario configs carry the full per-agent list, homogeneous ones a bare string
     domains = config.get("domains", "domain")
     if isinstance(domains, list):
         domains = "-".join(sorted(set(domains)))
@@ -113,23 +102,19 @@ device = DEVICE
 def make_env(i):
     e = Environment()
     e.load(filepath)
-    # Give each env its own writer string, or none to prevent spam
     writer_name = model_name if i == 0 else f"{model_name}-{i}"
     e.set_writer(writer_name)
     e.device = device
     return e
 
-# Gym Vector Envs expect a list of callables, so we use a lambda
 raw_env = gym.vector.SyncVectorEnv([lambda idx=i: make_env(idx) for i in range(NR_ENVS)])
 env = wrap_env(raw_env)
 
-# seed everything so a run is reproducible from the manifest's recorded seed
 np.random.seed(SEED)
 torch.manual_seed(SEED)
 env.action_space.seed(SEED)
 env.observation_space.seed(SEED)
 
-# Use single_observation_space since raw_env is now batched
 node_features_dim = raw_env.single_observation_space["node_features"].shape[1]
 edge_features_dim = raw_env.single_observation_space["edge_features"].shape[-1]
 
@@ -233,16 +218,12 @@ descriptor = {
     "hyperparameters": make_serializable(dataclasses.asdict(cfg)),
     "status": "training",
     "timesteps_completed": 0,
-    # the model classes only *reference* the backbone, so archive it too or a checkpoint
-    # stops loading the moment gnn_backbone.py changes
     "backbone_source": inspect.getsource(policy.gnn_backbone).split("\n"),
     "actor_architecture": inspect.getsource(models["policy"].__class__).split("\n"),
     "critic_architecture": inspect.getsource(models["value"].__class__).split("\n"),
     "environment_config_raw": env_config_data
 }
 
-# archive every file that determines this run, plus versions/seed/git state, so the
-# checkpoint stays reproducible after the code moves on (see manifest.py)
 descriptor = manifest.build_manifest(descriptor, env_config_data, seed=SEED, device=device)
 
 probe = Probe(filepath, device=DEVICE,
