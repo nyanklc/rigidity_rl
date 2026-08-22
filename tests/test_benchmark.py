@@ -1,4 +1,4 @@
-"""Frozen evaluation instances round-trip exactly. DESIGN_NOTES.md#benchmarks."""
+"""Frozen evaluation instances round-trip exactly."""
 import numpy as np
 import pytest
 

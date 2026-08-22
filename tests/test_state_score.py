@@ -1,8 +1,9 @@
-"""The state score phi. THEORY.md section 7."""
+"""The state score phi."""
 import numpy as np
 import pytest
 
 from conftest import ALL_DOMAINS, C_MAX, RANK_K_FORMULA, STATE_SCORES
+from rigidity import rigidity_decomposition
 
 W_RANK, W_EDGE = 100.0, 25.0
 
@@ -10,7 +11,8 @@ W_RANK, W_EDGE = 100.0, 25.0
 def phi_of(env):
     brm = env.network.extended_bearing_rigidity_matrix()
     mbr, ibr, rank = env.network.is_MBR(rank_K=env.rank_K, brm=brm)
-    return env.compute_state_score(brm, ibr, mbr, rank), rank
+    lam = rigidity_decomposition(brm, env.rank_K)[2]
+    return env.compute_state_score(brm, ibr, mbr, rank, lam=lam), rank
 
 
 @pytest.mark.parametrize("domain", ALL_DOMAINS)
@@ -104,3 +106,135 @@ def test_reward_is_the_change_in_phi(make_env):
         now = e.last_stats["score"]
         assert abs(reward - (now - prev)) < 1e-9
         prev = now
+
+
+# The rigidity margin term.
+KAPPA = 0.9
+
+
+def rigid_env(make_env, domain, n=6, kappa=KAPPA, **kw):
+    """An env whose graph is complete, so the margin term is actually live."""
+    e = make_env(n=n, domains=[domain] * n, margin_kappa=kappa, **kw)
+    e.reset()
+    e.network.edges = e.network.fully_connected().edges
+    np.fill_diagonal(e.network.edges, False)
+    e.margin_rng = np.random.default_rng(0)
+    e.compute_episode_constants()
+    return e
+
+
+def one_edge(e):
+    return W_EDGE * e.c_max / e.rank_K
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+def test_kappa_zero_reproduces_the_rank_only_score(make_env, domain):
+    """kappa = 0 must leave phi byte-identical, so old runs stay comparable."""
+    n = 6
+    for _ in range(3):
+        e = rigid_env(make_env, domain, n=n, kappa=0.0)
+        phi, rank = phi_of(e)
+        m = int(e.network.edges.sum())
+        assert abs(phi - (W_RANK * rank - W_EDGE * m * e.c_max) / e.rank_K) < 1e-9
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+def test_margin_term_is_bounded_by_kappa_edges(make_env, domain):
+    """The whole margin range is worth kappa edges -- that is what denominates kappa."""
+    e = rigid_env(make_env, domain)
+    phi, rank = phi_of(e)
+    base = (W_RANK * rank - W_EDGE * int(e.network.edges.sum()) * e.c_max) / e.rank_K
+    assert 0.0 <= phi - base <= KAPPA * one_edge(e) + 1e-12
+
+
+def test_q_is_one_half_when_lam_equals_lam_ref(make_env):
+    e = rigid_env(make_env, "R^3")
+    e.lam_ref = 1.0
+    brm = e.network.extended_bearing_rigidity_matrix()
+    base = (W_RANK * e.rank_K - W_EDGE * int(e.network.edges.sum()) * e.c_max) / e.rank_K
+    got = e.compute_state_score(brm, True, False, e.rank_K, lam=1.0)
+    assert abs((got - base) / (KAPPA * one_edge(e)) - 0.5) < 1e-12
+
+
+def test_margin_is_gated_on_rigidity(make_env):
+    """A flexible graph must never be charged or credited for margin."""
+    e = rigid_env(make_env, "R^3")
+    brm = e.network.extended_bearing_rigidity_matrix()
+    base = (W_RANK * 3 - W_EDGE * int(e.network.edges.sum()) * e.c_max) / e.rank_K
+    assert abs(e.compute_state_score(brm, False, False, 3, lam=1e9) - base) < 1e-12
+
+
+def test_more_margin_scores_higher_at_the_same_edge_count(make_env):
+    """The point of the term: among equally sparse graphs, prefer the stiffer one."""
+    e = rigid_env(make_env, "R^3")
+    brm = e.network.extended_bearing_rigidity_matrix()
+    args = dict(is_IBR=True, is_MBR=False, rank_brm=e.rank_K)
+    lo = e.compute_state_score(brm, lam=e.lam_ref / 10.0, **args)
+    hi = e.compute_state_score(brm, lam=e.lam_ref * 10.0, **args)
+    assert hi > lo
+
+
+def _transformed_phi(e, kind, planar):
+    if kind == "translate":
+        e.network.translate_network([3.1, -2.4, 0.0 if planar else 1.7])
+    elif kind == "rotate":
+        e.network.rotate_network([0, 0, 1] if planar else [0.3, 0.5, 0.81], 0.9)
+    else:
+        e.network.scale_network(2.7)
+    e.margin_rng = np.random.default_rng(0)      # same construction order, or lam_ref moves
+    e.compute_episode_constants()
+    return phi_of(e)[0]
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+@pytest.mark.parametrize("kind", ["translate", "rotate"])
+def test_margin_phi_is_exactly_invariant_to_translation_and_rotation(make_env, domain, kind):
+    e = rigid_env(make_env, domain)
+    before = phi_of(e)[0]
+    assert abs(_transformed_phi(e, kind, domain in ("R^2", "R^2xS^1")) - before) < 1e-9
+
+
+@pytest.mark.parametrize("domain", ["R^2", "R^3"])
+def test_margin_phi_is_exactly_scale_invariant_without_attitude_columns(make_env, domain):
+    """In R^d every column of B carries 1/length, so a rescale cancels in lam/lam_ref."""
+    e = rigid_env(make_env, domain)
+    before = phi_of(e)[0]
+    assert abs(_transformed_phi(e, "scale", domain == "R^2") - before) < 1e-9
+
+
+@pytest.mark.parametrize("domain", ["R^2xS^1", "R^3xS^1", "SE(3)"])
+def test_margin_phi_is_only_approximately_scale_invariant_with_attitude(make_env, domain):
+    """A rescale reweights B's position columns against its attitude columns, so
+    lam/lam_ref moves -- by at most ~7% of one edge.4
+    """
+    e = rigid_env(make_env, domain)
+    before = phi_of(e)[0]
+    drift = abs(_transformed_phi(e, "scale", domain == "R^2xS^1") - before)
+    assert 0 < drift < 0.07 * KAPPA * one_edge(e)
+
+
+def test_lam_ref_is_reproducible_from_the_seed(make_env):
+    a = rigid_env(make_env, "R^3")
+    b = make_env(n=6, domains=["R^3"] * 6, margin_kappa=KAPPA)
+    b.network = a.network
+    b.margin_rng = np.random.default_rng(0)
+    b.compute_episode_constants()
+    assert a.lam_ref == b.lam_ref > 0
+
+
+def test_enabling_the_margin_does_not_move_the_instance_stream(make_env):
+    """lam_ref's construction must draw from a private rng, not the global stream
+    instances come from.
+    """
+    def edges_after_two_resets(kappa):
+        np.random.seed(7)
+        e = make_env(n=6, domains=["R^3"] * 6, margin_kappa=kappa)
+        e.reset()
+        e.reset()
+        return e.network.edges.copy(), np.array(
+            [a.pose.position for a in e.network.agents], dtype=float)
+
+    e0, p0 = edges_after_two_resets(0.0)
+    e9, p9 = edges_after_two_resets(KAPPA)
+    assert np.array_equal(e0, e9)
+    assert np.allclose(p0, p9)

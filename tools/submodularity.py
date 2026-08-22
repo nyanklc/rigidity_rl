@@ -1,4 +1,4 @@
-"""Are the two objectives submodular? Reproduces THEORY.md section 14.
+"""Are the two objectives submodular? Reproduces
 
 A set function has diminishing returns (is submodular) when an element is worth
 less once you already have more:
@@ -96,6 +96,6 @@ if __name__ == "__main__":
     t2, v2, w2 = sweep(f_margin, dense=True, trials=args.trials, tol=1e-9, seed=args.seed)
     print(f"  {'rigidity margin':22s} {t2:8d} {f'{v2} ({100*v2/max(t2,1):.1f}%)':>12s} {w2:12.3e}")
 
-    print("\n  rank(B_S) is submodular (proved in THEORY.md 14.2, confirmed here), so minimum-edge")
+    print("\n  rank(B_S) is submodular (proved in2, confirmed here), so minimum-edge")
     print("  rigidity is minimum submodular cover and greedy is an H(c_max) approximation.")
-    print("  The margin is not, so greedy carries no guarantee there. See THEORY.md section 14.")
+    print("  The margin is not, so greedy carries no guarantee there.")

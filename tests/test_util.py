@@ -1,4 +1,4 @@
-"""Geometry helpers in util.py. THEORY.md section 1."""
+"""Geometry helpers in util.py."""
 import numpy as np
 import pytest
 

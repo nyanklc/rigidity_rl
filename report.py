@@ -15,7 +15,7 @@ from datetime import datetime
 import numpy as np
 
 # ── palette ───────────────────────────────────────────────────────────────────────────
-# Data-viz reference palette, unchanged. See DESIGN_NOTES.md#palette
+# Data-viz reference palette, unchanged.
 SURFACE = "#fcfcfb"
 INK = "#0b0b0b"
 INK_2 = "#52514e"
@@ -224,9 +224,11 @@ def format_table(rows, context, brief=False):
     lines.append("            measurements. This is the property being solved for.")
     lines.append("  minimal   % that are rigid AND use the fewest possible edges.")
     lines.append("            (heuristic on mixed-domain networks - may under-report)")
-    lines.append("  rigidity  how much margin the network has before it stops being rigid.")
-    lines.append("            Larger is more robust. Its absolute size depends on how far")
-    lines.append("            apart the agents are, so compare rows rather than the number.")
+    lines.append("  rigidity  how strongly the bearings react to a change in shape. Every")
+    lines.append("            rigid network recovers its shape from exact bearings; larger")
+    lines.append("            means it still does so under measurement noise, since shape")
+    lines.append("            error scales as 1/sqrt(this). Its absolute size depends on how")
+    lines.append("            far apart the agents are, so compare rows, not the number.")
     lines.append("  rigidity(geo)")
     lines.append("            the same margin as a geometric mean and spread, because it")
     lines.append("            ranges over orders of magnitude: 'a x/b' means the typical")
@@ -289,16 +291,15 @@ def write_summary(run_dir, text):
 
 # ── plots ─────────────────────────────────────────────────────────────────────────────
 # Light mode only, no hover layer, identity never by colour alone.
-# See DESIGN_NOTES.md#panel-titles
 PANELS = [
     dict(field="score", title="Objective score  φ",
-         note="rewards rigidity, charges for every edge — higher is better", log=False),
+         note="rewards rigidity, charges for every edge - higher is better", log=False),
     dict(field="edges", title="Network size",
-         note="directed bearing measurements in use — fewer is better", log=False),
+         note="directed bearing measurements in use - fewer is better", log=False),
     dict(field="rank", title="Rigidity matrix rank",
          note="the shape is fully determined once it reaches the dashed line", log=False),
     dict(field="min_eig", title="Rigidity margin",
-         note="smallest nonzero eigenvalue of BᵀB — higher survives more noise", log=True),
+         note="smallest nonzero eigenvalue of BᵀB - higher survives more noise", log=True),
 ]
 
 # final / best / mean, the same three views the environment logs per episode
@@ -359,7 +360,7 @@ def _header_detail_lines(header, width_in):
 def _draw_header(fig, header, kind):
     """Title block: what the figure is, then the full env/model names, wrapped."""
     width_in, height_in = fig.get_size_inches()
-    title = kind + (f"  —  {header['short']}" if header.get("short") else "")
+    title = kind + (f"  -  {header['short']}" if header.get("short") else "")
     y = 1.0 - 0.26 / height_in
     fig.text(0.008, y, title, color=INK, fontsize=12.5, ha="left", va="top")
     y -= 0.30 / height_in
@@ -623,11 +624,11 @@ def plot_trajectories(run_dir, traces, rows, header, filename="trajectories",
         ref["edges"] = [("optimal", float(np.mean([r["m"] for r in opt])))]
 
     notes = [
-        "x axis: one step of the run. greedy has no step budget — it contributes one "
+        "x axis: one step of the run. greedy has no step budget - it contributes one "
         "point per edge change it applies, and stops when no single change helps.",
         ("Each line is the mean over the networks; the shaded band is the middle 50% of them "
-         "(25th–75th percentile)." if aggregate_over_episodes else
-         "Each line is a single network — this is one episode, not an average."),
+         "(25th-75th percentile)." if aggregate_over_episodes else
+         "Each line is a single network - this is one episode, not an average."),
         "A method that finishes early is held at its last network for the rest of the axis, "
         "so the curves stay comparable.",
         "Every method is run on the same networks from the same starting graph, so the "
@@ -681,16 +682,16 @@ def outcome_stats(traces):
 
 OUTCOME_PANELS = [
     dict(field="score", title="Objective score  φ",
-         note="rewards rigidity, charges for every edge — higher is better",
+         note="rewards rigidity, charges for every edge - higher is better",
          log=False, scale=1.0, fmt="{:.0f}"),
     dict(field="edges", title="Network size",
-         note="directed bearing measurements in use — fewer is better",
+         note="directed bearing measurements in use - fewer is better",
          log=False, scale=1.0, fmt="{:.1f}"),
     dict(field="rigid", title="Rigidity achieved",
          note="% of networks (final, best) or % of the run spent rigid (mean)",
          log=False, scale=100.0, fmt="{:.0f}"),
     dict(field="min_eig", title="Rigidity margin",
-         note="smallest nonzero eigenvalue of BᵀB — higher survives more noise",
+         note="smallest nonzero eigenvalue of BᵀB - higher survives more noise",
          log=True, scale=1.0, fmt="{:.1e}"),
 ]
 
@@ -784,7 +785,7 @@ def plot_summary(run_dir, rows, header):
     notes = [
         "One value per network per method. The line is the median, the box the middle "
         "50%, the whiskers reach 1.5x that range and the dots are networks outside it.",
-        "Scored on the best network each run visited — that is what the comparison table "
+        "Scored on the best network each run visited - that is what the comparison table "
         "reports, and it separates 'found a good topology' from 'stopped on it'.",
         "'rigid' means the network's shape is fully determined by its bearing measurements; "
         "'also minimal' means it does that with the fewest possible edges.",
@@ -813,10 +814,10 @@ def plot_summary(run_dir, rows, header):
 
     box(axes[0], [[r["m"] for r in rows if r["method"] == m] for m in methods],
         methods, colors, "Network size",
-        "edges in the best network found — fewer is better")
+        "edges in the best network found - fewer is better")
     box(axes[1], [[r["score"] for r in rows if r["method"] == m] for m in methods],
         methods, colors, "Objective score  φ",
-        "score of the best network found — higher is better")
+        "score of the best network found - higher is better")
 
     ax = axes[2]
     rigid = [100 * np.mean([r["is_IBR"] for r in rows if r["method"] == m]) for m in methods]
@@ -842,7 +843,7 @@ def plot_summary(run_dir, rows, header):
         box(ax, [[r.get("best_at", 0) for r in rows if r["method"] == m] for m in roll],
             roll, [METHOD_STYLE.get(m, {}).get("color", INK_2) for m in roll],
             "Steps to the best network",
-            "how long each method took to reach its best — lower converges sooner")
+            "how long each method took to reach its best - lower converges sooner")
     else:
         _style_axes(ax)
         _panel_title(ax, "Steps to the best network", "no rollout method was run")
@@ -870,22 +871,24 @@ TABLE_COLUMNS = [
 ]
 
 TABLE_NOTES = [
-    "edges: directed bearing measurements the network needs — each one is a sensing or "
+    "edges: directed bearing measurements the network needs - each one is a sensing or "
     "communication link, so fewer is better.",
     "score φ: the objective every method is scored with. It rewards rigidity and charges "
     "for each extra edge.",
-    "rigid: the network's shape is fully determined by its bearing measurements — the "
+    "rigid: the network's shape is fully determined by its bearing measurements - the "
     "property being solved for. minimal: rigid with the fewest possible edges "
     "(a heuristic on mixed-domain networks, so it can under-report).",
-    "margin: how much room the network has before it stops being rigid. Its absolute size "
+    "margin: how strongly the bearings react to a change in shape. Every rigid network "
+    "recovers its shape from exact bearings; larger means it still does so under "
+    "measurement noise, since shape error scales as 1/sqrt(margin). Its absolute size "
     "depends on how far apart the agents are, so compare rows rather than the number.",
     "margin (geo): the same quantity as a geometric mean and spread, because it ranges "
-    "over orders of magnitude — 'a ×/÷ b' means the typical network sits between a/b and "
+    "over orders of magnitude - 'a ×/÷ b' means the typical network sits between a/b and "
     "a·b. A '*' marks rows where non-rigid networks had to be left out: their margin is "
     "exactly 0, which no geometric mean can take, so those rows describe only the "
     "networks that came out rigid.",
     "work: changes to the network the method actually applied. best at: the step its best "
-    "network was reached — lower means it converged sooner and the rest of the budget "
+    "network was reached - lower means it converged sooner and the rest of the budget "
     "added nothing.",
     "= best: share of networks where the method tied the exhaustive optimum.",
     "initial and optimal are reference rows, not competing methods: every method starts "
@@ -932,16 +935,16 @@ def plot_table(run_dir, rows, header, filename="table", width=12.0):
         if key == "minimal":
             return f"{v['minimal_pct']:.0f}"
         if key == "margin":
-            return ("—" if v["min_eig_mean"] is None
+            return ("-" if v["min_eig_mean"] is None
                     else _fmt(v["min_eig_mean"], v["min_eig_sd"], ".1e", " ±"))
         if key == "margin_geo":
-            return "—" if v["min_eig_gmean"] is None else _fmt_geo(v, times=" ×/÷")
+            return "-" if v["min_eig_gmean"] is None else _fmt_geo(v, times=" ×/÷")
         if key == "work":
-            return "—" if ref else _fmt(v["work_mean"], v["work_sd"], ".1f", " ±")
+            return "-" if ref else _fmt(v["work_mean"], v["work_sd"], ".1f", " ±")
         if key == "best_at":
-            return "—" if ref else _fmt(v["best_at_mean"], v["best_at_sd"], ".1f", " ±")
+            return "-" if ref else _fmt(v["best_at_mean"], v["best_at_sd"], ".1f", " ±")
         if key == "opt":
-            return "—" if v["matches_opt_pct"] is None else f"{v['matches_opt_pct']:.0f}"
+            return "-" if v["matches_opt_pct"] is None else f"{v['matches_opt_pct']:.0f}"
         return ""
 
     # column geometry, in figure fractions

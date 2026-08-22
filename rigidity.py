@@ -4,7 +4,7 @@ import copy
 
 
 # (S_i, P_i): the translational and rotational coordinates agent i can vary.
-# Per node, not per edge -- see THEORY.md §12.
+# Per node, not per edge.
 def node_dof_projectors(agent):
     domain = agent.domain
 
@@ -128,7 +128,7 @@ def bearing_DOFs(agent_i, agent_j):
 
 # B = [ Dp E_bar^T S_bar | Da Eo_bar^T P_bar ], (3m, 6n). The DOF restriction is
 # applied per node on the column side, so an infeasible coordinate is a zero
-# column. See THEORY.md §12 and DESIGN_NOTES.md#per-node-dof.
+# column.
 def extended_bearing_rigidity_matrix(network):
     p = [agent.pose.position for agent in network.agents]
     R = [agent.pose.rotation_mat() for agent in network.agents]
@@ -219,7 +219,7 @@ def rigidity_eigenvalue(network, eps=1e-10, rank_K=None):
     # print(f"hello returning: {eigs[zero_count]} from index: {zero_count}")
     return eigs[zero_count]
 
-# M. H. Trinh, Q. Van Tran, and H.-S. Ahn, “Minimal and Redundant Bearing Rigidity: Conditions and Applications,” IEEE Transactions on Automatic Control, vol. 65, no. 10, pp. 4186–4200, Oct. 2020, doi: 10.1109/TAC.2019.2958563.
+# M. H. Trinh, Q. Van Tran, and H.-S. Ahn, “Minimal and Redundant Bearing Rigidity: Conditions and Applications,” IEEE Transactions on Automatic Control, vol. 65, no. 10, pp. 4186-4200, Oct. 2020, doi: 10.1109/TAC.2019.2958563.
 # NOTE: ONLY FOR R^d
 def is_MBR_Rd(network, rank_K=None, brmat=None):
     if brmat:
@@ -262,7 +262,7 @@ def MBR_required_Rd(n ,d):
 
 # Most rank one edge could contribute at these poses. EXACT -- makes no claim
 # about what is jointly achievable, which is why the state score normalizes with
-# it rather than with an edge count. See DESIGN_NOTES.md#max-edge-rank
+# it rather than with an edge count.
 def max_edge_rank(network, brmat_K=None):
     n = len(network.agents)
     if n < 2:
@@ -287,7 +287,6 @@ def max_edge_rank(network, brmat_K=None):
 # Fewest edges that could make these poses rigid.
 # LOWER BOUND, not a ground truth: keep it out of the reward, use it for
 # reporting and the MBR metric only. Costs n(n-1) rank computations -- cache it.
-# See DESIGN_NOTES.md#required-edge-count
 def required_edge_count(network, rank_K=None, brmat_K=None, block_ranks=None):
     n = len(network.agents)
     if n < 2:
@@ -341,7 +340,7 @@ def required_edge_count(network, rank_K=None, brmat_K=None, block_ranks=None):
 #     return True, True
 
 # Rank each edge's own 3-row block. Constant (d-1) in homogeneous R^d, so it only
-# carries information on heterogeneous networks. See DESIGN_NOTES.md#rigidity-features
+# carries information on heterogeneous networks.
 def edge_block_ranks(brmat):
     return [np.linalg.matrix_rank(brmat[3*k:3*(k+1), :]) for k in range(brmat.shape[0] // 3)]
 
@@ -355,7 +354,6 @@ def edge_block_ranks(brmat):
 # a degenerate eigenspace is an arbitrary basis choice, so a per-mode feature is
 # not reproducible. G_i = sum_c v_i^(c) v_i^(c)^T is basis-independent, and it
 # transforms as a tensor, so scalars read off it are rotation-invariant.
-# See DESIGN_NOTES.md#rigidity-features
 def trivial_modes(positions):
     """Motions every bearing framework admits: translation and uniform scaling.
 
@@ -413,7 +411,7 @@ def flex_constraint_power(Pi, bearings):
                  = sum_c ||D_c||^2  -  sum_c (p_hat_ij . D_c)^2 ,   D_c = v_cj - v_ci
 
     both terms of which come straight out of the projector blocks. Basis-
-    independent and rotation-invariant. See THEORY.md.
+    independent and rotation-invariant.
     """
     n = Pi.shape[0]
     Gd = np.einsum("iidd->id", Pi)                     # trace(G_i) per axis
@@ -431,7 +429,6 @@ def flex_constraint_power(Pi, bearings):
 
 # Rank and margin from one thin SVD. The null space costs extra and is only
 # needed by the rigidity features, so it is a separate call.
-# See DESIGN_NOTES.md#null-space-features
 def rigidity_decomposition(brmat, rank_K):
     """(rank, singular values, lam). lam is 0 unless the framework is rigid.
 
@@ -444,6 +441,53 @@ def rigidity_decomposition(brmat, rank_K):
     rank = int((s > tol).sum())
     lam = float(s[rank_K - 1] ** 2) if rank >= rank_K and rank_K - 1 < len(s) else 0.0
     return rank, s, lam
+
+
+def greedy_rigid_construction(network, rank_K, rng):
+    """From the empty graph, keep any edge that raises rank(B). (edges, added, rank).
+
+    `rng` must be private to the caller -- the global stream is the one instances
+    are drawn from.
+    """
+    n = network.n
+    order = [(i, j) for i in range(n) for j in range(n) if i != j]
+    E = np.zeros((n, n), dtype=bool)
+    added, rank, progress = [], 0, True
+
+    while rank < rank_K and progress:
+        progress = False
+        for k in rng.permutation(len(order)):
+            i, j = order[k]
+            if E[i, j]:
+                continue
+            E[i, j] = True
+            network.edges = E
+            new_rank = np.linalg.matrix_rank(extended_bearing_rigidity_matrix(network))
+            if new_rank > rank:
+                rank, progress = new_rank, True
+                added.append((i, j))
+            else:
+                E[i, j] = False
+
+    network.edges = E
+    return E, added, rank
+
+
+def reference_margin(network, rank_K, rng, samples=3):
+    """lam_ref: log-median lam over `samples` greedy constructions on these poses.
+
+    0 if none reached rank_K.
+    """
+    lams = []
+    for _ in range(max(1, int(samples))):
+        work = copy.deepcopy(network)
+        _, _, rank = greedy_rigid_construction(work, rank_K, rng)
+        if rank < rank_K:
+            continue
+        lams.append(rigidity_decomposition(
+            extended_bearing_rigidity_matrix(work), rank_K)[2])
+    lams = [x for x in lams if x > 0]
+    return float(10.0 ** np.median(np.log10(lams))) if lams else 0.0
 
 
 def nullspace(brmat, rank):
@@ -473,7 +517,7 @@ def _node_projectors(network):
 
 
 # The exact addition criterion: edge i->j raises rank(B) iff its row block has a
-# component outside the row space, i.e. iff b_ij Z != 0. See THEORY.md section 13.
+# component outside the row space, i.e. iff b_ij Z != 0.
 def characteristic_length(network):
     """RMS radius about the centroid: the formation's own length unit."""
     p = np.array([a.pose.position for a in network.agents], dtype=float)
@@ -484,7 +528,7 @@ def characteristic_length(network):
 # B's position columns carry units of 1/length while its attitude columns are
 # dimensionless, so ker(B) moves under a uniform scaling of the formation. Fixing
 # the length unit to the formation's own size makes it invariant, which is the
-# same normalisation coord_features already applies. See THEORY.md section 13.
+# same normalisation coord_features already applies.
 def nullspace_in_scaled_units(Z, n, length_scale):
     if Z.shape[1] == 0:
         return Z
@@ -495,11 +539,11 @@ def nullspace_in_scaled_units(Z, n, length_scale):
 
 
 def candidate_block(network, i, j, length_scale=1.0):
-    """The 3 x 6n block b_ij that edge i->j would append to B. See THEORY.md §13.1.
+    """The 3 x 6n block b_ij that edge i->j would append to B.
 
     Built by the matrix routine itself on a network carrying only this edge, so it
     cannot drift from the construction it describes. length_scale rescales the
-    position columns, matching nullspace_in_scaled_units (THEORY.md §13.4).
+    position columns, matching nullspace_in_scaled_units.
     """
     single = copy.copy(network)
     single.edges = np.zeros_like(network.edges)
@@ -513,7 +557,7 @@ def candidate_gain_reference(network, Z, length_scale=1.0):
     """candidate_gain written as the formula it implements. The test oracle.
 
     rank(B with i->j) - rank(B) = rank(b_ij Z), because the row space and the null
-    space are orthogonal complements (THEORY.md §13.1). One pair at a time, forming
+    space are orthogonal complements. One pair at a time, forming
     b_ij explicitly. candidate_gain fuses these steps and is ~3x faster; this is
     what tests/test_flex.py holds it to.
     """
@@ -531,7 +575,7 @@ def candidate_gain_reference(network, Z, length_scale=1.0):
             bZ = b @ Z                              # (3, dim ker B)
             norm_b = np.linalg.norm(b)
             gain[i, j] = np.linalg.norm(bZ) / max(norm_b, 1e-12)
-            # threshold measured, not guessed; see THEORY.md §13.3
+            # threshold measured, not guessed: gains split 1.6e-10 vs 1.4e-02
             s = np.linalg.svd(bZ, compute_uv=False)
             rank[i, j] = int((s > 1e-6 * norm_b).sum())
     return gain, rank
@@ -547,7 +591,7 @@ def candidate_gain(network, Z, length_scale=1.0):
 
     Vectorized restatement of candidate_gain_reference, which is the readable form
     and the oracle the tests hold this to. b_ij is never built: expanding its three
-    nonzero blocks (THEORY.md §13.1) gives
+    nonzero blocks gives
 
         b_ij Z = Dp (S_j Z_j - S_i Z_i) - Da P_i Z_i
 
@@ -588,7 +632,7 @@ def candidate_gain(network, Z, length_scale=1.0):
 
     # b_ij Z = Dp (S_j Z_j - S_i Z_i) - Da P_i Z_i. The minus on the attitude term
     # is E_o's -1 at the measuring node; with a plus this looks plausible and is
-    # wrong (ROADMAP.md, WP2 log).
+    # wrong.
     rel = SZ[None, :, :, :] - SZ[:, None, :, :]        # S_j Z_j - S_i Z_i
     blk = np.einsum("ijab,ijbk->ijak", Dp, rel) \
         - np.einsum("ijab,ibk->ijak", Da, PZ)
@@ -620,7 +664,7 @@ def candidate_gain(network, Z, length_scale=1.0):
 
 # The non-trivial flex: ker(B_G) with ker(B_K) removed. By Michieletto Theorem 1
 # the latter IS the trivial variation set, exactly, in every domain and mix, so
-# nothing has to be enumerated by hand. See THEORY.md section 13.
+# nothing has to be enumerated by hand.
 def flex_space(Z, Z_K, tol=1e-7):
     if Z.shape[1] == 0 or Z_K.shape[1] == 0:
         return Z

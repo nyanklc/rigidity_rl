@@ -22,10 +22,11 @@ PYTHONPATH=. uv run tools/<name>.py
 | `constructive_greedy.py` | how good is the classical baseline, and is the problem a matroid at this domain and size? |
 | `env_report.py` | what is in this environment config: switches, observation layout and channel statistics, episode constants, cost |
 | `compare_runs.py` | how do two or more training runs differ on the metrics that separate a policy from a search? |
-| `verify_results.py` | do the numbers quoted in `ROADMAP.md` §1.0 and the README still reproduce? |
+| `verify_results.py` | do the numbers quoted in the README still reproduce? |
 | `submodularity.py` | which objectives have diminishing returns, and therefore which ones greedy is guaranteed on? |
 | `checkpoint_fingerprint.py` | does an edit to `policy/` change what an already-trained checkpoint computes? |
 | `backbone_capacity.py` | at these settings, is the EGNN-vs-GINE comparison matched on width, on parameters, or on neither? |
+| `kappa_sweep.py` | what does raising `margin_kappa` buy in margin, and what does it cost in edges? |
 
 `constructive_greedy.py` is the standalone version of the `constructive` baseline
 now wired into `baselines.py`, for difficulty sweeps that need no env config. It
@@ -40,7 +41,7 @@ those edits -- this prints a digest that makes "supposed to" testable. It needs
 `models/` and `train/`, which are gitignored, so it does not run on a fresh clone.
 
 `backbone_capacity.py` exists because the two controls conflict. Equalizing the
-EGNN's width against GINE (WP10) puts it at 10.9x GINE's parameters, and matching
+EGNN's width against GINE puts it at 10.9x GINE's parameters, and matching
 parameters instead would put it at a quarter of GINE's width -- so "we compared
 the backbones" is not a complete statement. Run it for whatever `node_feat_dim`
 and `gnn_hidden_dim` an experiment actually uses, and report which control it

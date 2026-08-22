@@ -1,4 +1,4 @@
-"""Action masking and skip_enabled. DESIGN_NOTES.md#action-masking.
+"""Action masking and skip_enabled.
 
 The Phase 4 collapse: real logits drifted to -1e23 while masked entries sat at a
 finite -1e9 sentinel, so masking inverted and argmax started picking *invalid*

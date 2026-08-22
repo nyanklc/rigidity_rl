@@ -1,5 +1,4 @@
-"""Similarity invariance of the observation and of the policy.
-CLAUDE.md "Invariance", THEORY.md sections 3 and 11."""
+"""Similarity invariance of the observation and of the policy."""
 import numpy as np
 import pytest
 import torch
@@ -65,7 +64,6 @@ def test_rotation_moves_the_bearings_in_Rd_known_limitation(make_env, domain):
 
     Asserted as an EXPECTED violation: if the observation is ever made
     rotation-invariant in R^d this fails and must be updated deliberately.
-    See CLAUDE.md known issue 7 for the options.
     """
     e = rigid_env(make_env, domain)
     e.reset()

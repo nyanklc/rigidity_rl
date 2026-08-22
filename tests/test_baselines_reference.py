@@ -9,7 +9,7 @@ from baselines import run_greedy, score_network, run_random
 
 
 def test_greedy_reaches_the_exact_optimum_at_n4_R2(make_env):
-    """phi* = w_rank - w_edge = 75.00 with 5 edges. THEORY.md section 7."""
+    """phi* = w_rank - w_edge = 75.00 with 5 edges."""
     e = make_env(n=4, domains="R^2", max_steps=60,
                  termination_condition_type="MaxSteps")
     scores, edges = [], []

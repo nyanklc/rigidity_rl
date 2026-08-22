@@ -1,5 +1,4 @@
-"""The Dict observation, its flags, and the legacy presets.
-DESIGN_NOTES.md#dict-observation, #all-pairs-bearings, #rigidity-features."""
+"""The Dict observation, its flags, and the legacy presets."""
 import numpy as np
 import pytest
 

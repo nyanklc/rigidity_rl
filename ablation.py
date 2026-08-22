@@ -17,7 +17,6 @@ variant sees the *same* instances (freeze_network), so the columns are paired.
 
     uv run ablation.py <model_name> [environment_name] [options]
 
-See DESIGN_NOTES.md#aggregation-and-scale for what this was written to detect.
 """
 import argparse
 import copy

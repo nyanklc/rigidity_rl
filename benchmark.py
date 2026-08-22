@@ -3,7 +3,7 @@
 Every config regeneration resamples the instance distribution -- which already made
 one pair of n=16 evaluations incomparable (52.25 vs 23.70 initial edges). A benchmark
 pins poses, domains and initial edges to disk; every method and every checkpoint then
-sees literally the same graphs. See DESIGN_NOTES.md#benchmarks.
+sees literally the same graphs.
 
     uv run benchmark.py <environment_name> <benchmark_name> [--instances N] [--seed S]
     uv run benchmark.py rotate <source_benchmark> <benchmark_name> [--seed S]
@@ -87,7 +87,7 @@ def rotate(source, name, seed=0):
     """A copy of `source` with one random global rotation per instance.
 
     The task is rotation invariant; the R^d observation is not, so the pair measures
-    what that costs. See DESIGN_NOTES.md#rotation-augmentation.
+    what that costs.
     """
     import copy
     nets, meta = load(source)

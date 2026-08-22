@@ -417,7 +417,6 @@ def action_DecideOnEdge(action, env: "Environment", reward, action_info):
 # one set of models serves all of them
 # The one graph observation, and the flag presets that reproduce each pre-merge
 # Dict* layout exactly so old configs and checkpoints still load.
-# See DESIGN_NOTES.md#dict-observation
 def build_dict_obs(env, define_type, node_set="graph", coords=True, edges=True,
                    selection=True, proposed_edge=None, candidate_bearings=None,
                    edge_exists=True, normalize_positions=True,
@@ -447,7 +446,6 @@ def build_dict_obs(env, define_type, node_set="graph", coords=True, edges=True,
         raise ValueError(f"unknown node_set {node_set!r}")
 
     # tier-3 rigidity channels, when the ablation flags ask for them.
-    # See DESIGN_NOTES.md#rigidity-features
     rig = getattr(env, "last_rigidity", None)
     if rig:
         extra = []
@@ -515,6 +513,10 @@ def build_dict_obs(env, define_type, node_set="graph", coords=True, edges=True,
 # "Dict" is current. The rest are pre-merge names kept working; each reproduces
 # its old layout, including raw coordinates and edges-only bearings, because the
 # checkpoints trained on them depend on both.
+# width of q's sigmoid, in decades of lam/lam_ref.
+MARGIN_SIGMOID_DECADES = 0.75
+
+
 OBS_PRESETS = {
     "Dict": dict(),
     "DictEquivariantNodeFeaturesAndAdjAndSelection": dict(
@@ -623,6 +625,8 @@ class Environment(gym.Env):
         rigidity_flex=False,
         rigidity_edge=False,
         rotation_augmentation=False,
+        margin_kappa=0.0,
+        margin_ref_samples=3,
         filepath=None,
     ):
         print("initializing environment")
@@ -636,16 +640,14 @@ class Environment(gym.Env):
 
         # tier-2 information: an agent cannot know a bearing it has not measured.
         # False reverts to bearings on existing edges only, same obs shape.
-        # See DESIGN_NOTES.md#all-pairs-bearings
         self.include_candidate_bearings = include_candidate_bearings
 
         # tier-3 rigidity information: an ablation arm, off by default.
-        # See DESIGN_NOTES.md#rigidity-features
                # closeness / eigenvector / betweenness: measured to carry less
         # rigidity-relevant signal than out-degree (which is free) while costing
-        # ~60-70% of feature building. See DESIGN_NOTES.md#graph-features
+        # ~60-70% of feature building.
         # bearings in R^d are global-frame, so the observation is not rotation
-        # invariant even though the task is. See DESIGN_NOTES.md#rotation-augmentation
+        # invariant even though the task is.
         self.rotation_augmentation = rotation_augmentation
 
         self.graph_features = graph_features
@@ -654,6 +656,13 @@ class Environment(gym.Env):
         self.rigidity_edge = rigidity_edge
         self.last_rigidity = None
 
+        # how many edges the whole margin range is worth; 0 disables it.
+        self.margin_kappa = float(margin_kappa)
+        self.margin_ref_samples = int(margin_ref_samples)
+        self.lam_ref = 0.0
+        # private: the global stream is the one instances are drawn from
+        self.margin_rng = np.random.default_rng(0)
+
         self.filepath = filepath
         self.scenario_network = None
         if self.filepath is not None:
@@ -661,7 +670,6 @@ class Environment(gym.Env):
             # cached so reset() does not re-read and re-parse the file every episode
             self.scenario_network = copy.deepcopy(self.network)
         else:
-            # see DESIGN_NOTES.md#initial-edge-count
             if self.random_graph_with_mean_min_edges:
                 self.network, self.goal_network = random_scenario(
                     n, domains, edge_count=self.sample_initial_edge_count(n, domains)
@@ -726,7 +734,7 @@ class Environment(gym.Env):
         self.trace_min_eig = False
         self.last_stats = None
 
-        # metrics are written once per episode; see DESIGN_NOTES.md#episode-logging
+        # metrics are written once per episode
         self.episode_counter = 0
         self.episode_accum = self.new_episode_accum()
         self.last_episode_stats = None
@@ -745,7 +753,6 @@ class Environment(gym.Env):
         # directory; tensorboard merges them, as it already does for Loss/ vs Episode/.
         self.writer = SummaryWriter(log_dir=os.path.join("runs", experiment_name))
         # the single plot to watch: all four converge in a policy that is learning.
-        # See DESIGN_NOTES.md#training-metrics
         self.writer.add_custom_scalars({
             "Decision": {"quality": ["Multiline", [
                 "Decision/ useful", "Decision/ wasted",
@@ -789,6 +796,8 @@ class Environment(gym.Env):
         RIGIDITY_FLEX = config.get("rigidity_flex", False)
         RIGIDITY_EDGE = config.get("rigidity_edge", False)
         ROTATION_AUGMENTATION = config.get("rotation_augmentation", False)
+        MARGIN_KAPPA = config.get("margin_kappa", 0.0)
+        MARGIN_REF_SAMPLES = config.get("margin_ref_samples", 3)
         scenario_name = config["scenario"]
         scenario_path = (
             "scenarios/" + scenario_name + ".json"
@@ -819,12 +828,14 @@ class Environment(gym.Env):
             rigidity_flex=RIGIDITY_FLEX,
             rigidity_edge=RIGIDITY_EDGE,
             rotation_augmentation=ROTATION_AUGMENTATION,
+            margin_kappa=MARGIN_KAPPA,
+            margin_ref_samples=MARGIN_REF_SAMPLES,
             filepath=scenario_path,
         )
 
     # -----------------------------------
     # Sample around the minimum requirement, not uniformly. Mean is only exact
-    # for homogeneous R^d. See DESIGN_NOTES.md#initial-edge-count
+    # for homogeneous R^d.
     def sample_initial_edge_count(self, n, domains):
         if isinstance(domains, str):
             domains = [domains]
@@ -845,7 +856,6 @@ class Environment(gym.Env):
         # 72.7 against a mean of 22 and episodes actually started around 42 edges --
         # n=16 was a far harder pruning problem than n=8, not merely a bigger one,
         # which confounded every transfer comparison.
-        # See DESIGN_NOTES.md#aggregation-and-scale
         sd = max(0.5 * mean, 1.0)
         edge_count = int(sample_gaussian(mean, sd**2, n).item())
         return int(np.clip(edge_count, 1, max_edges))
@@ -853,7 +863,6 @@ class Environment(gym.Env):
     # -----------------------------------
     # Pose-dependent, edge-independent; once per episode. rank_K and c_max are
     # exact, m_req is only a lower bound and must stay out of the reward.
-    # See DESIGN_NOTES.md#episode-constants
     def compute_episode_constants(self):
         network_K = self.network.fully_connected()
         brmat_K = network_K.extended_bearing_rigidity_matrix()
@@ -869,6 +878,12 @@ class Environment(gym.Env):
         self.m_req = required_edge_count(
             self.network, rank_K=self.rank_K, brmat_K=brmat_K, block_ranks=blocks_K
         )
+        # edge-independent, so it stays an episode constant and the shaping
+        # stays potential-based.
+        self.lam_ref = (reference_margin(self.network, self.rank_K, self.margin_rng,
+                                         samples=self.margin_ref_samples)
+                        if self.margin_kappa > 0 else 0.0)
+
         # pose-dependent, edge-independent, and needed every step by the rigidity
         # features: the trivial variation space and every pair's own block rank
         if self.rigidity_features_enabled():
@@ -886,7 +901,6 @@ class Environment(gym.Env):
     # Rigidity-derived observation features for the current graph, cached so obs()
     # does not recompute them. Only filled when some rigidity flag is on -- these
     # are tier-3 information, an ablation arm, not the default.
-    # See DESIGN_NOTES.md#rigidity-features
     def compute_rigidity_features(self, brm, rank_brm, is_IBR, Z=None):
         if not self.rigidity_features_enabled():
             self.last_rigidity = None
@@ -903,14 +917,14 @@ class Environment(gym.Env):
             Z = nullspace(brm, int(rank_brm))
 
         # lengths in units of the formation's own size, so the null space does not
-        # move under a uniform scaling. See THEORY.md section 13
+        # move under a uniform scaling.
         L = self.length_scale
         Zs = nullspace_in_scaled_units(Z, n, L)
         cand = candidate_gain(self.network, Zs, length_scale=L)
 
         if self.rigidity_flex:
             # ker(B_K) is exactly the trivial variation set (Michieletto Thm 1),
-            # so nothing has to be enumerated by hand. See THEORY.md section 13
+            # so nothing has to be enumerated by hand.
             F = flex_space(Zs, self.Z_K)
             mag = node_flex_magnitude(F, n)
             # normalized to unit mean square, so it says which nodes are free
@@ -952,7 +966,6 @@ class Environment(gym.Env):
             "sum_min_eig": 0.0,
             "n_min_eig": 0, # min eig is not always computed, so it needs its own count
             # decision quality: what each step actually accomplished.
-            # See DESIGN_NOTES.md#training-metrics
             "useful": 0,        # steps where phi strictly increased
             "kinds": {"add": 0, "remove": 0, "noop": 0, "skip": 0, "select": 0},
             "actions": [],      # raw action indices, for the histogram
@@ -962,7 +975,6 @@ class Environment(gym.Env):
 
     # -----------------------------------
     # The whole episode as one flat, float-valued record: Final / Best / Mean.
-    # See DESIGN_NOTES.md#episode-logging
     def episode_summary(self, state_score, rank_brm, is_IBR, is_MBR, min_eig,
                         terminated, truncated):
         acc = self.episode_accum
@@ -1019,7 +1031,7 @@ class Environment(gym.Env):
             "Mean min eig": (acc["sum_min_eig"] / n_eig) if n_eig else None,
 
             # Decision quality -- blind to best-state-visited, so a policy that only
-            # searches cannot score well here. DESIGN_NOTES.md#training-metrics
+            # searches cannot score well here.
             "Decision/ useful": acc["useful"] / steps,
             "Decision/ wasted": (acc["kinds"]["noop"] + acc["kinds"]["skip"]) / steps,
             "Decision/ overshoot": max(0.0, m_final - m_req) / m_req,
@@ -1069,8 +1081,8 @@ class Environment(gym.Env):
 
     # -----------------------------------
     # How good is the current graph. Callable outside step(): the reward is this
-    # value's improvement, so reset() needs a baseline. DESIGN_NOTES.md#state-score
-    def compute_state_score(self, brm, is_IBR, is_MBR, rank_brm):
+    # value's improvement, so reset() needs a baseline.
+    def compute_state_score(self, brm, is_IBR, is_MBR, rank_brm, lam=None):
         state_score = 0
         if self.state_score_type == "Rigid":
             if is_IBR:
@@ -1161,7 +1173,7 @@ class Environment(gym.Env):
             # phi = w_rank*rank/rank_K - w_edge*(m*c_max)/rank_K
             # Dimensionless, so it means the same thing at any n and in any
             # domain. Normalized by c_max, NOT by m_req -- m_req is only a lower
-            # bound. See DESIGN_NOTES.md#weighted-normalized
+            # bound.
             w_rank = 100.0
             w_edge = 25.0
 
@@ -1170,6 +1182,12 @@ class Environment(gym.Env):
             c_max = max(int(self.c_max), 1)
 
             state_score += (w_rank * rank_brm - w_edge * m * c_max) / rank_K
+
+            # (15.1) the margin, in units of one edge's cost
+            if self.margin_kappa > 0 and is_IBR and lam and self.lam_ref > 0:
+                one_edge = w_edge * c_max / rank_K
+                q = 1.0 / (1.0 + np.exp(-np.log10(lam / self.lam_ref) / MARGIN_SIGMOID_DECADES))
+                state_score += self.margin_kappa * one_edge * q
 
         elif self.state_score_type == "None" or None:
             pass
@@ -1236,18 +1254,18 @@ class Environment(gym.Env):
         # actually taken to reach that graph
         self.step_counter += 1
 
-        # one SVD serves rank, null space and margin; see DESIGN_NOTES.md#null-space-features
+        # one SVD serves rank, null space and margin
         rank_brm, _, lam = rigidity_decomposition(brm, self.rank_K)
         is_MBR, is_IBR, _ = self.network.is_MBR(
             rank_K=self.rank_K, brm=brm, rank_brm=rank_brm)
-        state_score = self.compute_state_score(brm, is_IBR, is_MBR, rank_brm)
+        state_score = self.compute_state_score(brm, is_IBR, is_MBR, rank_brm, lam=lam)
 
         # obs comes after the rigidity computation, not before: the rigidity
         # features have to describe the graph this step produced
         self.compute_rigidity_features(brm, rank_brm, is_IBR)
         obs = self._get_obs()
 
-        # computed once and shared; see DESIGN_NOTES.md#min-eig-caching
+        # computed once and shared
         tracking = self.track_data_enable and self.writer is not None
         min_eig = lam if (tracking or self.trace_min_eig) else None
         self.update_best_state(state_score, is_IBR, is_MBR, rank_brm, min_eig=min_eig)
@@ -1424,7 +1442,7 @@ class Environment(gym.Env):
 
     # -----------------------------------
     # One data point per tag per episode, against writer_counter (the global env
-    # step) so curves share skrl's x-axis. See DESIGN_NOTES.md#episode-logging
+    # step) so curves share skrl's x-axis.
     def write_episode(self):
         stats = self.last_episode_stats
         if self.writer is None or stats is None:
@@ -1446,7 +1464,7 @@ class Environment(gym.Env):
 
         # the distribution of starting graphs the sampler actually produces.
         # A single scalar per episode cannot show whether it is centred on m_req
-        # or merely averages there. See DESIGN_NOTES.md#initial-edge-count
+        # or merely averages there.
         self.initial_edge_history.append(int(self.initial_m))
         if len(self.initial_edge_history) >= self.initial_edge_hist_every:
             hist = np.asarray(self.initial_edge_history)
@@ -1541,7 +1559,7 @@ class Environment(gym.Env):
         is_MBR_0, is_IBR_0, _ = self.network.is_MBR(
             rank_K=self.rank_K, brm=self.brm, rank_brm=rank_brm_0)
         self.last_state_score = self.compute_state_score(
-            self.brm, is_IBR_0, is_MBR_0, rank_brm_0
+            self.brm, is_IBR_0, is_MBR_0, rank_brm_0, lam=lam0
         )
 
         # Best graph seen during the episode. Scoring an episode on the final state
@@ -1582,8 +1600,8 @@ if __name__ == "__main__":
     # ACTION_TYPE = "AddEdgeDiscreteNoSkip"
     # ACTION_TYPE = "AddEdgeDiscreteNoSelfLoops"
     # ACTION_TYPE = "AddEdgeDiscreteNoSkipNoSelfLoops"
-    ACTION_TYPE = "AddRemoveEdgeDiscreteNoSelfLoops"
-    # ACTION_TYPE = "SelectNodesSequentially"
+    # ACTION_TYPE = "AddRemoveEdgeDiscreteNoSelfLoops"
+    ACTION_TYPE = "SelectNodesSequentially"
     # ACTION_TYPE = "DecideOnEdge"
 
     # ACTION_REWARDS_ENABLE = True
@@ -1636,6 +1654,9 @@ if __name__ == "__main__":
     ONLY_RANDOMIZE_EDGES = False
 
     ROTATION_AUGMENTATION = True
+
+    MARGIN_KAPPA = 2.0
+    MARGIN_REF_SAMPLES = 3
 
     INCLUDE_CANDIDATE_BEARINGS = True
 
@@ -1691,7 +1712,7 @@ if __name__ == "__main__":
     # ~4 edits per required edge. The old 4*n*(n-1) was 20-30x the measured
     # best@, and the horizon sets how many distinct instances a run and its
     # replay buffer ever see. m_req depends only on (n, domain mix), not on the
-    # poses, so one draw settles it. See DESIGN_NOTES.md#horizon
+    # poses, so one draw settles it.
     _probe_net, _ = random_scenario(n, domains, edge_count=n)
     MAX_STEPS = 4 * int(required_edge_count(_probe_net)) + 10
 
@@ -1739,6 +1760,8 @@ if __name__ == "__main__":
         "rigidity_flex": RIGIDITY_FLEX,
         "rigidity_edge": RIGIDITY_EDGE,
         "rotation_augmentation": ROTATION_AUGMENTATION,
+        "margin_kappa": MARGIN_KAPPA,
+        "margin_ref_samples": MARGIN_REF_SAMPLES,
         "scenario": scenario_name,
     }
     env_filename = f"env_{model_name}.json"

@@ -1,4 +1,4 @@
-"""c_k, c_max, m_req, is_MBR. THEORY.md sections 4-6."""
+"""c_k, c_max, m_req, is_MBR. 4-6."""
 import itertools
 import numpy as np
 import pytest

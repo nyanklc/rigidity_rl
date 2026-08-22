@@ -5,7 +5,6 @@ cannot tell "found a good graph" from "searched until it stumbled on one". This 
 rolls the policy out deterministically on a fixed set of instances and reports the gap
 against sampling and against uniform random.
 
-See DESIGN_NOTES.md#training-metrics
 """
 
 import numpy as np

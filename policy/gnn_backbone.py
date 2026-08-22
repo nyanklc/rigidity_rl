@@ -5,7 +5,6 @@ from torch_geometric.nn import GATConv, GINEConv
 from egnn_pytorch import EGNN
 
 # MUST stay scale-free; a finite sentinel inverts once logits drift past it.
-# See DESIGN_NOTES.md#action-masking
 MASK_VALUE = float("-inf")
 
 
@@ -16,7 +15,7 @@ def unmask_if_all_masked(logits):
 
 
 # num_layers is a constructor argument so checkpoints trained at other depths
-# still load. See DESIGN_NOTES.md#backbone-num-layers
+# still load.
 class _GNNBackbone(nn.Module):
     def _register_convs(self, convs):
         self.num_layers = len(convs)
@@ -64,7 +63,6 @@ class GNNBackboneGINE(_GNNBackbone):
                 # mean, not the default add: with dense all-pairs passing an
                 # add-aggregate scales with n, so a policy trained at one n sees
                 # activations far out of range at another.
-                # See DESIGN_NOTES.md#aggregation-and-scale
                 aggr="mean",
             )
             for i in range(num_layers)
@@ -86,7 +84,6 @@ class GNNBackboneGINE(_GNNBackbone):
 
     # edges: dense (B, N, N, E). Message passing is over every ordered pair, not
     # just existing edges -- the edge features say which is which.
-    # See DESIGN_NOTES.md#gine-dense-all-pairs
     def forward(self, nodes, edges):
         batch_size, n, _ = nodes.shape
         h = nodes.reshape(-1, nodes.size(-1))
@@ -94,7 +91,7 @@ class GNNBackboneGINE(_GNNBackbone):
         edge_index, keep = self._complete_edge_index(batch_size, n, nodes.device)
         edge_attr = edges.reshape(batch_size, n * n, -1)[:, keep].reshape(-1, edges.size(-1))
 
-        # aggregate outward bearings, not inward; DESIGN_NOTES.md#gine-edge-direction
+        # aggregate outward bearings, not inward: "I measure this bearing to that node"
         edge_index = edge_index.flip(0)
 
         # TODO: relu??
@@ -109,24 +106,20 @@ class GNNBackboneEquivariant(_GNNBackbone):
     # off. Both are needed to keep activations from scaling with n -- m_pool
     # governs only the feature message, while the coordinate update is a
     # hardcoded sum over j whose result re-enters the next layer through
-    # rel_dist. See DESIGN_NOTES.md#aggregation-and-scale
+    # rel_dist.
     #
     # init_eps is egnn_pytorch's Linear init std. At its 1e-3 default the
     # edge-feature path starts ~1e-10 against the node residual, so the model is
     # numerically blind to bearings and settles on node features instead.
-    # See DESIGN_NOTES.md#egnn-init-eps
     def __init__(self, node_feat_dim, edge_dim, hidden_dim, num_layers=3,
                  init_eps=1e-2, m_pool="mean", update_coors=False):
         super().__init__()
         self.init_args = dict(
             node_feat_dim=node_feat_dim, edge_dim=edge_dim, hidden_dim=hidden_dim
         )
-        # EGNN preserves the feature width, so without this the node representation
-        # is node_feat_dim wide (11 on `mixed`) against GINE's hidden_dim, and a
-        # backbone comparison measures the width instead. Embedding `feats` leaves
-        # equivariance alone -- they are invariant scalars, and the equivariance is
-        # with respect to `coors`, which is untouched. Applied per node, so nothing
-        # here depends on n. See DESIGN_NOTES.md#egnn-input-embedder
+        # EGNN preserves the feature width, so reach hidden_dim here. feats are
+        # invariant scalars, so this does not touch equivariance -- embedding
+        # coors would.
         self.embed = nn.Sequential(
             nn.Linear(node_feat_dim, hidden_dim),
             nn.LeakyReLU(),
@@ -151,7 +144,7 @@ class GNNBackboneEquivariant(_GNNBackbone):
         # adj_mat is accepted but NOT forwarded: egnn_pytorch only reads it in
         # nearest-neighbour mode, so passing it was a silent no-op. Message
         # passing is dense all-pairs by design here -- the graph reaches the
-        # model through the edge features. See DESIGN_NOTES.md#egnn-dense-all-pairs
+        # model through the edge features.
         for conv in self.convs():
             feats, coors = conv(feats=feats, coors=coors, edges=edges)
 

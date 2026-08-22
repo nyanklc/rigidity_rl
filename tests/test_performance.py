@@ -1,5 +1,5 @@
 """Cost budgets. Ceilings are generous; the point is to catch a regression in kind,
-not to benchmark. Actual timings always print. DESIGN_NOTES.md#graph-features.
+not to benchmark. Actual timings always print.
 
 Timing is best-of-several, not the mean. A shared machine under load inflates
 any single measurement several-fold -- observed 13 ms to 38 ms for the same step

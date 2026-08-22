@@ -4,8 +4,8 @@ The algebra behind the environment: what the rigidity matrix is, what its rank a
 and how every derived quantity in the code (`rank_K`, `c_max`, `m_req`, the state score, the flex
 features) follows from it.
 
-`CLAUDE.md` is what the code is, `DESIGN_NOTES.md` is why it is written that way, `ROADMAP.md` is
-the plan. This file is the maths.
+`CLAUDE.md` is what the code is, `DESIGN_NOTES.md` is why it is written that way. This file is the
+maths.
 
 ---
 
@@ -21,8 +21,8 @@ p_ij  = p_j - p_i          p̂_ij = p_ij / ||p_ij||        b_ij = R_iᵀ p̂_ij
 ```
 
 `b_ij` is the measurement in `i`'s own frame. For `R^2` / `R^3` there is no frame and `R_i = I`, so
-`b_ij = p̂_ij` is a **global-frame** vector — the fact that makes the observation's use of raw
-bearings rotation-dependent (`ROADMAP.md` §2.3).
+`b_ij = p̂_ij` is a **global-frame** vector - the fact that makes the observation's use of raw
+bearings rotation-dependent (§11).
 
 Two standard objects:
 
@@ -45,7 +45,7 @@ d/dt p̂_ij = (1/||p_ij||) · P(p̂_ij) · (ṗ_j - ṗ_i)                      
 
 The projector appears because `p̂` is unit-norm: only the component of relative velocity
 **perpendicular** to `p̂` can rotate it. The component *along* `p̂` changes `||p_ij||` but not the
-bearing — this is the scale blindness of bearing measurements, and it is the single most important
+bearing - this is the scale blindness of bearing measurements, and it is the single most important
 fact in this document. It reappears in §5, §7 and §9.
 
 With orientation, `b_ij = R_iᵀ p̂_ij` and (world-frame angular velocity `ω_i`, `Ṙ_i = [ω_i]× R_i`):
@@ -86,7 +86,7 @@ ever used, so an overall sign would be immaterial anyway.**
 `B` is `(3m × 6n)`: **one 3-row block per directed edge**, in `np.nonzero(edges)` order. Everything
 below exploits that block structure.
 
-The construction is checked against its own definition by central differences —
+The construction is checked against its own definition by central differences -
 `tests/test_rigidity_matrix.py::test_matrix_is_the_numerical_jacobian_of_the_bearings` asserts
 `B δ = d/dt bearings` to 1e-6 relative for random admissible `δ`, in all five domains and eight
 heterogeneous mixes. That validates `Dp`, `Da`, both incidence signs and both projectors at once.
@@ -95,7 +95,7 @@ heterogeneous mixes. That validates `Dp`, `Da`, both incidence signs and both pr
 
 ## 3. Trivial motions and `rank_K`
 
-A motion is *trivial* when it changes no bearing. From (2.1)–(2.2):
+A motion is *trivial* when it changes no bearing. From (2.1)-(2.2):
 
 - **Translation** `ṗ_i = v` for all `i`. Then `ṗ_j - ṗ_i = 0`, so every block vanishes. `d` of these.
 - **Uniform scaling** `ṗ_i = c(p_i - p̄)`. Then `ṗ_j - ṗ_i = c·p_ij = c||p_ij||·p̂_ij`, and
@@ -127,7 +127,7 @@ rank_K = d·n - d - 1          3n - 4 in R³ ,  2n - 3 in R²                   
 for the fully connected graph. Measured: `rank_K = 20` at n=8/R³, `44` at n=16/R³, `5` at n=4/R²,
 `13` at n=8/R². All match (3.1).
 
-**A framework is Infinitesimally Bearing Rigid (IBR) iff `rank(B) = rank_K`** — it admits no motions
+**A framework is Infinitesimally Bearing Rigid (IBR) iff `rank(B) = rank_K`** - it admits no motions
 beyond the trivial ones. The code computes `rank_K` numerically from the complete graph rather than
 from (3.1), so heterogeneous networks are handled without a closed form.
 
@@ -153,14 +153,14 @@ the old `c_k = rank(P(p̂_ij) U_ij)` with `U = S`:
   **1**. So `c_k = 1` for every edge.
 
 Generally `c_k = d - 1` in homogeneous `R^d`, for **every** edge, independent of geometry. In a mix
-the three terms differ and `c_k` genuinely varies — on the `mixed` scenario the complete graph's
+the three terms differ and `c_k` genuinely varies - on the `mixed` scenario the complete graph's
 block ranks are `{1: 12, 2: 78}`, the 12 being the ordered pairs whose measurer *and* target are
 both planar.
 
 This is why `rigidity_edge` is nearly useless on its own: as an observation channel `c_k` is a
 constant in every homogeneous configuration. It varies only in heterogeneous networks, where the
 endpoints' domains differ (measured: a mix of 1s and 2s). Verified empirically at n=4/8/16 in both
-R² and R³ — all edges identical.
+R² and R³ - all edges identical.
 
 `c_max = max_k c_k` over the *complete* graph is exact and cheap, and is what the state score
 normalizes with (§7).
@@ -187,7 +187,7 @@ the same argument (accumulate the highest block ranks of the complete graph unti
 reached), which reduces to (5.1) when all blocks are equal.
 
 For homogeneous `R^d`, (5.1) gives `⌈(dn - d - 1)/(d - 1)⌉`, which coincides exactly with the closed
-form of Trinh et al. (`MBR_required_Rd`). Checked at n=4…16 in R² and R³ — all agree.
+form of Trinh et al. (`MBR_required_Rd`). Checked at n=4…16 in R² and R³ - all agree.
 
 | config | rank_K | c_max | m_req |
 |---|---|---|---|
@@ -197,19 +197,19 @@ form of Trinh et al. (`MBR_required_Rd`). Checked at n=4…16 in R² and R³ —
 | n=16 / R³ | 44 | 2 | 22 |
 
 Brute force finds the bound tight on every instance small enough to check exhaustively (n=4 across
-8 domain mixes × 3 seeds, n=5 across 6 mixes, all five domains) — evidence, not proof. **It is kept
+8 domain mixes × 3 seeds, n=5 across 6 mixes, all five domains) - evidence, not proof. **It is kept
 out of the reward for exactly this reason** (§7).
 
 ---
 
-## 6. `is_MBR` — the minimality heuristic
+## 6. `is_MBR` - the minimality heuristic
 
 Sort the current graph's `{c_e}` descending, accumulate until the sum reaches `rank_K`, call the
 count `m_req'`; declare minimal iff IBR and `m = m_req'`. Sound as a lower bound by the same
 subadditivity, and exact for homogeneous `R^d`. It can produce **false negatives** on heterogeneous
 networks, where the highest-rank blocks may not be jointly realizable.
 
-Note `m_req'` here is derived from the *current* edge set, so it is not an episode constant — unlike
+Note `m_req'` here is derived from the *current* edge set, so it is not an episode constant - unlike
 `required_edge_count`, which uses the complete graph and therefore depends only on the poses.
 
 ---
@@ -239,7 +239,7 @@ Put both terms in units of rank and divide by `rank_K`:
 
 `m·c_max` is "the rank this many edges could have carried at best", so the second term is the
 fraction of the required rank spent on edges. Both numerators are ranks, both denominators `rank_K`
-— dimensionless.
+- dimensionless.
 
 **The central guarantee.** Adding an edge contributing `Δr` rank:
 
@@ -248,8 +248,8 @@ fraction of the required rank spent on edges. Both numerators are ranks, both de
 ```
 
 At the best case `Δr = c_max` this is `(w_r - w_e)·c_max/rank_K`, which is **positive iff
-`w_r > w_e`** — for any geometry, any domain mix, any `n`, because the same `c_max/rank_K` factor
-appears on both sides. Under the earlier `m/m_req` normalization the two factors were `c_max/rank_K`
+`w_r > w_e`** - for any geometry, any domain mix, any `n`, because the same `c_max/rank_K` factor
+appears on both sides. Under an `m/m_req` normalization the two factors would be `c_max/rank_K`
 and `1/m_req`, which coincide only when `m_req` happens to equal `rank_K/c_max`; the guarantee was
 then contingent on a heuristic being tight. This is why `m_req` was removed from the reward.
 
@@ -259,7 +259,7 @@ Removing a redundant edge (`Δr = 0`) gains `w_e·c_max/rank_K`. So
 (rank-adding edge) / (pruning a redundant edge)  =  (w_r - w_e)/w_e  =  3   at (100, 25)
 ```
 
-reproducing R³'s original 3:1 preference, now identically in every domain.
+reproducing R³'s 3:1 preference, identically in every domain.
 
 **Optimum.** At `rank = rank_K` and `m = m_min`:
 
@@ -269,7 +269,7 @@ reproducing R³'s original 3:1 preference, now identically in every domain.
 
 with equality iff the poses admit a perfectly packed rigid graph (`m_min = rank_K/c_max`). Check
 against measurement: greedy at n=8/R³ reaches `m = 10.80`, giving
-`100 - 25·10.80·2/20 = 100 - 27.0 = 73.0` — exactly the 73.00 reported. At n=4/R², `m = 5` and
+`100 - 25·10.80·2/20 = 100 - 27.0 = 73.0` - exactly the 73.00 reported. At n=4/R², `m = 5` and
 `c_max = 1` give `100 - 25·5·1/5 = 75.00`, also exact.
 
 ### Potential-based shaping
@@ -291,7 +291,7 @@ With `r_t = φ_{t+1} - φ_t`, Abel summation gives
 nothing rewards reaching it quickly or holding it.
 
 **At `γ < 1`** the middle term survives: the objective becomes `-φ_0` plus a *discounted average of
-`φ` along the trajectory* — get good fast and stay good. That is the intended behaviour, and it
+`φ` along the trajectory* - get good fast and stay good. That is the intended behaviour, and it
 arrives purely from the discount factor, not from any reward change.
 
 ### Advantage collapse at `γ = 1`
@@ -313,7 +313,7 @@ unaffected because it used `γ = 0.99`.
 
 ---
 
-## 9. Flexes — the null space features
+## 9. Flexes - the null space features
 
 > **Superseded by §13 for the observation.** Everything below works on the *position block*
 > `B_p = B[:, :3n]` alone, so it is blind to the attitude columns and measured AUC 0.634 at
@@ -343,14 +343,14 @@ deficit. Verified numerically: on a graph with deficit 1, `Σ_i tr(G_i) = 1.0000
 ### Two traps
 
 **(a) `eigh` gives an arbitrary basis of the whole null space.** The trivial modes are *not* the
-first few eigenvectors — any orthonormal basis of `N` mixes them arbitrarily. Skipping columns by
+first few eigenvectors - any orthonormal basis of `N` mixes them arbitrarily. Skipping columns by
 index therefore does not remove them. `trivial_modes()` builds the 3 translations and the uniform
 scaling analytically, orthonormalizes them, and they are projected out of `N` explicitly. Before
 this fix the feature failed to localise on an obviously under-constrained node and was not
 rotation-invariant.
 
 **(b) A single eigenvector is a basis artefact.** `dim F > 1` is normal, and any individual vector
-inside a degenerate eigenspace is arbitrary — not even reproducible between calls. The
+inside a degenerate eigenspace is arbitrary - not even reproducible between calls. The
 basis-independent object is the **projector** onto `F`:
 
 ```
@@ -359,22 +359,22 @@ basis-independent object is the **projector** onto `F`:
 
 `flex_tensor` returns `Π` as `(n, n, 3, 3)` blocks, `Π[i,j] = Σ_c v_{c,i} v_{c,j}ᵀ`.
 
-When `F` is empty (rigid), the smallest **non-zero** mode is used instead — the direction the
+When `F` is empty (rigid), the smallest **non-zero** mode is used instead - the direction the
 framework resists least, i.e. the rigidity eigenvalue's eigenvector. The feature degrades gracefully
 from "where it is free" to "where it is nearly free".
 
-### Feature 1 — how free a node is
+### Feature 1 - how free a node is
 
 ```
 flex_mag_i = sqrt( tr Π[i,i] ) · sqrt(n)                                             (9.4)
 ```
 
 `tr Π[i,i] = Σ_c ||v_{c,i}||²` is node `i`'s share of the flex space. Summing over nodes gives
-`tr Π = dim F`, the rank deficit — so per-node magnitudes scale as `sqrt(deficit/n)` and the
+`tr Π = dim F`, the rank deficit - so per-node magnitudes scale as `sqrt(deficit/n)` and the
 `sqrt(n)` keeps the feature `O(1)` as `n` grows. That matters directly for a policy meant to span
 several `n`.
 
-### Feature 2 — would this edge help
+### Feature 2 - would this edge help
 
 This is the one that has to be derived rather than guessed. Adding edge `i -> j` imposes
 
@@ -382,7 +382,7 @@ This is the one that has to be derived rather than guessed. Adding edge `i -> j`
 P(p̂_ij) (v_j - v_i) = 0
 ```
 
-by (2.1). A flex `v` **survives** the new edge iff `v_j - v_i` is *parallel* to `p̂_ij` — the
+by (2.1). A flex `v` **survives** the new edge iff `v_j - v_i` is *parallel* to `p̂_ij` - the
 perpendicular part is what the bearing constrains, the parallel part is the scale freedom it cannot
 see. So the amount of flex the edge destroys is
 
@@ -400,11 +400,6 @@ Both terms come straight out of `Π`:
 
 `flex_constraint_power` computes exactly this, for **all ordered pairs**, from the projector.
 
-> **An earlier version of this feature was wrong.** It used `sqrt(p̂ᵀ Π[i,i] p̂)` — the projection of
-> node `i`'s flex *onto* the bearing. That is the component the edge does **not** constrain, and it
-> ignores node `j` entirely. It was rotation-invariant and basis-independent, so the invariance
-> tests passed; only the ground-truth test in §10 exposed it.
-
 ### Invariance
 
 Under a global rotation `R`, positions rotate and the null vectors rotate blockwise, `v_i → R v_i`,
@@ -414,26 +409,26 @@ so `Π[i,j] → R Π[i,j] Rᵀ`. Then
 - `p̂ᵀ Π p̂ → (Rp̂)ᵀ R Π Rᵀ (Rp̂) = p̂ᵀ Π p̂` is invariant,
 
 so both features are rotation-invariant scalars. This is deliberate: feeding a flex **vector** as a
-node feature would repeat the mistake `ROADMAP.md` §2.3 records for bearings — rotation-equivariant
+node feature would repeat the mistake §11 records for bearings - rotation-equivariant
 data consumed as invariant scalars, making the policy rotation-dependent.
 
 ---
 
 ## 10. Ground-truth validation of (9.5)
 
-Take nodes 0–6 fully connected (rigid) and node 7 held by a single bearing `7 -> 0`, in R³. Then
+Take nodes 0-6 fully connected (rigid) and node 7 held by a single bearing `7 -> 0`, in R³. Then
 `rank_K_pos - rank(B_p) = 1`, so `dim F = 1`.
 
 | check | result |
 |---|---|
 | `Σ_i tr Π[i,i]` vs `dim F` from (9.2) | `1.0000` vs `1` |
-| `flex_mag` argmax | node 7 (2.501, others 0.27–0.72) |
+| `flex_mag` argmax | node 7 (2.501, others 0.27-0.72) |
 | mean `A[i,j]` over candidates that **do** raise rank | **2.166** |
 | mean `A[i,j]` over candidates that **do not** | **0.0000** |
 | rotation invariance, `flex_mag` / `A` | 1.1e-15 / 4.2e-08 |
 
 The separation is exact: every candidate edge that raises the rank has `A > 0`, and the one that
-does not has `A = 0` identically. That is (9.5) behaving as derived — a flex is destroyed iff the
+does not has `A = 0` identically. That is (9.5) behaving as derived - a flex is destroyed iff the
 relative motion has a component perpendicular to the new bearing.
 
 ---
@@ -466,7 +461,7 @@ relative motion has a component perpendicular to the new bearing.
    tensor with **world-frame** bearings. `Network.get_all_pairs_bearings()` returns the body-frame
    *measurement* `R_iᵀ p̂_ij`, which coincides with the world frame only when `R_i = I`, i.e. only in
    `R^d`. Using it made `flex_align` rotation-dependent in `R^3xS^1`, `SE(3)` and any heterogeneous
-   mix — invisible in every `R^d` test. `get_all_pairs_bearings_world()` exists for this.
+   mix - invisible in every `R^d` test. `get_all_pairs_bearings_world()` exists for this.
 
 ---
 
@@ -506,14 +501,14 @@ U_(1,4) = U_(2,4) = U_(3,4) = I₃          # planar robot measuring the aerial 
 ```
 
 `U_ij` multiplies the whole relative displacement `(p_j - p_i)`, so this reactivates the *planar*
-agent's z column as well as the aerial one's. The paper's own accounting notices the consequence —
+agent's z column as well as the aerial one's. The paper's own accounting notices the consequence -
 it reports `q_v = 6` (only the terrestrial robots' unfeasible x/y rotations) and then has to
 classify the planar agents' z columns as *linearly dependent on the rest* rather than as null. That
 happens to hold for their particular four-agent configuration. It is not a general fact.
 
 ### 12.3 What goes wrong
 
-Measured on random configurations (`ROADMAP.md` §1.2):
+Measured on random configurations:
 
 | mix | Σ dim D_i | `rank_K` under Table III | corrected | IBR verdicts differing |
 |---|---|---|---|---|
@@ -523,7 +518,7 @@ Measured on random configurations (`ROADMAP.md` §1.2):
 
 `rank_K = Σ dim D_i` means *zero* trivial motions, and `rank_K > Σ dim D_i` is outright impossible:
 the matrix cannot have more independent columns than the system has coordinates. Directly: for
-4×`R^2` + 4×`R^3`, a pure `+z` motion of a planar agent gives `‖B v‖ = 2.1` — the framework resists
+4×`R^2` + 4×`R^3`, a pure `+z` motion of a planar agent gives `‖B v‖ = 2.1` - the framework resists
 a motion the agent cannot make, and spends rank doing it.
 
 **The obstruction is structural, not a wrong table entry.** In `B_p = D_p U Ēᵀ` the same `U_ij`
@@ -535,7 +530,7 @@ agents must be vertically stacked. So no choice of `U_ij` works off a measure-ze
 
 **Consequence.** Whether a planar agent's z-column vanishes becomes a property of the *graph*
 (it vanishes iff that agent has no spatial neighbour), so `q_v` no longer cancels between `G` and
-`K` — which is exactly the step the paper's Theorem 2 proof relies on. Measured: the resulting rank
+`K` - which is exactly the step the paper's Theorem 2 proof relies on. Measured: the resulting rank
 test returns the wrong IBR verdict on 6.8% of 1200 random heterogeneous frameworks. An explicit
 4-agent counterexample is in the note.
 
@@ -567,7 +562,7 @@ Two notes.
 
 - **`P_i` is a projector, not a placement.** For `R^3xS^1` the previous code used
   `V_ij = [0; 0; rax]` read as *rows*, where Table I's `[0_{3x2} v]` is a *column*. The two agree
-  only at `v = e₃` — the only axis ever used, so nothing measured depended on it — but `v vᵀ` is
+  only at `v = e₃` - the only axis ever used, so nothing measured depended on it - but `v vᵀ` is
   right for any axis, and it is the form that survives the numerical-Jacobian test with
   `v = (1, 2, -0.5)/‖·‖`.
 - **`bearing_DOFs` is retained**, unused by the matrix, as the reference implementation of Table I.
@@ -591,9 +586,9 @@ rank_K  ≤  Σ_i dim D_i  −  (3 if any agent is planar else 4)
 ```
 
 which is what `tests/conftest.py::max_rank_K` asserts, and the exact trivial space is just an
-orthonormal basis of `ker(B_K)` — by Theorem 1 that *is* the trivial variation set. `trivial_modes`
+orthonormal basis of `ker(B_K)` - by Theorem 1 that *is* the trivial variation set. `trivial_modes`
 still hardcodes three translations plus scaling and is therefore wrong for mixes; it is replaced by
-the `ker(B_K)` basis in WP2, together with the rest of the flex rework.
+the `ker(B_K)` basis of §13.
 
 ---
 
@@ -601,7 +596,7 @@ the `ker(B_K)` basis in WP2, together with the rest of the flex rework.
 
 §9 asked "would this edge help?" and answered it with a projector built from the position block.
 That is a heuristic in two ways: it discards the attitude columns, and it measures destroyed flex
-rather than added rank. Both are avoidable — the exact criterion is one line of linear algebra.
+rather than added rank. Both are avoidable - the exact criterion is one line of linear algebra.
 
 ### 13.1 The criterion
 
@@ -618,7 +613,7 @@ the dimension of its component outside `rowspace(B) = ker(B)^⊥`. Projecting on
 
 In particular `rank(B)` is unchanged iff `b_ij Z = 0`. This is exact, needs no threshold on a
 difference of two ranks, and holds in every domain and every heterogeneous mix, because it says
-nothing about what `B` is — only that it is a matrix.
+nothing about what `B` is - only that it is a matrix.
 
 ### 13.2 The two features
 
@@ -628,7 +623,7 @@ add_rank[i,j] = rank(b_ij Z) / c_max       ∈ [0, 1]
 ```
 
 over **all ordered pairs**, not just the absent ones. `add_rank` is the answer to the question;
-`add_gain` is its continuous relaxation, and carries strictly more information — it distinguishes
+`add_gain` is its continuous relaxation, and carries strictly more information - it distinguishes
 an edge that barely escapes the row space from one that is fully outside it, which is what a value
 function needs in order to prefer one of two rank-1 edges.
 
@@ -649,7 +644,7 @@ into batched products over all pairs, and is checked against the reference in ev
 minus: `Ē_o` places `−1` at the measuring node only. It is invisible in `R^2`/`R^3`, where `P_i = 0`.
 
 `b_ij` has 3 rows, so `G = (b_ij Z)(b_ij Z)ᵀ` is 3×3. `tr G` gives the norm and `eigvalsh(G)` the
-rank, at a cost that does not grow with `dim ker(B)` — a batched SVD of the (3, k) blocks would.
+rank, at a cost that does not grow with `dim ker(B)` - a batched SVD of the (3, k) blocks would.
 
 ### 13.3 The rank threshold
 
@@ -703,7 +698,7 @@ frameworks at 40% density:
 `flex_align` is at chance in the oriented domains, which is the failure §9's position-only
 derivation predicts: it cannot see a bearing that pins down an attitude.
 
-`dim flex_space` equals `rank_K - rank(B)` exactly in every case, which is (9.2) generalised — and
+`dim flex_space` equals `rank_K - rank(B)` exactly in every case, which is (9.2) generalised - and
 note it needs no hand-built trivial modes, because `ker(B_K)` **is** the trivial variation set by
 Michieletto Theorem 1, in every domain and mix.
 
@@ -736,7 +731,7 @@ Single-threaded, at 60% of `m_req` edges, milliseconds:
 | 24 | `SE(3)` | 1.52 | 1.28 | 1.10 | 1.21 | 0.07 | **5.17** |
 
 Two things paid for this. `nullspace` takes `eigh(BᵀB)` rather than an SVD of `B`, whose left factor
-is (3m, 3m) and never used — 13.15 ms to 2.50 ms at n=16. Squaring costs precision in the
+is (3m, 3m) and never used - 13.15 ms to 2.50 ms at n=16. Squaring costs precision in the
 eigen*values*, which is why the rank is still read off the thin SVD in `rigidity_decomposition` and
 only the eigen*vectors* come from `eigh` (taking the rank from `eigh` disagreed with `matrix_rank`
 on 840 of 840 cases). And `candidate_gain` uses the 3×3 Gram matrix instead of a batched SVD, 1.77
@@ -751,6 +746,25 @@ anywhere from 0.26 to 16 ms on the same input, which is thread contention rather
 
 This section explains what kind of optimization problem each objective is. It is the reason the
 constructive baseline is hard to beat, and the reason the margin is worth switching to.
+
+### 14.0 `rank(B)` is generically a function of the graph alone
+
+`B(χ)` is the Jacobian of the bearing map and does depend on the configuration χ. **Its rank does
+not**, generically. Every entry of `B(χ)` is rational in χ, so `rank(B(χ))` is lower semi-continuous
+and drops only on the zero set of a minor determinant - a proper algebraic subset, of measure zero.
+For χ drawn from any continuous distribution, `rank(B(χ))` equals its generic value almost surely,
+and that generic value is fixed by the graph and the domain assignment. Michieletto's
+noncollinearity assumption is exactly the assumption that puts us in the generic set.
+
+*Measured:* 30 graphs x 5 domains x 100 pose resamples each - the rank never moved once. Repeated
+for heterogeneous mixes with the same result.
+
+**So a rank-based state score contains no geometry.** `WeightedNormalized` at `margin_kappa = 0` is
+a function of the edge set alone, which is why a policy trained on it reads none of the geometric
+observation channels: the reward never asks it to. What does *not* follow is that geometry is
+useless as an input - it is the computational route to the combinatorial answer (§13 turns a
+geometric computation into an exact rank prediction), and the **margin** of §15 is not combinatorial
+at all, spanning ~10^5 across equally-minimal graphs on the same poses.
 
 ### 14.1 What submodular means
 
@@ -792,8 +806,8 @@ heterogeneous mix, **0 violations**, worst marginal gap exactly 0.
 ### 14.3 What that buys, and what it costs us
 
 "Fewest edges making the framework rigid" is therefore **minimum submodular cover**, a named
-problem. Wolsey (1982) proved that greedy — repeatedly take the edge with the largest marginal
-gain — is an `H(d)` approximation for integer-valued monotone submodular cover, where
+problem. Wolsey (1982) proved that greedy - repeatedly take the edge with the largest marginal
+gain - is an `H(d)` approximation for integer-valued monotone submodular cover, where
 `d = max_e f({e})` and `H(k) = 1 + 1/2 + … + 1/k`. Here `d = c_max`:
 
 | domain class | `c_max` | greedy guarantee |
@@ -808,10 +822,10 @@ Two consequences, and the second is uncomfortable:
 - **The constructive baseline is not ad hoc.** It is the standard algorithm for this problem class,
   with a proof behind it. That makes it the right opponent, and makes beating it meaningful.
 - **The headroom above greedy is small.** Measured against the proven lower bound `m_req`, greedy
-  lands 0–5% above it (0% in `SE(3)` and `R^2xS^1` at n=8, +2.4% on `mixed`, +5.0% at n=8/`R^3`,
-  +3.0% at n=16/`R^3`) — far better than its 50% worst case. So no method, learned or otherwise,
-  can gain much on edge count. `ROADMAP.md` §1.0 records the policy closing ~88% of that gap on the
-  training mixture, which is close to all there was.
+  lands 0-5% above it (0% in `SE(3)` and `R^2xS^1` at n=8, +2.4% on `mixed`, +5.0% at n=8/`R^3`,
+  +3.0% at n=16/`R^3`) - far better than its 50% worst case. So no method, learned or otherwise,
+  can gain much on edge count. A trained policy closes about 88% of that gap on the training
+  mixture, which is close to all there was.
 
 This is the structural reason a rank-based objective cannot carry the thesis on its own, and it
 agrees with Darvariu et al. (2024) §6.2: RL is not expected to gain much where shallow decision
@@ -819,7 +833,7 @@ horizons already suffice.
 
 ### 14.4 The margin is **not** submodular
 
-The rigidity eigenvalue `λ_r(S)` is still **monotone** — adding an edge adds a PSD term to `BᵀB`,
+The rigidity eigenvalue `λ_r(S)` is still **monotone** - adding an edge adds a PSD term to `BᵀB`,
 and by Weyl's inequality every eigenvalue can only move up. But it is not submodular.
 
 *Measured* (`tools/submodularity.py`): 1493 triples with both `S` and `T` rigid, across all five
@@ -827,17 +841,188 @@ domains and a mix: **887 violations of (14.1), 59.4%**, worst marginal gap −4.
 Non-submodularity needs only one valid counterexample; there are 887, far above numerical noise.
 
 The intuition is that eigenvalues are global and coupled in a way ranks are not. Two edges can be
-worth more together than the sum of their separate contributions — a complementary pair bracing a
+worth more together than the sum of their separate contributions - a complementary pair bracing a
 direction that neither braces alone. That is *increasing* returns, the exact opposite of (14.1), and
 it is invisible to a method that only ever evaluates one edge at a time.
 
 **So greedy carries no approximation guarantee on the margin.** That is the principled reason to
 expect a sequential, long-horizon method to have room there when it has almost none on edge count,
-and it is the argument WP3 rests on. Stated as a prediction rather than a result: a margin-aware
+and it is the argument the margin objective (§15) rests on. Stated as a prediction rather than a
+result: a margin-aware
 policy should beat greedy on margin by a wider relative margin than the ~2% it wins on edge count.
-The spectral first-order heuristic (`ROADMAP.md` WP3) is the honest opponent to hold it to, since
+A spectral first-order heuristic is the honest opponent to hold it to, since
 greedy-on-margin is a weak one.
 
 *Caveat.* §14.2 is proved and then confirmed numerically; §14.4 is numerical only, but for a
-*negative* result that is the stronger position — one counterexample refutes submodularity, whereas
+*negative* result that is the stronger position - one counterexample refutes submodularity, whereas
 no number of confirmations would prove it.
+
+## 15. The rigidity margin in the state score
+
+§14 says the edge-count problem is nearly solved by greedy and the margin problem is not. This
+section is the objective that follows from that.
+
+### 15.0 What λ means, and what it does not
+
+**Rigidity is binary and generic** (§14.0). At a non-degenerate configuration a framework either
+attains `rank_K` or it does not, and if it does, the shape is recoverable from the bearings. λ adds
+nothing to *whether*, and calling a large-λ framework "more rigid" is wrong.
+
+What λ is: with `δχ` a variation orthogonal to the trivial motions (`ker B`),
+
+```
+‖B δχ‖  ≥  √λ · ‖δχ‖                                                                 (15.0)
+```
+
+so λ lower-bounds **how much the bearings move when the shape is deformed**. Inverting it gives the
+statement that matters:
+
+```
+shape error  ≤  (1/√λ) · bearing error
+```
+
+λ is therefore the **conditioning of the bearing → shape inverse problem**, not a degree of rigidity.
+Exact bearings recover the shape at any `λ > 0`; noisy bearings recover it to within a factor
+`1/√λ`. *Measured*, three rigid graphs on one set of 8 poses in `R^3`, unit-norm bearing
+perturbations pushed through `B⁺`:
+
+| λ | `1/√λ` | measured worst amplification |
+|---|---|---|
+| 1.4e-05 | 264 | 132 |
+| 5.7e-03 | 13.2 | 6.9 |
+| 9.8e-02 | 3.2 | 1.8 |
+
+(Random draws rarely hit the worst-case direction, so the measured column sits below the bound; the
+*scaling* is what matters, and it drops two decades alongside `1/√λ`.)
+
+Three consequences, worth keeping separate because they are usually conflated:
+
+1. **Estimation.** The above: λ is the amplification from measurement noise into shape error. This
+   is the one that justifies the objective.
+2. **Control.** For a bearing-based formation controller the linearised error dynamics are
+   `ẋ = -BᵀB x`, so the slowest non-trivial mode decays at rate λ. This is where the name comes from
+   in the formation-control literature. Nothing here runs a controller, so it is motivation rather
+   than a measured claim.
+3. **Distance to degeneracy.** By Eckart-Young `√λ` is exactly the spectral-norm distance from `B`
+   to the nearest rank-deficient matrix, so a low-λ graph sits close to losing rigidity outright.
+   The caveat: that nearest matrix need not be the rigidity matrix of any realisable configuration,
+   so this bounds distance-to-singularity in *matrix* space, not in configuration space. A good
+   proxy, not a theorem about poses.
+
+The collinear case is the limit of all three: as a configuration approaches degeneracy λ → 0
+continuously, and rigidity fails at exactly the point λ reaches zero. λ is the continuous quantity
+whose vanishing *is* the binary failure, which is what makes it the thing to maximise away from.
+
+### 15.1 Why λ cannot enter φ raw
+
+Two obstacles stop λ going straight into φ.
+
+**λ is monotone in edges.** Adding an edge appends rows to `B`, hence a PSD term to `BᵀB`, so by
+Weyl's inequality every eigenvalue can only rise. Measured at n=8/`R^3`:
+
+```
+m  = 12    16     20     24     28     32     36
+λ  = .001  .005   .218   .259   .365   .620   .701      ~700x over the range
+```
+
+So `max λ` alone has the **complete graph** as its optimum: added with any positive weight it pays
+the agent to add edges.
+
+**λ has no fixed scale.** It decays with `n` (1.5e-01 at n=4 to 1.3e-03 at n=16 in `R^3`) and scales
+with the size of the formation, because `B`'s position entries carry `1/‖p_ij‖`. A weight tuned at
+one `n` and one pose range means nothing at another, destroying the property §7 exists for.
+
+λ therefore has to be squashed into a bounded, dimensionless number, and a squashing function needs
+a **centre**. That is what `λ_ref` is.
+
+### 15.2 The formula
+
+```
+phi = (w_rank*rank - w_edge*m*c_max)/rank_K  +  w_eig * 1[is_IBR] * q(lam)        (15.1)
+
+  q(lam) = sigmoid( log10(lam / lam_ref) / s ),      s = 0.75 decades      -> q in (0,1)
+  w_eig  = kappa * w_edge * c_max / rank_K
+```
+
+- **`λ_ref`** is the median λ of `margin_ref_samples` graphs built by the constructive greedy **on
+  this episode's own poses** (`rigidity.reference_margin`), so `log10(λ/λ_ref)` reads "how much
+  stiffer than a typical decent graph on these exact poses" - dimensionless, comparable at any `n`,
+  domain and formation size, and near 0 for a typical answer. λ of the *complete* graph would
+  saturate instead: `λ/λ_K` still decays two decades from n=4 to n=12. The **median**, not the best:
+  a yardstick has to be a typical answer for `q ≈ 0.5` to mean "typical".
+- **`s = 0.75` decades**, because the p10-p90 spread of `log10 λ` among minimal graphs is 1.1-1.9
+  decades, so the logistic spends its range on the achievable band.
+- **`w_eig` is denominated in edges.** `w_edge·c_max/rank_K` is what one edge costs, so the whole
+  margin term is worth `κ` edges and rescales with `n` and domain by itself. `κ = 0` reproduces the
+  rank-only score exactly, and the term is bounded in `[0, κ·one_edge)`, so the agent can profit by
+  at most about `κ` extra edges. `κ < 1` is a tie-break sparsity always wins; `κ > 1` is a real
+  trade-off with no principled value, answered by a front over κ rather than a number.
+- **`q ≥ 0`, gated on IBR**, so becoming rigid is never punished; a raw `log λ` term would make the
+  transition to rigidity a large negative jump.
+
+`κ`, `λ_ref`, `rank_K` and `c_max` are constant within an episode, so (15.1) is still a **potential**
+and the shaping stays potential-based (§7).
+
+### 15.3 `λ_ref` is noisy, and that is why it is a median
+
+A single greedy construction is a poor centre. Measured across construction orders on *fixed* poses:
+
+| | p10-p90 of `log10 λ_ref` | sd | cost/episode |
+|---|---|---|---|
+| n=8/`R^3`, k=1 | 2.26 decades | 0.99 | 15.6 ms |
+| n=8/`R^3`, k=3 | **0.48** | **0.22** | 46.4 ms |
+| `mixed`, k=1 | 2.31 decades | 1.07 | 43.3 ms |
+| `mixed`, k=3 | **1.31** | **0.65** | 123.3 ms |
+
+At k=1 the centre wobbles by more than the 1.1-1.9 decade signal it is meant to centre, and further
+than the sigmoid is wide, so in many episodes `q` would sit saturated and contribute no gradient.
+The **log-median** of k=3 narrows it 4.5x at n=8/`R^3` - better than `1/sqrt(k)`, because the median
+is robust to the occasional bad construction that dominated the spread. `margin_ref_samples` is a
+config key; raise it if the residual variance matters. The cost is entirely in `reset()`
+(2.7 -> 46.8 ms at n=8/`R^3`); **per-step cost is unchanged**, since λ comes from the SVD `step()`
+already performs.
+
+### 15.4 Invariance, and the one place it is only approximate
+
+λ and λ_ref are computed on the same poses, so a similarity transform applies to both and cancels.
+That is why (15.1) needs no pose normalization, and so avoids a second SVD per step. Measured,
+complete graph against its own greedy reference:
+
+| domain | translate | rotate | scale x1.5 | x2.7 | x10 |
+|---|---|---|---|---|---|
+| `R^2`, `R^3` | exact | exact | **0.0000** | **0.0000** | **0.0000** |
+| `R^2xS^1`, `R^3xS^1`, `SE(3)` | exact | exact | 0.077 | 0.13-0.16 | 0.16-0.21 |
+
+(decades of drift in `log10(λ/λ_ref)`.)
+
+**Translation and rotation are exact in every domain, and so is scaling in `R^d`** - there every
+column of `B` carries `1/length`, so a rescale is a scalar factor that cancels in the ratio. In the
+oriented domains it does not: the position columns carry `1/length` while the attitude columns are
+dimensionless (§13.4), so a rescale genuinely reweights them against each other and moves the
+spectrum. At worst 0.21 decades, i.e. **~7% of one edge**.
+
+That is acceptable **only because every instance shares a pose scale** - `random_scenario` draws
+from a fixed `pos_limits`, and neither `rotation_augmentation` nor the benchmark sets change it. A
+standing condition, not a proof: if instances ever carry genuinely different physical scales, λ must
+be pose-normalized (scale `B`'s first `3n` columns by the formation's RMS radius before the
+decomposition). `tests/test_state_score.py` asserts the three regimes separately.
+
+### 15.5 What it buys, measured
+
+`greedy` hill-climbs on whatever φ is configured, so it is margin-aware at `κ > 0` and gives a
+reading without any training. 12 instances, n=8/`R^3`, identical poses across arms
+(`tools/kappa_sweep.py`):
+
+| κ | edges | margin (gmean) | vs κ=0 | rigid |
+|---|---|---|---|---|
+| 0 | 10.42 | 1.01e-03 | 1.00x | 100% |
+| 0.9 | 10.42 | 2.01e-03 | **2.0x** | 100% |
+| 2.0 | 10.50 | 1.25e-02 | **12.4x** | 100% |
+| 4.0 | 10.42 | 2.08e-02 | **20.6x** | 100% |
+
+Edge count is flat to within 0.08 of an edge across the whole range while the margin moves 20x, and
+rigidity never drops. Two caveats: this is greedy, not a learned policy, and 12 instances is a smoke
+test rather than a result.
+
+`constructive` does **not** adapt - it is the rank-based classical algorithm scored on the margin
+objective, which is the comparison §14.4 predicts it loses.

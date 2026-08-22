@@ -1,5 +1,4 @@
-"""Per-episode metrics and what reaches TensorBoard.
-DESIGN_NOTES.md#training-metrics, #episode-logging."""
+"""Per-episode metrics and what reaches TensorBoard."""
 import glob
 import numpy as np
 import pytest

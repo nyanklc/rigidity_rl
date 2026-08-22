@@ -5,7 +5,7 @@ activations grow with n. Both happened: EGNN/GINE aggregated with sum/add over
 n-1 dense neighbours, the flex features carried a sqrt(n) that assumed a fixed
 flex dimension, degree and common-neighbour counts were raw, and the initial-graph
 sampler's spread grew like n^4. The pair channels are bounded to [0, 1] by their
-own per-pair normalisation, which is what keeps them flat here. See DESIGN_NOTES.md#aggregation-and-scale
+own per-pair normalisation, which is what keeps them flat here.
 """
 import numpy as np
 import pytest
@@ -80,7 +80,7 @@ def _trained_scale(g, std=0.15):
     """An untrained backbone is numerically blind to this: init_eps makes the
     pooled message ~1e-10 of the node residual, so sum and mean agree to 3
     decimals and the test passes under either. Same trap as the invariance
-    tests. See DESIGN_NOTES.md#aggregation-and-scale
+    tests.
     """
     for m in g.modules():
         if isinstance(m, torch.nn.Linear):

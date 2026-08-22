@@ -1,7 +1,7 @@
 """How do the two backbones compare on width and on parameter count?
 
 `EGNN` preserves the feature width, so `GNNBackboneEquivariant` needs an input
-embedder to reach `gnn_hidden_dim` at all (DESIGN_NOTES.md#egnn-input-embedder).
+embedder to reach `gnn_hidden_dim` at all.
 Adding one equalizes the *width* against `GNNBackboneGINE` but not the parameter
 count, because `dim` widens every EGNN layer's own MLPs too. The two controls
 cannot both hold, so a backbone comparison has to say which one it ran -- this

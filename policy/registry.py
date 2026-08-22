@@ -2,7 +2,7 @@
 
 Replaces the if/elif chains that used to live in train_ppo.py and train_dqn.py.
 Roles are skrl's model-dict keys, so build_models() output is passed straight to
-the agent. See DESIGN_NOTES.md#model-registry
+the agent.
 """
 
 import inspect

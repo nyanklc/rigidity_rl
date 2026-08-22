@@ -1,4 +1,4 @@
-"""The extended bearing rigidity matrix and its null space. THEORY.md sections 2-3, 12."""
+"""The extended bearing rigidity matrix and its null space. 2-3, 12."""
 import copy
 
 import numpy as np
@@ -93,7 +93,7 @@ def test_homogeneous_string_domain_accepts_every_domain(domain):
     assert all(a.domain == domain for a in net_.agents)
 
 
-# ------------------------------------------- per-node DOF restriction, THEORY.md#12
+# ------------------------------------------- per-node DOF restriction,
 
 def _perturb(net, delta, eps):
     """chi + eps*delta, delta = [dp_0..dp_n-1, dw_0..dw_n-1]; dw is world-frame."""

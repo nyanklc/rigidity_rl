@@ -68,13 +68,14 @@ The optimization problem is then:
 
 > Given `n` agents at given poses, with given domains, choose the directed edge set so the
 > framework is bearing rigid, using as few edges as possible, and among the sparsest solutions
-> preferring the one that is most robustly rigid.
+> preferring the one whose shape is best conditioned against measurement noise.
 
 Two properties make this harder than it first appears. Agent domains can be **mixed** within one
 network, and the pair of domains at an edge's endpoints decides which degrees of freedom that
 measurement constrains. And sparsity alone is not a sufficient criterion: many edge sets of the
 same minimal size are rigid at the same poses, and they differ by five orders of magnitude in how
-much perturbation they survive.
+sharply the bearings respond to a change in shape - every one of them recovers the shape from exact
+measurements, but the error under noisy ones scales as the inverse square root of that quantity.
 
 ## Research questions
 
@@ -113,13 +114,13 @@ Design choices that carry the argument:
   much rigidity structure a GNN can recover from geometry alone.
 
 The longer-term motivation is a *distributed* protocol for maintaining rigid formations in swarms.
-The centralized formulation here is a deliberate first step; `ROADMAP.md` appendix A assesses what
-would carry over and what provably would not.
+The centralized formulation here is a deliberate first step;
+[DESIGN_NOTES.md](DESIGN_NOTES.md#distributed-feasibility) assesses what would carry over and what
+provably would not.
 
 ## Current state
 
-Results move as the formulation changes. The authoritative, dated summary is
-[ROADMAP.md](ROADMAP.md) section 1; the short version:
+Results move as the formulation changes; these are the current ones.
 
 **Works.** On heterogeneous networks of 10 agents spanning all five domains at once, a trained DQN
 policy reaches 17.05 edges against a proven lower bound of 17, rigid on every instance of a frozen
@@ -149,15 +150,20 @@ they are a minority. That is not yet established against a capacity explanation,
 is the next experiment. Generalization across agent domains remains the oldest open problem here and
 is not resolved by these results.
 
-**Does not work yet: the geometry.** Channel-wise ablation, run in three independent modes, shows
+**Not yet tested: the geometry.** Channel-wise ablation, run in three independent modes, shows
 the policy solves the problem from graph structure alone and reads no geometry at all. Destroying
 the bearings, the agent coordinates and the null-space channels costs it nothing in any mode. That
 is the correct response to an objective that contains no geometric term, and the price is visible
 in the figures below: the rigidity margin of the graphs it produces falls by an order of magnitude
 over training, and a random policy ends up holding a better margin than any method that actually
-solves the problem. Extending the objective past the combinatorial rank is the next stage of the
-work, and the ablation supplies its acceptance test, since the geometric channels have to start
-costing something.
+solves the problem.
+
+The objective has since been extended past the combinatorial rank: it can now charge for the
+rigidity margin as well as for edges, weighted so that the margin is worth a stated number of edges.
+On greedy hill-climbing, which needs no training, turning it on raises the margin of the resulting
+networks by 2x to 20x at an unchanged edge count. No policy has been trained against it yet, and the
+same channel ablation is the test that decides whether it works - the geometric channels have to
+start costing something.
 
 **Two findings that reframed the project.** The rank of the rigidity matrix is generically
 independent of the agent configuration, which means a rank-based objective is purely combinatorial
@@ -218,10 +224,10 @@ All four figures are written in both PNG and PDF for every evaluation run.
 
 | File | Contents |
 |---|---|
-| [ROADMAP.md](ROADMAP.md) | live plan, current diagnosis, work log. Start here. |
 | [THEORY.md](THEORY.md) | the mathematics: rigidity matrix, rank, null space, objective |
 | [DESIGN_NOTES.md](DESIGN_NOTES.md) | why the implementation is the way it is |
 | [CLAUDE.md](CLAUDE.md) | code map and working conventions |
+| [ROADMAP.md](ROADMAP.md) | what is planned next |
 | [docs/](docs/) | note on the heterogeneous rigidity matrix, with verification scripts |
 
 ## Running the code

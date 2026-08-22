@@ -58,7 +58,7 @@ TERMINATIONS = [
     "MinimallyRigid", "RigidMinEigAndEdgesBonus", "Bandit",
 ]
 
-# closed forms from THEORY.md section 3: (dof per agent)*n - trivial
+# closed forms from (dof per agent)*n - trivial
 RANK_K_FORMULA = {
     "R^2":     lambda n: 2 * n - 3,
     "R^3":     lambda n: 3 * n - 4,
@@ -66,7 +66,7 @@ RANK_K_FORMULA = {
     "R^3xS^1": lambda n: 4 * n - 5,
     "SE(3)":   lambda n: 6 * n - 7,
 }
-# a bearing is one angle in the plane, two in 3-space (THEORY.md section 4)
+# a bearing is one angle in the plane, two in 3-space
 C_MAX = {"R^2": 1, "R^2xS^1": 1, "R^3": 2, "R^3xS^1": 2, "SE(3)": 2}
 
 # dim D_i: how many coordinates agent i can actually vary
@@ -86,7 +86,7 @@ MIXES = [
 
 
 def max_rank_K(domains):
-    """Upper bound on rank(B_K): sum(DOF) minus the trivial motions. THEORY.md#12.5."""
+    """Upper bound on rank(B_K): sum(DOF) minus the trivial motions.5."""
     dof = sum(DOF_PER_AGENT[d] for d in domains)
     trivial = 3 if any(d in PLANAR for d in domains) else 4
     return dof - trivial
@@ -173,6 +173,8 @@ def config_dict(n=6, domains="R^3", **overrides):
         "rigidity_global": False,
         "rigidity_flex": False,
         "rigidity_edge": False,
+        "margin_kappa": 0.0,
+        "margin_ref_samples": 3,
         "scenario": None,
     }
     cfg.update(overrides)

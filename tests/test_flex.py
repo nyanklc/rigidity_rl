@@ -1,4 +1,4 @@
-"""The flex tensor and constraint power. THEORY.md section 9, validated in section 10."""
+"""The flex tensor and constraint power. validated in section 10."""
 import numpy as np
 import pytest
 

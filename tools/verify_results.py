@@ -1,4 +1,4 @@
-"""Re-derive the numbers quoted in ROADMAP.md section 1.0 and the README.
+"""Re-derive the numbers quoted in0 and the README.
 
 Everything here runs from a fresh clone, because `benchmarks/` is tracked and the
 environment is built programmatically rather than read from the gitignored

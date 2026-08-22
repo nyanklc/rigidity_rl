@@ -22,7 +22,6 @@ import torch
 from skrl.memories.torch import RandomMemory
 from skrl.agents.torch.ppo import PPO, PPO_CFG
 from skrl.agents.torch.dqn import DQN, DQN_CFG
-from skrl.agents.torch.ddqn import DDQN
 import policy
 import policy.gnn_backbone
 from policy import *
@@ -211,9 +210,6 @@ def build_agent(algorithm, models, env, device, mem_size, experiment_name):
             device=device,
         )
 
-    # DQN and DDQN differ only in how the target value is computed, so they share
-    # a config and a models dict; rebuilding the wrong one would still roll out the
-    # same argmax, but the manifest would be describing something that never ran.
     cfg = DQN_CFG()
     cfg.experiment.directory = "runs_inference"
     cfg.experiment.experiment_name = experiment_name
@@ -223,7 +219,7 @@ def build_agent(algorithm, models, env, device, mem_size, experiment_name):
     cfg.learning_starts = mem_size + 1
     cfg.discount_factor = 0.99
     cfg.random_timesteps = mem_size
-    return {"DQN": DQN, "DDQN": DDQN}[algorithm](
+    return DQN(
         models=models,
         memory=memory,
         cfg=cfg,

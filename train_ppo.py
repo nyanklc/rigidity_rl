@@ -21,7 +21,6 @@ from probe import Probe
 TOTAL_TIMESTEPS = int(6e5)
 NR_ENVS = 4
 # Feeds both memory_size and cfg.rollouts, which MUST stay equal.
-# See DESIGN_NOTES.md#ppo-rollout-size
 ROLLOUT_SIZE = 256
 SEED = 0  # recorded in the manifest; training was unseeded before this
 
@@ -32,7 +31,7 @@ GNN_HIDDEN_DIM = 128
 ACTOR_HEAD_HIDDEN_DIM = 256
 
 # Periodic deterministic evaluation during training: is the policy a decision
-# rule or only a sampler? See DESIGN_NOTES.md#training-metrics
+# rule or only a sampler?
 PROBE_INTERVAL = 25_000
 PROBE_EPISODES = 3
 CRITIC_HEAD_HIDDEN_DIM = 256
@@ -51,7 +50,7 @@ cfg.value_preprocessor = RunningStandardScaler
 cfg.value_preprocessor_kwargs = {"size": 1, "device": "cuda"}
 cfg.time_limit_bootstrap = True # this is crucial since we do not want skrl to treat the final state having value=0
 # MUST stay < 1: the reward is potential-based, so gamma=1 makes the advantage
-# identically zero. See DESIGN_NOTES.md#ppo-discount-factor
+# identically zero.
 cfg.discount_factor = 0.99
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

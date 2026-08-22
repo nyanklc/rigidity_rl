@@ -1,5 +1,4 @@
-"""probe.py -- the policy evaluated as a decision rule.
-DESIGN_NOTES.md#training-metrics."""
+"""probe.py -- the policy evaluated as a decision rule."""
 import numpy as np
 import pytest
 import torch

@@ -162,7 +162,6 @@ class Network:
 
     # positions are numpy arrays; the old .x/.y/.z form raised AttributeError.
     # Scale about the centroid, so a uniform scale is the trivial motion of
-    # THEORY.md section 3 and leaves every bearing unchanged.
     def scale_network(self, scale):
         s = np.asarray(scale, dtype=float)
         if s.ndim == 0:
@@ -318,7 +317,6 @@ class Network:
         return features
 
     # N, 3 -- centred on the centroid and scaled to unit RMS radius.
-    # See DESIGN_NOTES.md#pose-normalization
     def get_normalized_position_features(self, eps=1e-9):
         p = self.get_position_features().astype(float)
         p = p - p.mean(axis=0, keepdims=True)
@@ -334,7 +332,7 @@ class Network:
     # The rigidity algebra (flex tensor, projectors) lives in world coordinates,
     # so anything contracted against it must too. get_all_pairs_bearings() returns
     # the body-frame *measurement* instead, which differs by R_i for oriented
-    # domains. See THEORY.md section 9.
+    # domains.
     def get_all_pairs_bearings_world(self):
         n = len(self.agents)
         p = np.array([a.pose.position for a in self.agents])
@@ -343,8 +341,8 @@ class Network:
         np.fill_diagonal(norm[:, :, 0], 1.0)
         return d / norm
 
-    # N, N, 3 -- every ordered pair, whether or not the edge exists.
-    # Candidate-edge geometry; see DESIGN_NOTES.md#all-pairs-bearings
+    # N, N, 3 -- every ordered pair, whether or not the edge exists, so the policy
+    # can see the geometry of an edge it might add.
     def get_all_pairs_bearings(self):
         n = len(self.agents)
         b = np.zeros((n, n, 3))
@@ -394,7 +392,6 @@ class Network:
     # Dividing by (n-1) instead would over-correct: required edges grow linearly in
     # n while the pair count grows quadratically, so that introduces a 1/n trend
     # where there was none. Here a node at the target density reads ~1.
-    # See DESIGN_NOTES.md#aggregation-and-scale
     def get_degree_features_normalized(self, m_req=None):
         if m_req is None:
             m_req = rigidity.required_edge_count(self)

@@ -34,7 +34,7 @@ import torch
 from tqdm import tqdm
 
 from environment import Environment
-from rigidity import rigidity_eigenvalue, is_IBR_explicit
+from rigidity import rigidity_eigenvalue, rigidity_decomposition, greedy_rigid_construction
 import benchmark
 import manifest
 import report
@@ -57,15 +57,18 @@ def score_network(env, need_mbr=None):
     if need_mbr is None:
         need_mbr = env.state_score_type in MBR_DEPENDENT_SCORES
 
+    # rank and lam from one SVD: phi needs lam once margin_kappa > 0
     if need_mbr:
         is_MBR, is_IBR, rank = env.network.is_MBR(rank_K=env.rank_K, brm=brm)
+        lam = rigidity_decomposition(brm, env.rank_K)[2] if is_IBR else 0.0
     elif int(env.network.edges.sum()) == 0:
-        is_MBR, is_IBR, rank = False, False, 0
+        is_MBR, is_IBR, rank, lam = False, False, 0, 0.0
     else:
         is_MBR = False
-        is_IBR, rank = is_IBR_explicit(brm, rank_K=env.rank_K)
+        rank, _, lam = rigidity_decomposition(brm, env.rank_K)
+        is_IBR = rank == env.rank_K
 
-    score = env.compute_state_score(brm, is_IBR, is_MBR, rank)
+    score = env.compute_state_score(brm, is_IBR, is_MBR, rank, lam=lam)
     return score, bool(is_IBR), bool(is_MBR), int(rank), int(env.network.edges.sum())
 
 
@@ -193,35 +196,12 @@ def run_greedy(env, max_steps=200, verbose=True, trace=None, episode=0):
 
 
 def _construct_once(env, order, rng):
-    """One restart. From the empty graph, keep any edge that raises rank(B).
+    """One restart, on env.network. (edges, additions in order, rank reached).
 
-    Returns (edges, additions in order, rank reached). The order is reshuffled between
-    rounds, so a pair rejected early gets another chance once the graph has grown.
-
-    rng is private to this baseline: drawing from the global stream would change the
-    instances every *other* method is scored on. See DESIGN_NOTES.md#constructive-baseline.
+    The loop is `rigidity.greedy_rigid_construction`, shared with the margin
+    reference. `order` is accepted for call compatibility and rebuilt there.
     """
-    n = env.network.n
-    E = np.zeros((n, n), dtype=bool)
-    added, rank, progress = [], 0, True
-
-    while rank < env.rank_K and progress:
-        progress = False
-        for k in rng.permutation(len(order)):
-            i, j = order[k]
-            if E[i, j]:
-                continue
-            E[i, j] = True
-            env.network.edges = E
-            new_rank = np.linalg.matrix_rank(env.network.extended_bearing_rigidity_matrix())
-            if new_rank > rank:          # the edge is independent of the ones already in
-                rank, progress = new_rank, True
-                added.append((i, j))
-            else:
-                E[i, j] = False
-
-    env.network.edges = E
-    return E, added, rank
+    return greedy_rigid_construction(env.network, env.rank_K, rng)
 
 
 def run_constructive(env, rng, restarts=20, verbose=True, trace=None, episode=0):
@@ -230,7 +210,6 @@ def run_constructive(env, rng, restarts=20, verbose=True, trace=None, episode=0)
     The classical algorithm for this problem, and the one to beat: no rigidity theory
     beyond rank(B), no learning. Unlike every other method it starts from the **empty
     graph** rather than the initial one, because it is a construction and not an edit.
-    See DESIGN_NOTES.md#constructive-baseline.
     """
     n = env.network.n
     order = [(i, j) for i in range(n) for j in range(n) if i != j]
