@@ -3,12 +3,13 @@ import numpy as np
 import pytest
 
 from conftest import ALL_DOMAINS, TOL
-from conftest import ALL_DOMAINS
 from rigidity import (extended_bearing_rigidity_matrix as B_of, flex_tensor,
                       flex_constraint_power, trivial_modes, rigidity_decomposition,
                       nullspace, nullspace_in_scaled_units, candidate_gain,
                       candidate_gain_reference, candidate_block,
-                      flex_space, characteristic_length, rigidity_eigenvalue)
+                      flex_space, characteristic_length, rigidity_eigenvalue,
+                      nullspace_and_softest, greedy_rigid_construction,
+                      removal_costs)
 from scenario import random_scenario
 
 
@@ -153,7 +154,7 @@ def test_constraint_power_uses_world_frame_bearings():
     ["R^2"] * 3 + ["SE(3)"],
     ["R^2xS^1"] * 2 + ["R^3xS^1"] * 2,
 ])
-def test_add_gain_is_exactly_the_addition_criterion(domains):
+def test_add_independence_is_exactly_the_addition_criterion(domains):
     """Edge i->j raises rank(B) iff b_ij Z != 0, and by rank(b_ij Z)."""
     n = len(domains)
     rng = np.random.default_rng(0)
@@ -276,3 +277,200 @@ def test_candidate_block_is_the_row_block_the_edge_would_append():
     for k, (i, j) in enumerate(zip(*np.nonzero(E))):
         b = candidate_block(net, i, j)
         assert np.abs(b - B[3 * k:3 * k + 3]).max() < 1e-12
+
+
+# ------------------------------------------------------- the softest mode, ||b_ij v||
+
+
+def rigid_net(n, domain, seed=0):
+    doms = [domain] * n if isinstance(domain, str) else list(domain)
+    net_, _ = random_scenario(n, doms, edge_count=0)
+    rank_K = np.linalg.matrix_rank(B_of(net_.fully_connected()))
+    greedy_rigid_construction(net_, rank_K, np.random.default_rng(seed))
+    return net_, rank_K
+
+
+def add_stiffness_of(net_, rank_K):
+    L = characteristic_length(net_)
+    brm = B_of(net_)
+    rank, _, _ = rigidity_decomposition(brm, rank_K)
+    Z, v, _, _ = nullspace_and_softest(brm, rank)
+    vs = nullspace_in_scaled_units(v, net_.n, L)
+    return candidate_gain(net_, vs, length_scale=L)[0], rank
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+def test_softest_mode_is_the_eigenvector_at_the_rigidity_eigenvalue(domain):
+    net_, rank_K = rigid_net(6, domain)
+    brm = B_of(net_)
+    rank, _, lam = rigidity_decomposition(brm, rank_K)
+    Z, v, _, _ = nullspace_and_softest(brm, rank)
+    assert v.shape[1] == 1
+    assert abs(float((v.T @ brm.T @ brm @ v).ravel()[0]) - lam) < 1e-9 * max(lam, 1e-9)
+    assert np.abs(Z.T @ v).max() < 1e-9
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+def test_add_stiffness_is_alive_where_the_rank_channels_are_dead(domain):
+    """add_independence and add_rank are identically zero once rigid, because ker(B)
+    is then only the trivial motions. add_stiffness is what carries information there."""
+    net_, rank_K = rigid_net(6, domain)
+    brm = B_of(net_)
+    rank, _, _ = rigidity_decomposition(brm, rank_K)
+    assert rank == rank_K
+    Z, _, _, _ = nullspace_and_softest(brm, rank)
+    gain, rk = candidate_gain(net_, nullspace_in_scaled_units(Z, net_.n,
+                                                              characteristic_length(net_)),
+                              length_scale=characteristic_length(net_))
+    assert np.abs(gain).max() < 1e-6 and rk.sum() == 0
+
+    align, _ = add_stiffness_of(net_, rank_K)
+    off = align[~np.eye(net_.n, dtype=bool)]
+    assert (off > 1e-9).mean() > 0.9
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+def test_add_stiffness_ranks_the_true_stiffness_gain_of_adding(domain):
+    """Only the ADD direction is asserted: removal measures ~0.35 and is not a
+    reliable predictor."""
+    import copy
+    corrs = []
+    for seed in range(3):
+        net_, rank_K = rigid_net(6, domain, seed=seed)
+        align, rank = add_stiffness_of(net_, rank_K)
+        if rank != rank_K:
+            continue
+        _, _, lam = rigidity_decomposition(B_of(net_), rank_K)
+        pred, true = [], []
+        for i in range(net_.n):
+            for j in range(net_.n):
+                if i == j or net_.edges[i, j]:
+                    continue
+                w = copy.deepcopy(net_)
+                w.edges = net_.edges.copy()
+                w.edges[i, j] = True
+                _, _, l2 = rigidity_decomposition(B_of(w), rank_K)
+                pred.append(align[i, j] ** 2)
+                true.append(max(l2 - lam, 1e-18))
+        pred, true = np.array(pred), np.array(true)
+        ok = (pred > 1e-14) & (true > 1e-14)
+        if ok.sum() > 5:
+            corrs.append(np.corrcoef(np.log10(pred[ok]), np.log10(true[ok]))[0, 1])
+    assert corrs, f"no usable instances in {domain}"
+    assert np.mean(corrs) > 0.8, f"{domain}: {np.mean(corrs):.3f}"
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+@pytest.mark.parametrize("kind", ["translate", "rotate"])
+def test_add_stiffness_is_invariant_to_translation_and_rotation(domain, kind):
+    import copy
+    net_, rank_K = rigid_net(6, domain)
+    base, _ = add_stiffness_of(net_, rank_K)
+    w = copy.deepcopy(net_)
+    planar = domain in ("R^2", "R^2xS^1")
+    if kind == "translate":
+        w.translate_network([3.1, -2.4, 0.0 if planar else 1.7])
+    else:
+        w.rotate_network([0, 0, 1] if planar else [0.3, 0.5, 0.81], 0.9)
+    assert np.abs(add_stiffness_of(w, rank_K)[0] - base).max() < 1e-9
+
+
+# ----------------------------------------------------- what removing an edge costs
+
+
+def redundant_net(n, domain, seed=0, extra=4):
+    net_, rank_K = rigid_net(n, domain, seed=seed)
+    rng = np.random.default_rng(seed)
+    for _ in range(extra):
+        i, j = rng.integers(0, n, 2)
+        if i != j:
+            net_.edges[i, j] = True
+    return net_, rank_K
+
+
+def removal_of(net_, rank_K):
+    brm = B_of(net_)
+    rank, _, lam = rigidity_decomposition(brm, rank_K)
+    _, _, w, V = nullspace_and_softest(brm, rank)
+    return removal_costs(brm, net_, rank_K, lam=lam, w=w, V=V, c_max=1), rank, lam
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+def test_B_row_block_is_the_edges_own_block(domain):
+    """Both removal channels slice B rather than rebuilding, so the block layout
+    (one 3-row block per edge, in np.nonzero order) has to hold."""
+    net_, _ = redundant_net(6, domain)
+    brm = B_of(net_)
+    for k, (i, j) in enumerate(zip(*np.nonzero(net_.edges))):
+        assert np.abs(brm[3 * k:3 * k + 3, :] - candidate_block(net_, i, j, 1.0)).max() == 0.0
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+def test_remove_rank_is_exactly_the_rank_lost(domain):
+    import copy
+    net_, rank_K = redundant_net(6, domain)
+    (loss, _), rank, _ = removal_of(net_, rank_K)
+    for i, j in zip(*np.nonzero(net_.edges)):
+        w = copy.deepcopy(net_)
+        w.edges = net_.edges.copy()
+        w.edges[i, j] = False
+        r2, _, _ = rigidity_decomposition(B_of(w), rank_K)
+        assert abs(loss[i, j] - (rank - r2)) < 1e-9, f"{domain} edge {i}->{j}"
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+def test_remove_stiffness_is_exactly_the_stiffness_lost(domain):
+    import copy
+    net_, rank_K = redundant_net(6, domain)
+    (loss, st), rank, lam = removal_of(net_, rank_K)
+    if rank != rank_K or lam <= 0:
+        pytest.skip(f"{domain}: not rigid")
+    for i, j in zip(*np.nonzero(net_.edges)):
+        w = copy.deepcopy(net_)
+        w.edges = net_.edges.copy()
+        w.edges[i, j] = False
+        r2, _, l2 = rigidity_decomposition(B_of(w), rank_K)
+        want = 1.0 if r2 != rank_K else max(1.0 - l2 / lam, 0.0)
+        assert abs(st[i, j] - want) < 1e-7, f"{domain} edge {i}->{j}"
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+def test_removal_channels_are_supported_only_on_existing_edges(domain):
+    net_, rank_K = redundant_net(6, domain)
+    (loss, st), _, _ = removal_of(net_, rank_K)
+    off = ~net_.edges.astype(bool)
+    assert np.abs(loss[off]).max() == 0.0 and np.abs(st[off]).max() == 0.0
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+@pytest.mark.parametrize("kind", ["translate", "rotate", "scale"])
+def test_remove_rank_is_similarity_invariant(domain, kind):
+    """Leverage is invariant to the column scaling by construction, so unlike
+    add_stiffness this is exact under scaling too."""
+    import copy
+    net_, rank_K = redundant_net(6, domain)
+    base = removal_of(net_, rank_K)[0][0]
+    w = copy.deepcopy(net_)
+    planar = domain in ("R^2", "R^2xS^1")
+    if kind == "translate":
+        w.translate_network([3.1, -2.4, 0.0 if planar else 1.7])
+    elif kind == "rotate":
+        w.rotate_network([0, 0, 1] if planar else [0.3, 0.5, 0.81], 0.9)
+    else:
+        w.scale_network(2.7)
+    assert np.abs(removal_of(w, rank_K)[0][0] - base).max() < 1e-9
+
+
+def test_remove_rank_works_on_a_flexible_graph_too():
+    """The only rigidity channel informative in both regimes: add_stiffness is zero
+    while flexible, add_independence zero once rigid, this one is neither."""
+    net_, rank_K = rigid_net(6, "R^3")
+    # drop edges until rigidity actually breaks: a greedy build can leave the
+    # first-added edge redundant
+    for i, j in list(zip(*np.nonzero(net_.edges))):
+        net_.edges[i, j] = False
+        if rigidity_decomposition(B_of(net_), rank_K)[0] < rank_K:
+            break
+    (loss, _), rank, lam = removal_of(net_, rank_K)
+    assert rank < rank_K and lam == 0.0
+    assert loss.max() > 0

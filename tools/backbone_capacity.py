@@ -60,7 +60,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--node-feat-dim", type=int, default=11,
-                   help="11 is `mixed`: 5 domain + 2 degree + 3 rigidity_global + 1 flex_mag")
+                   help="11 is `mixed`: 5 domain + 2 degree + 3 rigidity_global + 1 node_freedom")
     p.add_argument("--edge-feat-dim", type=int, default=8)
     p.add_argument("--hidden", type=int, default=128, help="GINE's width, the reference")
     p.add_argument("--layers", type=int, default=3)

@@ -30,8 +30,10 @@ class PPO_ActorModel_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(CategoricalMix
         )  # output dim = gnn_hidden_dim
 
         # input cat[node features, selected node's features(zeros if no selected)]
+        # e_ij, not just adj_ij: the pair scalars would otherwise reach the head
+        # only through mean aggregation over n-1 pairs
         self.head = nn.Sequential(
-            nn.Linear(2 * gnn_hidden_dim + 1, head_hidden_dim),
+            nn.Linear(2 * gnn_hidden_dim + edge_feat_dim, head_hidden_dim),
             nn.LeakyReLU(),
             nn.Linear(head_hidden_dim, 2),
         )
@@ -61,8 +63,7 @@ class PPO_ActorModel_Equivariant_AddRemoveEdgeDiscreteNoSelfLoops(CategoricalMix
                      adj_mat=adj)
         h_i = h.unsqueeze(2).expand(-1, -1, n, -1)
         h_j = h.unsqueeze(1).expand(-1, n, -1, -1)
-        exists_flag = adj.unsqueeze(-1)
-        edge_embeddings = torch.cat([h_i, h_j, exists_flag], dim=-1) # (b, n, n, edge_feat)
+        edge_embeddings = torch.cat([h_i, h_j, edge_features], dim=-1)  # (b, n, n, .)
 
         edge_logits = self.head(edge_embeddings)  # (b, n, n, 2)
 

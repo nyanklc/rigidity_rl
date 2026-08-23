@@ -57,7 +57,7 @@ def score_network(env, need_mbr=None):
     if need_mbr is None:
         need_mbr = env.state_score_type in MBR_DEPENDENT_SCORES
 
-    # rank and lam from one SVD: phi needs lam once margin_kappa > 0
+    # rank and lam from one SVD: phi needs lam once stiffness_kappa > 0
     if need_mbr:
         is_MBR, is_IBR, rank = env.network.is_MBR(rank_K=env.rank_K, brm=brm)
         lam = rigidity_decomposition(brm, env.rank_K)[2] if is_IBR else 0.0
@@ -198,7 +198,7 @@ def run_greedy(env, max_steps=200, verbose=True, trace=None, episode=0):
 def _construct_once(env, order, rng):
     """One restart, on env.network. (edges, additions in order, rank reached).
 
-    The loop is `rigidity.greedy_rigid_construction`, shared with the margin
+    The loop is `rigidity.greedy_rigid_construction`, shared with the stiffness
     reference. `order` is accepted for call compatibility and rebuilt there.
     """
     return greedy_rigid_construction(env.network, env.rank_K, rng)

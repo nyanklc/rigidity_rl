@@ -62,37 +62,75 @@ Measured (greedy baseline, same 100/25 weights):
 | n=8 / R^3 | 20 | 2 | 10 | 73.00 | 270 |
 | n=16 / R^3 | 44 | 2 | 22 | - | 590 |
 
-### margin-in-phi
+### softest-mode-features
 
-`margin_kappa` (env config, default `0.0` = off) adds the rigidity margin to
-`WeightedNormalized` as `kappa * one_edge * q(lam)`, with `q` a sigmoid of `log10(lam/lam_ref)`.
+`rigidity_stiffness` (env config, default `False`) adds two channels: `add_stiffness[i,j] = ||b_ij v||`
+over all ordered pairs and `node_slack[i]` = the position and attitude norms of `v_i`, where `v` is
+the mode at the rigidity eigenvalue. Derivation and every measurement are in `THEORY.md` §16. The
+implementation facts:
+
+- **No new algebra.** `candidate_gain(network, Z, L)` already returns `||b_ij Z||` for an arbitrary
+  `(6n, k)` matrix, so `add_stiffness` is that call with `k = 1`. `nullspace_and_softest` returns the
+  kernel and `v` from **one** `eigh(B^T B)`: `v` is the column immediately after the kernel, since
+  the eigenvalues come back ascending. Cost at n=10 is 9.45 -> 9.90 ms per step.
+- **Both are gated on `is_IBR` and written as zeros otherwise.** `v` is meaningless on a flexible
+  framework, and zero is the honest encoding: stiffness does not exist there. This makes the two
+  feature sets exactly complementary, which is the point -- `add_independence`/`add_rank`/`node_freedom` carry
+  information only while flexible, `add_stiffness`/`node_slack` only once rigid.
+- **Normalised per channel by its own mean**, like `node_freedom`: which pair is soft, not how soft in
+  absolute terms, which is what transfers across n and domain.
+
+### removal-channels
+
+`rigidity_removal` (env config, default `False`) adds `remove_rank` and `remove_stiffness`: what the
+rank and the stiffness would lose if an existing edge were deleted. Both exact, derivation in
+`THEORY.md` §17. Implementation facts:
+
+- **No rebuilding.** `extended_bearing_rigidity_matrix` writes one 3-row block per directed edge in
+  `np.nonzero(edges)` order, so an existing edge's block is the slice `brmat[3k:3k+3]`. A test pins
+  that layout, since both channels rest on it and nothing else did.
+- **No extra decomposition.** `nullspace_and_softest` now returns `(w, V)` alongside the kernel and
+  the softest mode, so `(B^T B)^+` for the leverage comes from the eigh already performed.
+- **Two skips carry the cost.** The `eigvalsh` of the downdate is not run when the rank drops (the
+  answer is 1 by definition) nor when the framework is flexible (there is no stiffness to lose).
+  Pinned to one BLAS thread, 3.46 -> 5.76 ms per step at n=10 with ~35 edges, so about +66%, growing
+  as `m * (6n)^3`. Unpinned these numbers are BLAS contention rather than the algorithm, the same
+  trap [null-space-features](#null-space-features) records.
+- **Own flag rather than folded into `rigidity_edge`.** They are exact one-step oracles like
+  `add_rank`, but keeping them separable is what lets the ablation price add-side against
+  remove-side information, and it keeps every existing config byte-identical.
+
+### stiffness-in-phi
+
+`stiffness_kappa` (env config, default `0.0` = off) adds the stiffness to
+`WeightedNormalized` as `kappa * one_edge * q(lam)`, with `q` a sigmoid of `log10(lam/stiffness_ref)`.
 Derivation, the two obstacles to using `lam` raw, and every measurement are in `THEORY.md` §15.
 What matters here is the plumbing:
 
 - **`lam` costs nothing.** `step()` already gets it from the single `rigidity_decomposition` it
   performs for the rank, and `begin_episode()` from its own. `compute_state_score` takes it as an
   optional `lam=None`, so the older call signature still works and `kappa = 0` is byte-identical.
-- **`lam_ref` is an episode constant**, built in `compute_episode_constants` from
-  `rigidity.reference_margin`. All of the cost is here: reset goes 2.7 -> 46.8 ms at n=8/`R^3`
-  (`margin_ref_samples=3`), while **per-step cost is unchanged**. Over a 50-step episode that is
+- **`stiffness_ref` is an episode constant**, built in `compute_episode_constants` from
+  `rigidity.reference_stiffness`. All of the cost is here: reset goes 2.7 -> 46.8 ms at n=8/`R^3`
+  (`stiffness_ref_samples=3`), while **per-step cost is unchanged**. Over a 50-step episode that is
   +55% wall clock at n=8/`R^3`, +27% on `mixed`, and it is not currently a blocker anywhere. If it
   becomes one, the addition oracle (`candidate_gain`) can pick rank-raising edges from one
   nullspace instead of `O(n^2)` rank computations per round - deliberately not done, because it
   would make the reference construction differ from the `constructive` baseline's.
-- **`self.margin_rng` is private and must stay private.** `lam_ref`'s construction order draws from
+- **`self.stiffness_rng` is private and must stay private.** `stiffness_ref`'s construction order draws from
   it, never from `np.random` - that is the stream instances are drawn from, and using it would move
   the networks every method is scored on. This is the exact regression recorded for `constructive`
-  once, so `test_enabling_the_margin_does_not_move_the_instance_stream` pins it.
+  once, so `test_enabling_stiffness_does_not_move_the_instance_stream` pins it.
 - **One construction, shared.** `rigidity.greedy_rigid_construction` is the loop;
   `baselines._construct_once` is now a thin wrapper on it. A reference construction that drifted
-  from the baseline would silently change what `lam_ref` means. Verified byte-identical to the
+  from the baseline would silently change what `stiffness_ref` means. Verified byte-identical to the
   previous inline loop over 4 seeds x 3 configurations, and `bench_n8_R3` reproduces its
   `initial`/`greedy`/`constructive` rows exactly.
 - **`baselines.score_network` now takes rank *and* `lam` from one `rigidity_decomposition`** instead
   of `matrix_rank` via `is_IBR_explicit`. Roughly cost-neutral, since `matrix_rank` already performs
-  an SVD, and necessary: without it every `greedy` candidate would be scored with the margin term at
+  an SVD, and necessary: without it every `greedy` candidate would be scored with the stiffness term at
   zero, which at `kappa > 0` is not the configured phi. The side effect is that `greedy` becomes
-  margin-aware for free.
+  stiffness-aware for free.
 
 ### episode-constants
 
@@ -416,7 +454,7 @@ is the result. Three graded flags, so several information levels can be compared
 | flag | node channels | edge channels |
 |---|---|---|
 | `rigidity_global` | `(rank_K-rank)/rank_K`, `m/m_req`, `is_IBR` | - |
-| `rigidity_flex` | `flex_mag` | `add_gain` |
+| `rigidity_flex` | `node_freedom` | `add_independence` |
 | `rigidity_edge` | - | `c_k / c_max`, `add_rank` |
 
 **`c_k` is nearly useless on its own, and that is why the flags are graded.** Per-edge block rank is
@@ -430,12 +468,12 @@ silently pads the feature vector in the runs where it means nothing.
 `rigidity_decomposition(B, rank_K)` returns `(rank, singular values, lam)` from **one** thin SVD.
 `step()` used to do three decompositions of the same matrix: `matrix_rank(B)`, one rank per edge
 inside `is_MBR`, and an `eigvalsh(B^T B)` for the rigidity eigenvalue. The rank now flows into
-`is_MBR` as `rank_brm`, and the margin is `s[rank_K - 1]**2` off the same singular values, which is
-the rigidity eigenvalue by definition (`THEORY.md` §4). This is what makes the margin term affordable
+`is_MBR` as `rank_brm`, and stiffness is `s[rank_K - 1]**2` off the same singular values, which is
+the rigidity eigenvalue by definition (`THEORY.md` §4). This is what makes the stiffness term affordable
 rather than a second full decomposition per step.
 
 `lam` is 0 unless the framework is rigid, deliberately: below `rank_K` the `rank_K`-th singular
-value is a numerical zero and reporting it as a margin would be meaningless.
+value is a numerical zero and reporting it as a stiffness would be meaningless.
 
 The remaining `rigidity_eigenvalue()` calls in `compute_state_score` are the score types that
 actually read it. `WeightedNormalized` has `w_eig = 0` and does not reach them, so the shared value
@@ -445,19 +483,19 @@ covers every path currently trained.
 
 Both channels come from `ker(B)` of the **whole** matrix, positions and attitudes together.
 
-- `add_gain[i,j] = ||b_ij Z||_F / ||b_ij||_F` - the fraction of edge `i->j`'s row block that lies
+- `add_independence[i,j] = ||b_ij Z||_F / ||b_ij||_F` - the fraction of edge `i->j`'s row block that lies
   outside the current row space. It is zero exactly on the pairs that would add no rank, which is
   not an approximation: rank gain **is** `rank(b_ij Z)` (`THEORY.md` §13.1).
 - `add_rank[i,j] = rank(b_ij Z) / c_max` - the same thing as an integer. It rides on `rigidity_edge`
   with `c_k`, since both are per-edge rank quantities.
-- `flex_mag[i]` - how free node `i` is, from `flex_space(Z, Z_K)`, the non-trivial part of the null
+- `node_freedom[i]` - how free node `i` is, from `flex_space(Z, Z_K)`, the non-trivial part of the null
   space. `ker(B_K)` *is* the trivial variation set (Michieletto Theorem 1), so nothing has to be
   enumerated by hand, in any domain or mix.
 
 **This replaced a position-only construction, and the replacement is not cosmetic.** The previous
 `flex_align` used a projector built from `B_p = B[:, :3n]` alone and measured *destroyed flex*
 rather than *added rank*. Blind to the attitude columns, it was at chance in the oriented domains:
-AUC 0.634 in `SE(3)`, 0.678 in `R^2xS^1`, against 1.000 with a clean split for `add_gain` in all
+AUC 0.634 in `SE(3)`, 0.678 in `R^2xS^1`, against 1.000 with a clean split for `add_independence` in all
 five domains and three mixes. `flex_tensor` / `flex_constraint_power` are kept and tested as the
 reference for `THEORY.md` §10, but the environment no longer calls them.
 
@@ -480,7 +518,7 @@ Three implementation details that each cost a debugging cycle:
    `nullspace_in_scaled_units`), the same normalisation `coord_features` uses. Related and separate:
    `P_i = v_i v_i^T` is in world coordinates, so `rotate_network` has to rotate
    `agent.rotation_axis` too - it did not, which broke `R^3xS^1` rotation invariance.
-3. **The rank threshold has to be measured.** `add_rank` cuts at `add_gain > 1e-6`, which sits in
+3. **The rank threshold has to be measured.** `add_rank` cuts at `add_independence > 1e-6`, which sits in
    the middle of an eight-order-of-magnitude gap (`THEORY.md` §13.3). The first cut was at `1e-18`
    relative, below the noise floor of a Gram matrix in double precision, so the channel flipped by a
    whole rank unit when the geometry was translated or scaled.
@@ -518,7 +556,7 @@ Same fixed graph, single-threaded, ms/step. n=8: `{}` 2.13, `{global}` 2.59, `{g
 Most of the cost is `{global}`, which is `is_IBR` and `m/m_req`; the null-space channels on top of
 it are nearly free, because `rigidity_decomposition` and `nullspace` run for the state score
 anyway. `rigidity_edge` measures at or below `rigidity_flex` here - `add_rank` comes out of the same
-Gram matrix `add_gain` already formed, so the marginal cost is within noise.
+Gram matrix `add_independence` already formed, so the marginal cost is within noise.
 
 ### all-pairs-bearings
 
@@ -734,6 +772,22 @@ cover every action space that has no selection stage without enumerating them.
 
 ## policy/gnn_backbone.py
 
+### pair-head
+
+The `AddRemoveEdgeDiscreteNoSelfLoops` heads score a pair from
+`[h_i, h_j, e_ij]`, not `[h_i, h_j, adj_ij]`. Pair scalars would otherwise reach the head only
+through three rounds of mean aggregation over `n-1` pairs, while being ~6.6x concentrated on a few
+pairs. The measured precedent: a held-out linear probe for "does adding i->j raise the rank" scores
+1.000 from `e_ij` alone and 0.955 from `[h_i, h_j]`, so the backbone does carry most of it but
+degrades it, and a continuous channel like `add_stiffness` has more to lose than a near-binary one.
+
+`edge_exists` is inside `e_ij`, so the separate `adj_ij` scalar was redundant. The `adj` tensor
+itself stays, because what it is really for is the action mask. Head width follows the
+`edge_feat_dim` constructor argument, so widening the observation widens the head.
+
+`SelectNodesSequentially` is deliberately unchanged: its pair is (selected, candidate) rather than
+(i, j), and it is not the action space in use.
+
 ### action-masking
 
 Invalid actions are masked in the model, not the environment, by writing `MASK_VALUE` into their
@@ -796,7 +850,7 @@ exactly zero - so the outgoing-edge direction below is preserved.
 `EGNN` preserves the feature dimension: `dim` in equals `dim` out. `GNNBackboneEquivariant` was
 constructed with `dim=node_feat_dim`, so the node representation it handed the action head was as
 wide as the raw observation - **11 on `mixed`** (5 domain + 2 degree + 3 rigidity_global + 1
-flex_mag) - while `GNNBackboneGINE` output `gnn_hidden_dim = 128`. Confirmed in a checkpoint:
+node_freedom) - while `GNNBackboneGINE` output `gnn_hidden_dim = 128`. Confirmed in a checkpoint:
 `gnn.conv1.edge_mlp.0.weight` had shape `(62, 31) = (2*m_dim, 2*11+1+8)`. Every EGNN-vs-GINE
 comparison run before the embedder was added was an 11-dimensional model against a 128-dimensional
 one, not a comparison of message-passing schemes.
@@ -926,7 +980,7 @@ edges - a systematically harder and differently-distributed problem than at `n=8
 
 **What this does not fix.** Scale invariance is necessary, not sufficient. The ablation that
 motivated this work - perturbing one channel at a time and reading the change in phi - showed
-degree at **+21.00** against bearings **+0.25**, `flex_mag` **-0.25** and `flex_align` **+0.00**.
+degree at **+21.00** against bearings **+0.25**, `node_freedom` **-0.25** and `flex_align` **+0.00**.
 The policy was making its decisions almost entirely from a node-degree statistic and ignoring both
 the geometry and the rigidity features. Fixing the scaling removes the excuse for that shortcut; it
 does not by itself force the model to use the geometry. That is what the retraining and the mixed
@@ -967,6 +1021,35 @@ ships the notes card that says what it is showing.
 
 Each panel is titled with *what the quantity is*, with the reading direction on a second line -
 "edges used" told a reader nothing about why they should care.
+
+### ablation-protocol
+
+Three things the outcome columns depend on, all of which were silently wrong until 2026-08-23 and
+all of which move the numbers more than most channels do.
+
+**Stop at the reference's convergence, and give every variant that budget.** With `skip_enabled:
+False` the policy must act every step, so an unperturbed argmax policy reaches its answer and then
+runs a cycle: measured 20/20 episodes enter a repeated state, median step 14 of 78. Since the
+unperturbed policy is a function of the edge set, a repeated state *is* an infinite cycle, so
+stopping there costs the reference nothing. What matters is that the perturbed rollouts are then
+capped at the same number of steps. Without the cap, ablating a channel buys extra exploration:
+before the fix every live channel showed a *negative* cost, because ~3 of 20 references were stuck
+short of minimal and any perturbation rescued them.
+
+**phi must be a function of the state.** `stiffness_ref` is built from a seeded construction, but its
+rng used to advance on every `reset()`, so repeated restores of one instance drew references two
+decades apart and every variant was scored under a different phi. `compute_episode_constants`
+reseeds per episode now, so the same poses always give the same reference.
+
+**`--live-env` exists because the archive is right for the policy and wrong for the measurement.**
+`load_run` replays the environment a checkpoint was trained against, which is what keeps an old
+checkpoint runnable. It also keeps environment-side *measurement* fixes out: the reseed above did
+not reach the ablation until the run was repeated with `--live-env`. The header states which was
+used.
+
+`coord_features` is the built-in null control: GINE never receives coordinates, so its cost must be
+exactly 0.00 in every mode. It reads 0.00 now and read +0.29 before these fixes, which is how the
+residual bias was found.
 
 ## scope
 

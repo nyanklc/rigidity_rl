@@ -26,11 +26,15 @@ DIM = {"R^2": 2, "R^3": 3, "R^2xS^1": 3, "R^3xS^1": 4, "SE(3)": 6}
 NODE_BLOCKS = [("domain", 5, None), ("degree", 2, None),
                ("closeness", 1, "graph_features"), ("eigenvector", 1, "graph_features"),
                ("node_between", 1, "graph_features"),
-               ("rigidity_glob", 3, "rigidity_global"), ("flex_mag", 1, "rigidity_flex")]
+               ("rigidity_glob", 3, "rigidity_global"), ("node_freedom", 1, "rigidity_flex"),
+               ("node_slack", 2, "rigidity_stiffness")]
 EDGE_BLOCKS = [("bearings", 3, None), ("edge_exists", 1, None),
                ("edge_between", 1, "graph_features"), ("reciprocity", 1, None),
-               ("common_nbrs", 1, None), ("add_gain", 1, "rigidity_flex"),
-               ("block_rank", 1, "rigidity_edge"), ("add_rank", 1, "rigidity_edge")]
+               ("common_nbrs", 1, None), ("add_independence", 1, "rigidity_flex"),
+               ("pair_max_rank", 1, "rigidity_edge"), ("add_rank", 1, "rigidity_edge"),
+               ("add_stiffness", 1, "rigidity_stiffness"),
+               ("remove_rank", 1, "rigidity_removal"),
+               ("remove_stiffness", 1, "rigidity_removal")]
 
 
 def blocks(spec, cfg, width, label):

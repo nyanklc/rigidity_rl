@@ -8,18 +8,31 @@ plan, and can be deleted without losing anything.
 
 ## Now
 
-**Train against the margin.** `margin_kappa` is implemented and off by default. The measurement that
-matters is a κ sweep - {0, 0.9, 2, 4} - on `mixed` and on n=8/`R^3`, reported as a front of edge
-count against margin rather than as a single number, since there is no principled κ.
-`tools/kappa_sweep.py` already does this for `greedy` without training, and gives the shape to
-expect: margin ×2.0 at κ=0.9 and ×12.4 at κ=2, at a flat edge count.
+**Train with the stiffness and removal observations on.** `stiffness_kappa = 2` alone was measured to change nothing:
+the policy matched greedy on edges and minimality but carried *worse* stiffness (7.0e-04 against
+3.0e-03), landing at q = 0.47, i.e. exactly the reference. The reason was that every rigidity
+channel is identically zero once the graph is rigid, which is the only regime where the stiffness
+exists. `rigidity_stiffness = True` adds `add_stiffness` / `node_slack`, which are nonzero exactly there,
+`rigidity_removal = True` adds `remove_rank` / `remove_stiffness` so the policy can finally tell the
+70% of edges that are safe to prune from the 30% that are load-bearing, and the `AddRemoveEdge` heads
+now take `e_ij` so none of it is destroyed by mean aggregation. **Configs need regenerating**: the
+`margin_*` keys are now `stiffness_*` and `load()` raises on the old ones.
+Retrain at `stiffness_kappa = 2` with the flag on and compare against the current `margin_dqn_gine`.
+Two things decide it: the stiffness column should stop sitting below greedy's, and `ablation.py` in at
+least two modes should charge for `add_stiffness` and `remove_rank`. If it costs nothing even routed straight to the
+head, that is a real negative result about this formulation, not a bug to chase.
 
-The test that decides whether the geometric half of the thesis stands: **re-run `ablation.py` in at
-least two modes and check the geometric channels now cost something.** Today, destroying `bearings`,
-`coord_features`, `add_gain` and `flex_mag` costs a trained policy nothing, which is correct under a
-rank-only objective (`THEORY.md` §14.0). If it is still nothing at κ > 0, the geometric machinery -
-the EGNN, the all-pairs bearings, the equivariance - is not earning its place and should be reported
-as such.
+**Then the bearings arm.** `include_candidate_bearings = False` is already a config switch, so
+stiffness-informed with and without raw bearings needs no code. If bearings cost nothing on top of
+`add_stiffness`, that prices raw geometry against derived invariants, and the no-bearings arm is
+rotation-invariant by construction, which removes the `R^d` rotation-dependence rather than
+augmenting around it.
+
+**Sweep kappa.** `stiffness_kappa` is implemented and off by default. The measurement that
+matters is a κ sweep - {0, 0.9, 2, 4} - on `mixed` and on n=8/`R^3`, reported as a front of edge
+count against stiffness rather than as a single number, since there is no principled κ.
+`tools/kappa_sweep.py` already does this for `greedy` without training, and gives the shape to
+expect: stiffness ×2.0 at κ=0.9 and ×12.4 at κ=2, at a flat edge count.
 
 **One control run is owed:** the EGNN input embedder, which makes both backbones 128 wide. Report
 that comparison as *equal width, unequal capacity* - the EGNN is 10.9x GINE's parameter count at
@@ -48,9 +61,9 @@ repair already closed part of the gap this was scoped to close, so re-probe befo
 
 **Evaluation protocol.** Three seeds minimum and paired statistics - a single seed at n=8/`R^3` was
 measured to span at least 35 points of minimality. Report final state as the headline with
-best-visited as a second column. Add a spectral margin baseline, since greedy is a weak opponent on
+best-visited as a second column. Add a spectral stiffness baseline, since greedy is a weak opponent on
 a non-submodular objective (`THEORY.md` §14.4), and extend brute force at n ≤ 5 to return the
-margin-optimal minimal graph.
+stiffness-optimal minimal graph.
 
 ## Later
 
@@ -58,7 +71,7 @@ margin-optimal minimal graph.
   `Δλ ≈ ‖b_ij v‖²` for adding `(i,j)`, and the same number is what removing an existing edge costs.
   Measured log-log correlation 0.87-0.96 across domains, with the predictor's top pick in the true
   top-3 only 30-50% of the time - a strong ranking signal, not an oracle. Behind its own flag, and
-  deliberately *not* added at the same time as the margin reward, or the ablation above cannot
+  deliberately *not* added at the same time as the stiffness reward, or the ablation above cannot
   distinguish "the reward made geometry matter" from "we handed it the answer".
 - **Multi-n training.** Pad every sub-env to `n_max` and thread a boolean node mask through both
   backbones (`EGNN` already takes a `mask` the backbone never passes; GINE's complete-digraph builder
@@ -72,4 +85,4 @@ margin-optimal minimal graph.
 Deferred by decision, recorded so they are not rediscovered as ideas: UCT / model-based planning,
 possibly as a baseline once everything else is done; sensing range, degree budgets and other
 geometric limits; a genuinely directional architecture (GVP, e3nn, vector neurons), which is
-thesis-scale and should not start before the margin objective shows the geometry matters at all.
+thesis-scale and should not start before the stiffness objective shows the geometry matters at all.

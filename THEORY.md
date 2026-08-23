@@ -366,7 +366,7 @@ from "where it is free" to "where it is nearly free".
 ### Feature 1 - how free a node is
 
 ```
-flex_mag_i = sqrt( tr Π[i,i] ) · sqrt(n)                                             (9.4)
+node_freedom_i = sqrt( tr Π[i,i] ) · sqrt(n)                                             (9.4)
 ```
 
 `tr Π[i,i] = Σ_c ||v_{c,i}||²` is node `i`'s share of the flex space. Summing over nodes gives
@@ -422,10 +422,10 @@ Take nodes 0-6 fully connected (rigid) and node 7 held by a single bearing `7 ->
 | check | result |
 |---|---|
 | `Σ_i tr Π[i,i]` vs `dim F` from (9.2) | `1.0000` vs `1` |
-| `flex_mag` argmax | node 7 (2.501, others 0.27-0.72) |
+| `node_freedom` argmax | node 7 (2.501, others 0.27-0.72) |
 | mean `A[i,j]` over candidates that **do** raise rank | **2.166** |
 | mean `A[i,j]` over candidates that **do not** | **0.0000** |
-| rotation invariance, `flex_mag` / `A` | 1.1e-15 / 4.2e-08 |
+| rotation invariance, `node_freedom` / `A` | 1.1e-15 / 4.2e-08 |
 
 The separation is exact: every candidate edge that raises the rank has `A > 0`, and the one that
 does not has `A = 0` identically. That is (9.5) behaving as derived - a flex is destroyed iff the
@@ -439,7 +439,7 @@ relative motion has a component perpendicular to the new bearing.
    metric only.
 2. **`is_MBR` can false-negative on heterogeneous networks** (§6), so a genuinely minimal graph may
    never be recognised and a `MinimallyRigid` episode may never terminate.
-3. **`flex_mag`'s scale changes meaning at the rigid boundary.** For `dim F ≥ 1`,
+3. **`node_freedom`'s scale changes meaning at the rigid boundary.** For `dim F ≥ 1`,
    `Σ_i tr Π[i,i] = dim F`; in the rigid fallback the single unit eigenvector gives `Σ = 1`. The
    feature is therefore comparable *within* a regime but jumps by a factor of `dim F` when the
    framework becomes rigid. Normalizing `Π` by `dim F` would fix it; not done, so that the existing
@@ -618,17 +618,17 @@ nothing about what `B` is - only that it is a matrix.
 ### 13.2 The two features
 
 ```
-add_gain[i,j] = ||b_ij Z||_F / ||b_ij||_F  ∈ [0, 1]
+add_independence[i,j] = ||b_ij Z||_F / ||b_ij||_F  ∈ [0, 1]
 add_rank[i,j] = rank(b_ij Z) / c_max       ∈ [0, 1]
 ```
 
 over **all ordered pairs**, not just the absent ones. `add_rank` is the answer to the question;
-`add_gain` is its continuous relaxation, and carries strictly more information - it distinguishes
+`add_independence` is its continuous relaxation, and carries strictly more information - it distinguishes
 an edge that barely escapes the row space from one that is fully outside it, which is what a value
 function needs in order to prefer one of two rank-1 edges.
 
 The normalisation is per pair, by that pair's own `||b_ij||`. Normalising against the spread over
-pairs (as the `flex_mag` channel does) is wrong here: on a rigid framework `ker(B)` is exactly the
+pairs (as the `node_freedom` channel does) is wrong here: on a rigid framework `ker(B)` is exactly the
 trivial space, every raw gain is at machine zero, and dividing those by their own RMS turns
 rounding noise into an O(1) feature.
 
@@ -648,10 +648,10 @@ rank, at a cost that does not grow with `dim ker(B)` - a batched SVD of the (3, 
 
 ### 13.3 The rank threshold
 
-`add_rank` counts eigenvalues of `G` above `1e-12 · ||b_ij||²`, i.e. `add_gain > 1e-6`. That cut is
+`add_rank` counts eigenvalues of `G` above `1e-12 · ||b_ij||²`, i.e. `add_independence > 1e-6`. That cut is
 measured, not guessed. Over 1,501 candidate pairs across all five domains and three mixes:
 
-| | `add_gain` |
+| | `add_independence` |
 |---|---|
 | pairs that add no rank | max `1.59e-10` |
 | pairs that add rank | min `1.43e-02` |
@@ -680,10 +680,10 @@ which broke `R^3xS^1` rotation invariance for reasons that had nothing to do wit
 
 ### 13.5 Validation
 
-`add_gain` against ground truth (rebuild `B` with the edge added, recompute the rank), 6-node
+`add_independence` against ground truth (rebuild `B` with the edge added, recompute the rank), 6-node
 frameworks at 40% density:
 
-| domain | pairs | AUC `add_gain` | AUC `flex_align` (§9) | clean split | exact rank |
+| domain | pairs | AUC `add_independence` | AUC `flex_align` (§9) | clean split | exact rank |
 |---|---|---|---|---|---|
 | `R^2` | 111 | **1.000** | 1.000 | yes | 111/111 |
 | `R^3` | 155 | **1.000** | 1.000 | yes | 155/155 |
@@ -714,7 +714,7 @@ Invariance, worst channel over 6 instances each (`tests/test_invariance.py`):
 | mixed | 2.0e-13 | 3.6e-13 | 8.7e-01 (bearings, §11.3) |
 
 The rotation column is the known `R^d` global-frame bearing artefact of §11.3 and is not these
-features; `add_gain` and `add_rank` are themselves invariant to 1e-13 under all three transforms in
+features; `add_independence` and `add_rank` are themselves invariant to 1e-13 under all three transforms in
 every domain.
 
 ### 13.6 Cost
@@ -742,10 +742,10 @@ anywhere from 0.26 to 16 ms on the same input, which is thread contention rather
 
 ---
 
-## 14. Submodularity: why greedy is strong on the edge count and weak on the margin
+## 14. Submodularity: why greedy is strong on the edge count and weak on the stiffness
 
 This section explains what kind of optimization problem each objective is. It is the reason the
-constructive baseline is hard to beat, and the reason the margin is worth switching to.
+constructive baseline is hard to beat, and the reason stiffness is worth switching to.
 
 ### 14.0 `rank(B)` is generically a function of the graph alone
 
@@ -759,11 +759,11 @@ noncollinearity assumption is exactly the assumption that puts us in the generic
 *Measured:* 30 graphs x 5 domains x 100 pose resamples each - the rank never moved once. Repeated
 for heterogeneous mixes with the same result.
 
-**So a rank-based state score contains no geometry.** `WeightedNormalized` at `margin_kappa = 0` is
+**So a rank-based state score contains no geometry.** `WeightedNormalized` at `stiffness_kappa = 0` is
 a function of the edge set alone, which is why a policy trained on it reads none of the geometric
 observation channels: the reward never asks it to. What does *not* follow is that geometry is
 useless as an input - it is the computational route to the combinatorial answer (§13 turns a
-geometric computation into an exact rank prediction), and the **margin** of §15 is not combinatorial
+geometric computation into an exact rank prediction), and the **stiffness** of §15 is not combinatorial
 at all, spanning ~10^5 across equally-minimal graphs on the same poses.
 
 ### 14.1 What submodular means
@@ -831,7 +831,7 @@ This is the structural reason a rank-based objective cannot carry the thesis on 
 agrees with Darvariu et al. (2024) §6.2: RL is not expected to gain much where shallow decision
 horizons already suffice.
 
-### 14.4 The margin is **not** submodular
+### 14.4 Stiffness is **not** submodular
 
 The rigidity eigenvalue `λ_r(S)` is still **monotone** - adding an edge adds a PSD term to `BᵀB`,
 and by Weyl's inequality every eigenvalue can only move up. But it is not submodular.
@@ -845,24 +845,24 @@ worth more together than the sum of their separate contributions - a complementa
 direction that neither braces alone. That is *increasing* returns, the exact opposite of (14.1), and
 it is invisible to a method that only ever evaluates one edge at a time.
 
-**So greedy carries no approximation guarantee on the margin.** That is the principled reason to
+**So greedy carries no approximation guarantee on the stiffness.** That is the principled reason to
 expect a sequential, long-horizon method to have room there when it has almost none on edge count,
-and it is the argument the margin objective (§15) rests on. Stated as a prediction rather than a
-result: a margin-aware
-policy should beat greedy on margin by a wider relative margin than the ~2% it wins on edge count.
+and it is the argument the stiffness objective (§15) rests on. Stated as a prediction rather than a
+result: a stiffness-aware
+policy should beat greedy on stiffness by a wider relative margin than the ~2% it wins on edge count.
 A spectral first-order heuristic is the honest opponent to hold it to, since
-greedy-on-margin is a weak one.
+greedy-on-stiffness is a weak one.
 
 *Caveat.* §14.2 is proved and then confirmed numerically; §14.4 is numerical only, but for a
 *negative* result that is the stronger position - one counterexample refutes submodularity, whereas
 no number of confirmations would prove it.
 
-## 15. The rigidity margin in the state score
+## 15. The stiffness in the state score
 
-§14 says the edge-count problem is nearly solved by greedy and the margin problem is not. This
+§14 says the edge-count problem is nearly solved by greedy and the stiffness problem is not. This
 section is the objective that follows from that.
 
-### 15.0 What λ means, and what it does not
+### 15.0 What λ means, and why it is called stiffness
 
 **Rigidity is binary and generic** (§14.0). At a non-degenerate configuration a framework either
 attains `rank_K` or it does not, and if it does, the shape is recoverable from the bearings. λ adds
@@ -882,6 +882,11 @@ shape error  ≤  (1/√λ) · bearing error
 ```
 
 λ is therefore the **conditioning of the bearing → shape inverse problem**, not a degree of rigidity.
+`BᵀB` is the Hessian of the bearing error and, for isotropic bearing noise, proportional to the
+Fisher information, so λ is also the worst-direction observability of the shape and `1/√λ` the
+Cramér-Rao error amplification. **This document calls λ the stiffness of the weakest non-trivial
+mode**, because `ẋ = -BᵀB x` makes that literal and because "margin" names only the Eckart-Young
+reading in point 3 below, which is a proxy rather than the meaning.
 Exact bearings recover the shape at any `λ > 0`; noisy bearings recover it to within a factor
 `1/√λ`. *Measured*, three rigid graphs on one set of 8 poses in `R^3`, unit-norm bearing
 perturbations pushed through `B⁺`:
@@ -940,12 +945,12 @@ a **centre**. That is what `λ_ref` is.
 ```
 phi = (w_rank*rank - w_edge*m*c_max)/rank_K  +  w_eig * 1[is_IBR] * q(lam)        (15.1)
 
-  q(lam) = sigmoid( log10(lam / lam_ref) / s ),      s = 0.75 decades      -> q in (0,1)
+  q(lam) = sigmoid( log10(lam / stiffness_ref) / s ),      s = 0.75 decades      -> q in (0,1)
   w_eig  = kappa * w_edge * c_max / rank_K
 ```
 
-- **`λ_ref`** is the median λ of `margin_ref_samples` graphs built by the constructive greedy **on
-  this episode's own poses** (`rigidity.reference_margin`), so `log10(λ/λ_ref)` reads "how much
+- **`λ_ref`** is the median λ of `stiffness_ref_samples` graphs built by the constructive greedy **on
+  this episode's own poses** (`rigidity.reference_stiffness`), so `log10(λ/λ_ref)` reads "how much
   stiffer than a typical decent graph on these exact poses" - dimensionless, comparable at any `n`,
   domain and formation size, and near 0 for a typical answer. λ of the *complete* graph would
   saturate instead: `λ/λ_K` still decays two decades from n=4 to n=12. The **median**, not the best:
@@ -953,7 +958,7 @@ phi = (w_rank*rank - w_edge*m*c_max)/rank_K  +  w_eig * 1[is_IBR] * q(lam)      
 - **`s = 0.75` decades**, because the p10-p90 spread of `log10 λ` among minimal graphs is 1.1-1.9
   decades, so the logistic spends its range on the achievable band.
 - **`w_eig` is denominated in edges.** `w_edge·c_max/rank_K` is what one edge costs, so the whole
-  margin term is worth `κ` edges and rescales with `n` and domain by itself. `κ = 0` reproduces the
+  stiffness term is worth `κ` edges and rescales with `n` and domain by itself. `κ = 0` reproduces the
   rank-only score exactly, and the term is bounded in `[0, κ·one_edge)`, so the agent can profit by
   at most about `κ` extra edges. `κ < 1` is a tie-break sparsity always wins; `κ > 1` is a real
   trade-off with no principled value, answered by a front over κ rather than a number.
@@ -977,7 +982,7 @@ A single greedy construction is a poor centre. Measured across construction orde
 At k=1 the centre wobbles by more than the 1.1-1.9 decade signal it is meant to centre, and further
 than the sigmoid is wide, so in many episodes `q` would sit saturated and contribute no gradient.
 The **log-median** of k=3 narrows it 4.5x at n=8/`R^3` - better than `1/sqrt(k)`, because the median
-is robust to the occasional bad construction that dominated the spread. `margin_ref_samples` is a
+is robust to the occasional bad construction that dominated the spread. `stiffness_ref_samples` is a
 config key; raise it if the residual variance matters. The cost is entirely in `reset()`
 (2.7 -> 46.8 ms at n=8/`R^3`); **per-step cost is unchanged**, since λ comes from the SVD `step()`
 already performs.
@@ -1009,20 +1014,196 @@ decomposition). `tests/test_state_score.py` asserts the three regimes separately
 
 ### 15.5 What it buys, measured
 
-`greedy` hill-climbs on whatever φ is configured, so it is margin-aware at `κ > 0` and gives a
+`greedy` hill-climbs on whatever φ is configured, so it is stiffness-aware at `κ > 0` and gives a
 reading without any training. 12 instances, n=8/`R^3`, identical poses across arms
 (`tools/kappa_sweep.py`):
 
-| κ | edges | margin (gmean) | vs κ=0 | rigid |
+| κ | edges | stiffness (gmean) | vs κ=0 | rigid |
 |---|---|---|---|---|
 | 0 | 10.42 | 1.01e-03 | 1.00x | 100% |
 | 0.9 | 10.42 | 2.01e-03 | **2.0x** | 100% |
 | 2.0 | 10.50 | 1.25e-02 | **12.4x** | 100% |
 | 4.0 | 10.42 | 2.08e-02 | **20.6x** | 100% |
 
-Edge count is flat to within 0.08 of an edge across the whole range while the margin moves 20x, and
+Edge count is flat to within 0.08 of an edge across the whole range while stiffness moves 20x, and
 rigidity never drops. Two caveats: this is greedy, not a learned policy, and 12 instances is a smoke
 test rather than a result.
 
-`constructive` does **not** adapt - it is the rank-based classical algorithm scored on the margin
+`constructive` does **not** adapt - it is the rank-based classical algorithm scored on the stiffness
 objective, which is the comparison §14.4 predicts it loses.
+
+## 16. The softest mode as an observation
+
+§15 puts stiffness in the objective. This section is the feature that lets a policy act on it.
+
+### 16.1 Why the existing rigidity channels cannot serve
+
+`add_independence`, `add_rank` and `node_freedom` all derive from `ker(B)` (§13). On a **rigid** framework the
+kernel is exactly the trivial variation set (Michieletto Thm 1), and a trivial variation changes no
+bearing, so `b_ij Z = 0` for every ordered pair. Measured on one `mixed` instance, the same graph
+before and after being made rigid:
+
+| | add_independence | add_rank | node_freedom |
+|---|---|---|---|
+| flexible, rank 32/33 | 9/100 nonzero | 9/100 | 1/10 |
+| rigid, rank 33/33 | **0/100** | **0/100** | **0/10** |
+
+Stiffness is only defined once rigid. So in the exact regime where it is the only thing
+still varying, every rigidity channel is identically zero. A policy trained on (15.1) has no
+spectral information at the moment it needs it.
+
+### 16.2 The feature
+
+Let `v` be the eigenvector of `BᵀB` at the rigidity eigenvalue `λ`, i.e. the softest non-trivial
+mode. First-order perturbation of a simple eigenvalue gives, for adding edge `i -> j`,
+
+```
+dlambda  ~=  ||b_ij v||^2                                                            (16.1)
+```
+
+and the same quantity is what removing an existing edge would cost. Two channels follow:
+
+```
+add_stiffness[i, j] = ||b_ij v||        over all ordered pairs        (pair channel)
+node_slack[i]     = (||v_i^pos||, ||v_i^att||)                      (node channel)
+```
+
+Both reuse §13's machinery unchanged: `candidate_gain(network, v, L)` is already
+`||b_ij Z||` for an arbitrary `(6n, k)` matrix, so passing the single column `v` in place of the
+kernel basis gives `add_stiffness` with no new algebra, and `v` itself is one column past the kernel in
+the `eigh(BᵀB)` that `nullspace` already performs (`nullspace_and_softest`). Measured cost at n=10:
+9.45 -> 9.90 ms per environment step.
+
+### 16.3 A ranking prior, not an oracle
+
+Measured on `mixed`, against rebuilt-matrix ground truth:
+
+| | |
+|---|---|
+| predicts the true `dlambda` of **adding** (log-log correlation) | **+0.93** |
+| predicts the true cost of **removing**, on redundant graphs | **+0.35** |
+| its top pick is the true best / in the true top-3 | 0/6, 1/6 |
+| nonzero on a rigid graph | 100% of pairs |
+| concentration, max/mean over pairs | 6.6x |
+
+Strong in aggregate, useless as an argmax: adding an edge is not an infinitesimal perturbation and
+eigenvalues cross. That is the **right** position for a learned method. `add_independence` is an exact rank
+oracle, which makes the informed arm close to constructive-greedy-with-learned-ordering (§14.3);
+`add_stiffness` gives a prior that still has to be refined.
+
+**The add/remove asymmetry matters and should be stated.** 0.93 for placing an edge against 0.35 for
+removing one, because removal is not a small perturbation of a redundant graph and the softest mode
+itself changes. Pruning dominates the late episode, so expect the channel to help where edges are
+placed, not where they are cut.
+
+### 16.4 Invariance
+
+| | translate | rotate | scale |
+|---|---|---|---|
+| `add_stiffness` | 4.8e-14 | **6.6e-14** | 2.2e-04 |
+
+Exactly rotation-invariant in every domain, including `R^d`, where the raw bearings are **not**
+(§11). The residual under scaling is the same position-versus-attitude column effect as §15.4 and is
+negligible against a channel of order 1.
+
+### 16.5 The information is irreducibly pairwise
+
+Predicting the same true `dlambda` of adding `i -> j`:
+
+| predictor | log-log correlation |
+|---|---|
+| pair, `\|\|b_ij v\|\|^2` | **+0.93** |
+| node, `\|\|v_i\|\| · \|\|v_j\|\|` | +0.40 |
+| node, `\|\|v_i\|\| + \|\|v_j\|\|` | +0.44 |
+
+Per-node magnitudes capture under half the signal, and (16.1) says why:
+
+```
+b_ij v  =  Dp (S_j v_j - S_i v_i)  -  Da P_i v_i,       Dp = (I - p_hat p_hat^T)/||p_ij||
+```
+
+`Dp` projects **orthogonal to the bearing**. Two very soft nodes whose relative motion runs along
+their mutual bearing produce no bearing change and contribute nothing. Whether a mode is visible to
+a measurement depends on the direction between the two agents, which no per-node magnitude encodes.
+
+This is worth stating precisely because it looks like it should reduce the way §12 did. It does not:
+in `B = [Dp Ē^T S̄ | Da Ē_o^T P̄]` the DOF projectors `S` and `P` are per node, which is §12's
+result, but `Dp` and `Da` are per edge and built from the bearing. The construction is both, and
+only the restriction half is nodewise.
+
+## 17. What removing an edge costs
+
+§16 gives the policy a signal for *placing* an edge. This section is the other direction, which is
+where the harder half of the episode is: measured on typical mid-episode `mixed` graphs, **70% of
+existing edges are safely removable** and 30% are load-bearing, and until these channels nothing in
+the observation separated them.
+
+Both quantities below are **exact**, and both are read off matrices that already exist. The
+rigidity matrix carries one 3-row block per directed edge, in `np.nonzero(edges)` order, so the
+block of an existing edge is the slice `B[3k:3k+3]` rather than something to rebuild - verified
+bit-identical to `candidate_block`, max abs difference 0.
+
+### 17.1 Rank: block leverage
+
+For a row block `b` of `B`, the **leverage block** is
+
+```
+H = b (BᵀB)⁺ bᵀ,          eigenvalues in [0, 1]                                     (17.1)
+```
+
+`(BᵀB)⁺ = V diag(1/w) Vᵀ` over the nonzero `w`, from the very `eigh` §16 already performs. `H` is
+the block generalisation of the statistical leverage `h_i = r_i (BᵀB)⁺ r_iᵀ`: an eigenvalue of 1
+marks a direction that **only this edge constrains**, so
+
+```
+rank(B) - rank(B without this edge) = #{ eigenvalues of H equal to 1 }               (17.2)
+```
+
+*Measured:* exact on 118/118 existing edges against rebuilt-matrix ground truth, and again per
+domain in `tests/test_flex.py`. The 1e-6 cut sits in the same kind of empty band `candidate_gain`'s
+does.
+
+`remove_rank[i,j]` is (17.2) divided by `c_max`, zero on non-edges.
+
+### 17.2 Stiffness: a rank-3 downdate
+
+Dropping an edge subtracts its block from the Gram matrix, so the new spectrum is that of
+`BᵀB - bᵀb`, and one `eigvalsh` gives the new stiffness at index `6n - rank_K` **exactly**. No
+rebuilding and no first-order approximation.
+
+```
+remove_stiffness[i,j] = 1 - lambda(B without i->j) / lambda(B)        in [0, 1]      (17.3)
+```
+
+1 when removal breaks rigidity, 0 when the edge is free. It is worth computing exactly because
+**nothing approximates it**: `add_stiffness` predicts the drop at 0.37 log-log correlation and
+leverage at 0.369, against 0.93 for the addition direction (§16.3). The distribution is skewed and
+that is the useful part - on removable edges the surviving ratio has median 0.99 and p10 0.29, so
+most redundant edges really are free and a minority are expensive, and flagging that minority is
+what a pruning policy needs.
+
+### 17.3 Properties
+
+- **Complementary support.** `remove_*` is nonzero only on existing edges, `add_*` only on
+  non-edges (an existing edge already lies in the row space, so `b_ij Z = 0`). Together they cover
+  every action the policy can take.
+- **`remove_rank` is informative in both regimes**, unlike every other rigidity channel:
+  `add_independence` dies once rigid (§16.1) and `add_stiffness` is zero while flexible, but
+  removing an edge can drop the rank either way.
+- **Exactly similarity invariant, scaling included.** `H = b (BᵀB)⁺ bᵀ` is unchanged by any
+  invertible column scaling `b → bS`, since `(SᵀBᵀBS)⁺ = S⁻¹(BᵀB)⁺S⁻¹`. Measured 6.7e-14 under a
+  2.7x rescale and 1.3e-13 under rotation, so it has none of the 1e-4 scale residual §15.4 and
+  §16.4 carry.
+- **Cost.** 3.46 → 5.76 ms per step at n=10 with ~35 edges, pinned to one BLAS thread, so about
+  +66%. It grows as `m · (6n)³` and will need revisiting before n=32. Two skips keep it down: the
+  `eigvalsh` is not run when the rank drops (the answer is 1) or when the framework is flexible (no
+  stiffness to lose). Unpinned these timings are dominated by BLAS contention and are not
+  meaningful; §13.6's warning applies here too.
+
+### 17.4 What this does to the informed arm
+
+With `add_independence` / `add_rank` for additions and `remove_rank` / `remove_stiffness` for
+removals, the informed arm now has an **exact one-step oracle in both directions and for both
+objectives**. Its results therefore say what a learned policy adds *on top of* perfect greedy
+lookahead, not whether it can learn rigidity from geometry. The uninformed arm remains the headline,
+and `rigidity_removal` is a separate flag precisely so that off-against-on prices this.

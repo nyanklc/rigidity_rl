@@ -1,4 +1,4 @@
-"""What does raising margin_kappa actually buy, and what does it cost in edges?
+"""What does raising stiffness_kappa actually buy, and what does it cost in edges?
 
 Runs one method across several kappa on the SAME instances and prints edges,
 margin and rigidity per kappa. This is the Pareto front in miniature: kappa < 1
@@ -31,8 +31,8 @@ def build(n, domain, kappa, samples):
                  termination_condition_type="MaxSteps",
                  max_steps=4 * n + 10,
                  random_graph_with_mean_min_edges=True,
-                 margin_kappa=kappa,
-                 margin_ref_samples=samples)
+                 stiffness_kappa=kappa,
+                 stiffness_ref_samples=samples)
     return e
 
 
@@ -62,7 +62,7 @@ def main():
     p.add_argument("--domain", default="R^3")
     p.add_argument("--kappas", default="0,0.9,2,4")
     p.add_argument("--instances", type=int, default=12)
-    p.add_argument("--samples", type=int, default=3, help="margin_ref_samples")
+    p.add_argument("--samples", type=int, default=3, help="stiffness_ref_samples")
     p.add_argument("--seed", type=int, default=1000)
     args = p.parse_args()
 

@@ -44,7 +44,8 @@ NODE_BLOCKS = [
     ("eigenvector",   1, "graph_features"),
     ("node_between",  1, "graph_features"),
     ("rigidity_glob", 3, "rigidity_global"),
-    ("flex_mag",      1, "rigidity_flex"),
+    ("node_freedom",  1, "rigidity_flex"),
+    ("node_slack",    2, "rigidity_stiffness"),
 ]
 
 EDGE_BLOCKS = [
@@ -53,9 +54,12 @@ EDGE_BLOCKS = [
     ("edge_between",  1, "graph_features"),
     ("reciprocity",   1, None),
     ("common_nbrs",   1, None),
-    ("add_gain",      1, "rigidity_flex"),
-    ("block_rank",    1, "rigidity_edge"),
+    ("add_independence", 1, "rigidity_flex"),
+    ("pair_max_rank", 1, "rigidity_edge"),
     ("add_rank",      1, "rigidity_edge"),
+    ("add_stiffness", 1, "rigidity_stiffness"),
+    ("remove_rank",   1, "rigidity_removal"),
+    ("remove_stiffness", 1, "rigidity_removal"),
 ]
 
 
@@ -74,6 +78,8 @@ def obs_flags(env):
         "rigidity_global": rig and getattr(env, "rigidity_global", False),
         "rigidity_flex": rig and getattr(env, "rigidity_flex", False),
         "rigidity_edge": rig and getattr(env, "rigidity_edge", False),
+        "rigidity_stiffness": rig and getattr(env, "rigidity_stiffness", False),
+        "rigidity_removal": rig and getattr(env, "rigidity_removal", False),
     }
 
 
@@ -188,7 +194,8 @@ def rollout(agent, wrapped, raw, steps, space=None, key=None, sl=None,
     the sensitivity pass to reuse the reference trajectory's states.
     """
     obs, _ = wrapped.reset()
-    for _ in range(steps):
+    seen, used = set(), 0
+    for used in range(1, steps + 1):
         if collect is not None:
             collect.append(obs)
         fed = obs if key is None else ablate_obs(obs, space, key, sl, mode, rng)[0]
@@ -196,6 +203,15 @@ def rollout(agent, wrapped, raw, steps, space=None, key=None, sl=None,
         obs, _, terminated, truncated, _ = wrapped.step(action)
         if terminated.any() or truncated.any():
             break
+        # An unperturbed argmax policy is a function of the edge set, so a repeated
+        # state is an infinite cycle and every later step is wasted. Stopping there
+        # changes the reference's score by nothing and gives `used` as the budget
+        # the perturbed rollouts are held to.
+        if key is None:
+            state = raw.network.edges.tobytes()
+            if state in seen:
+                break
+            seen.add(state)
 
     best = raw.best_stats or {}
     return {
@@ -203,7 +219,7 @@ def rollout(agent, wrapped, raw, steps, space=None, key=None, sl=None,
         "m": float(best.get("m", raw.network.edges.sum())),
         "rigid": float(bool(best.get("is_IBR", False))),
         "minimal": float(bool(best.get("is_MBR", False))),
-    }
+    }, used
 
 
 def sensitivity(agent, states, space, key, sl, mode, rng):
@@ -289,8 +305,10 @@ def legend(rows, args, meta):
         "            reaction, where flip% is whether the reaction changed the decision.",
         "  d phi     reference phi MINUS ablated phi, so POSITIVE = the policy got worse",
         "            without the channel = it depends on it.",
-        "  d edges / d rigid% / d minimal%",
-        "            same direction: what the ablation cost, against the reference row.",
+        "  d rigid% / d minimal%",
+        "            same convention: POSITIVE = the ablated policy scored lower.",
+        "  d edges   also reference minus ablated, but FEWER edges is better, so here",
+        "            NEGATIVE is what the ablation cost. Opposite sense to the rest.",
         "",
         "  The (reference) row is the unablated policy, and is ABSOLUTE, not a delta:",
         "  it is the phi / edges / rigid% / minimal% every other row is measured from.",
@@ -392,12 +410,17 @@ def main():
     ap.add_argument("--channels", default=None, help="comma-separated subset")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cpu")
+    ap.add_argument("--live-env", action="store_true",
+                    help="score against the current environment instead of the archived one. "
+                         "The archive reproduces what the run was trained on, which is right for "
+                         "the policy but keeps environment-side measurement fixes out.")
     ap.add_argument("--csv", default=None,
                     help="write the table here; the legend goes to a .txt beside it")
     args = ap.parse_args()
 
     agent, wrapped, raw, info = agent_loader.load_run(
-        args.model, args.environment, device=args.device)
+        args.model, args.environment, device=args.device,
+        prefer_archived_env=not args.live_env)
     agent.enable_models_training_mode(False)
 
     steps = args.steps or int(min(getattr(raw, "max_steps", 100), 100))
@@ -419,12 +442,13 @@ def main():
             f"  |  n={raw.network.n} {raw.network.agents[0].domain}"
             f"  |  {raw.action_space_type}  |  {len(layout)} channels"
             f"  |  mode={args.mode}  |  {args.episodes} episodes x {steps} steps"
-            f"  |  seed {args.seed}")
+            f"  |  seed {args.seed}  |  {'live' if args.live_env else 'archived'} env")
     print(f"\n{meta}")
 
     acc = {name: [] for name, _, _ in layout}
     sens = {name: [] for name, _, _ in layout}
     ref_acc = []
+    converged = []
 
     for ep in range(args.episodes):
         raw.freeze_network = False
@@ -440,13 +464,16 @@ def main():
 
         restore()
         states = []
-        ref = rollout(agent, wrapped, raw, steps, collect=states)
+        # `used` is where the reference converged; every variant gets the same
+        # budget, or ablating a channel would buy extra exploration for free
+        ref, used = rollout(agent, wrapped, raw, steps, collect=states)
         ref_acc.append(ref)
+        converged.append(used)
 
         for name, key, sl in layout:
             sens[name].append(sensitivity(agent, states, space, key, sl, args.mode, rng))
             restore()
-            abl = rollout(agent, wrapped, raw, steps, space, key, sl, args.mode, rng)
+            abl, _ = rollout(agent, wrapped, raw, used, space, key, sl, args.mode, rng)
             acc[name].append({k: ref[k] - abl[k] for k in ref})
 
         print(f"  episode {ep + 1}/{args.episodes}", end="\r", flush=True)
@@ -467,6 +494,8 @@ def main():
     } for name, _, _ in layout]
 
     print(" " * 40, end="\r")
+    meta += (f"  |  stopped at the reference's convergence, "
+             f"median {int(np.median(converged))} of {steps} steps")
     report(rows, ref_row, args, meta)
 
     if args.csv:

@@ -453,7 +453,9 @@ def build_dict_obs(env, define_type, node_set="graph", coords=True, edges=True,
             extra.append(np.tile(
                 [rig["rank_deficit"], rig["m_ratio"], rig["is_IBR"]], (n, 1)))
         if env.rigidity_flex:
-            extra.append(rig["flex_mag"])
+            extra.append(rig["node_freedom"])
+        if getattr(env, "rigidity_stiffness", False):
+            extra.append(rig["node_slack"])
         if extra:
             node_features = np.concat([node_features] + extra, axis=-1)
 
@@ -481,9 +483,13 @@ def build_dict_obs(env, define_type, node_set="graph", coords=True, edges=True,
                   else network.get_common_neighbors_features()]
         if rig:
             if env.rigidity_flex:
-                parts.append(rig["add_gain"])
+                parts.append(rig["add_independence"])
             if env.rigidity_edge:
-                parts += [rig["block_rank"], rig["add_rank"]]
+                parts += [rig["pair_max_rank"], rig["add_rank"]]
+            if getattr(env, "rigidity_stiffness", False):
+                parts.append(rig["add_stiffness"])
+            if getattr(env, "rigidity_removal", False):
+                parts += [rig["remove_rank"], rig["remove_stiffness"]]
         e = np.concat(parts, axis=-1)
         obs["edge_features"] = e
         spec["edge_features"] = spaces.Box(-np.inf, np.inf, e.shape)
@@ -513,8 +519,8 @@ def build_dict_obs(env, define_type, node_set="graph", coords=True, edges=True,
 # "Dict" is current. The rest are pre-merge names kept working; each reproduces
 # its old layout, including raw coordinates and edges-only bearings, because the
 # checkpoints trained on them depend on both.
-# width of q's sigmoid, in decades of lam/lam_ref.
-MARGIN_SIGMOID_DECADES = 0.75
+# width of q's sigmoid, in decades of lambda / stiffness_ref.
+STIFFNESS_SIGMOID_DECADES = 0.75
 
 
 OBS_PRESETS = {
@@ -624,9 +630,11 @@ class Environment(gym.Env):
         rigidity_global=False,
         rigidity_flex=False,
         rigidity_edge=False,
+        rigidity_stiffness=False,
+        rigidity_removal=False,
         rotation_augmentation=False,
-        margin_kappa=0.0,
-        margin_ref_samples=3,
+        stiffness_kappa=0.0,
+        stiffness_ref_samples=3,
         filepath=None,
     ):
         print("initializing environment")
@@ -654,14 +662,19 @@ class Environment(gym.Env):
         self.rigidity_global = rigidity_global
         self.rigidity_flex = rigidity_flex
         self.rigidity_edge = rigidity_edge
+        self.rigidity_stiffness = rigidity_stiffness
+        self.rigidity_removal = rigidity_removal
         self.last_rigidity = None
 
-        # how many edges the whole margin range is worth; 0 disables it.
-        self.margin_kappa = float(margin_kappa)
-        self.margin_ref_samples = int(margin_ref_samples)
-        self.lam_ref = 0.0
-        # private: the global stream is the one instances are drawn from
-        self.margin_rng = np.random.default_rng(0)
+        # how many edges the whole stiffness range is worth; 0 disables it.
+        self.stiffness_kappa = float(stiffness_kappa)
+        self.stiffness_ref_samples = int(stiffness_ref_samples)
+        self.stiffness_ref = 0.0
+        # private: the global stream is the one instances are drawn from. Reseeded
+        # per episode, so stiffness_ref is a function of the poses and phi is a
+        # function of the state.
+        self.stiffness_seed = 0
+        self.stiffness_rng = np.random.default_rng(self.stiffness_seed)
 
         self.filepath = filepath
         self.scenario_network = None
@@ -695,10 +708,10 @@ class Environment(gym.Env):
 
         # must run before the space is defined, or the declared space is missing
         # the rigidity channels that reset() then produces
-        rank_i, _, _ = rigidity_decomposition(self.brm, self.rank_K)
+        rank_i, _, lam_i = rigidity_decomposition(self.brm, self.rank_K)
         is_MBR_i, is_IBR_i, _ = self.network.is_MBR(
             rank_K=self.rank_K, brm=self.brm, rank_brm=rank_i)
-        self.compute_rigidity_features(self.brm, rank_i, is_IBR_i)
+        self.compute_rigidity_features(self.brm, rank_i, is_IBR_i, lam=lam_i)
 
         _, self.observation_space = obs(obs_space_type, self, define_type=True)
         self.action_space = define_action_space(action_space_type, self)
@@ -795,9 +808,18 @@ class Environment(gym.Env):
         RIGIDITY_GLOBAL = config.get("rigidity_global", False)
         RIGIDITY_FLEX = config.get("rigidity_flex", False)
         RIGIDITY_EDGE = config.get("rigidity_edge", False)
+        for old_key, new_key in (("margin_kappa", "stiffness_kappa"),
+                                 ("margin_ref_samples", "stiffness_ref_samples"),
+                                 ("rigidity_margin", "rigidity_stiffness")):
+            if old_key in config:
+                raise KeyError(
+                    f"{filepath}: '{old_key}' is now '{new_key}'. Regenerate the config "
+                    f"with environment.py rather than renaming the key by hand.")
+        RIGIDITY_STIFFNESS = config.get("rigidity_stiffness", False)
+        RIGIDITY_REMOVAL = config.get("rigidity_removal", False)
         ROTATION_AUGMENTATION = config.get("rotation_augmentation", False)
-        MARGIN_KAPPA = config.get("margin_kappa", 0.0)
-        MARGIN_REF_SAMPLES = config.get("margin_ref_samples", 3)
+        STIFFNESS_KAPPA = config.get("stiffness_kappa", 0.0)
+        STIFFNESS_REF_SAMPLES = config.get("stiffness_ref_samples", 3)
         scenario_name = config["scenario"]
         scenario_path = (
             "scenarios/" + scenario_name + ".json"
@@ -827,9 +849,11 @@ class Environment(gym.Env):
             rigidity_global=RIGIDITY_GLOBAL,
             rigidity_flex=RIGIDITY_FLEX,
             rigidity_edge=RIGIDITY_EDGE,
+            rigidity_stiffness=RIGIDITY_STIFFNESS,
+            rigidity_removal=RIGIDITY_REMOVAL,
             rotation_augmentation=ROTATION_AUGMENTATION,
-            margin_kappa=MARGIN_KAPPA,
-            margin_ref_samples=MARGIN_REF_SAMPLES,
+            stiffness_kappa=STIFFNESS_KAPPA,
+            stiffness_ref_samples=STIFFNESS_REF_SAMPLES,
             filepath=scenario_path,
         )
 
@@ -880,9 +904,11 @@ class Environment(gym.Env):
         )
         # edge-independent, so it stays an episode constant and the shaping
         # stays potential-based.
-        self.lam_ref = (reference_margin(self.network, self.rank_K, self.margin_rng,
-                                         samples=self.margin_ref_samples)
-                        if self.margin_kappa > 0 else 0.0)
+        self.stiffness_rng = np.random.default_rng(self.stiffness_seed)
+        self.stiffness_ref = (reference_stiffness(self.network, self.rank_K,
+                                                  self.stiffness_rng,
+                                                  samples=self.stiffness_ref_samples)
+                              if self.stiffness_kappa > 0 else 0.0)
 
         # pose-dependent, edge-independent, and needed every step by the rigidity
         # features: the trivial variation space and every pair's own block rank
@@ -901,7 +927,7 @@ class Environment(gym.Env):
     # Rigidity-derived observation features for the current graph, cached so obs()
     # does not recompute them. Only filled when some rigidity flag is on -- these
     # are tier-3 information, an ablation arm, not the default.
-    def compute_rigidity_features(self, brm, rank_brm, is_IBR, Z=None):
+    def compute_rigidity_features(self, brm, rank_brm, is_IBR, Z=None, lam=None):
         if not self.rigidity_features_enabled():
             self.last_rigidity = None
             return
@@ -913,8 +939,12 @@ class Environment(gym.Env):
             "is_IBR": float(is_IBR),
         }
 
+        v, eig_w, eig_V = None, None, None
         if Z is None:
-            Z = nullspace(brm, int(rank_brm))
+            if self.rigidity_stiffness or self.rigidity_removal:
+                Z, v, eig_w, eig_V = nullspace_and_softest(brm, int(rank_brm))
+            else:
+                Z = nullspace(brm, int(rank_brm))
 
         # lengths in units of the formation's own size, so the null space does not
         # move under a uniform scaling.
@@ -930,22 +960,50 @@ class Environment(gym.Env):
             # normalized to unit mean square, so it says which nodes are free
             # rather than how free in absolute terms, which is what transfers
             rms = np.sqrt(max(float((mag ** 2).mean()), 1e-12))
-            feats["flex_mag"] = mag / rms
+            feats["node_freedom"] = mag / rms
 
             # already in [0, 1] per pair; see rigidity.candidate_gain
-            feats["add_gain"] = cand[0][:, :, None]
+            feats["add_independence"] = cand[0][:, :, None]
 
         if self.rigidity_edge:
             # from the COMPLETE graph, so a candidate pair reads its own value
             # rather than 0, which is indistinguishable from "contributes nothing"
-            feats["block_rank"] = self.block_rank_K[:, :, None]
+            feats["pair_max_rank"] = self.block_rank_K[:, :, None]
             _, rk = cand
             feats["add_rank"] = (rk / max(int(self.c_max), 1))[:, :, None]
+
+        if self.rigidity_stiffness:
+            # ||b_ij v||, v the mode at the rigidity eigenvalue: how much adding
+            # i->j would stiffen the weakest direction. Unlike add_independence it
+            # is nonzero on a rigid graph, the only regime where stiffness exists.
+            add_stiffness = np.zeros((n, n))
+            node_slack = np.zeros((n, 2))
+            if is_IBR and v is not None and v.shape[1] == 1:
+                vs = nullspace_in_scaled_units(v, n, L)
+                add_stiffness = candidate_gain(self.network, vs, length_scale=L)[0]
+                vp = vs[:3 * n].reshape(n, 3, -1)
+                va = vs[3 * n:].reshape(n, 3, -1)
+                node_slack = np.stack([np.sqrt((vp ** 2).sum(axis=(1, 2))),
+                                       np.sqrt((va ** 2).sum(axis=(1, 2)))], axis=-1)
+            # per channel, by its own mean: which pair/node is slack rather than
+            # how slack in absolute terms, which is what transfers
+            feats["add_stiffness"] = (add_stiffness
+                                      / max(float(add_stiffness.mean()), 1e-12))[:, :, None]
+            feats["node_slack"] = node_slack / np.maximum(node_slack.mean(axis=0,
+                                                                          keepdims=True), 1e-12)
+
+        if self.rigidity_removal:
+            rank_lost, stiffness_lost = removal_costs(
+                brm, self.network, int(self.rank_K), lam=float(lam or 0.0),
+                w=eig_w, V=eig_V, c_max=self.c_max)
+            feats["remove_rank"] = rank_lost[:, :, None]
+            feats["remove_stiffness"] = stiffness_lost[:, :, None]
 
         self.last_rigidity = feats
 
     def rigidity_features_enabled(self):
-        return self.rigidity_global or self.rigidity_flex or self.rigidity_edge
+        return (self.rigidity_global or self.rigidity_flex or self.rigidity_edge
+                or self.rigidity_stiffness or self.rigidity_removal)
 
     # -----------------------------------
     # Sums and counts only, so episode length is free.
@@ -1183,11 +1241,12 @@ class Environment(gym.Env):
 
             state_score += (w_rank * rank_brm - w_edge * m * c_max) / rank_K
 
-            # (15.1) the margin, in units of one edge's cost
-            if self.margin_kappa > 0 and is_IBR and lam and self.lam_ref > 0:
+            # (15.1) the stiffness term, in units of one edge's cost
+            if self.stiffness_kappa > 0 and is_IBR and lam and self.stiffness_ref > 0:
                 one_edge = w_edge * c_max / rank_K
-                q = 1.0 / (1.0 + np.exp(-np.log10(lam / self.lam_ref) / MARGIN_SIGMOID_DECADES))
-                state_score += self.margin_kappa * one_edge * q
+                q = 1.0 / (1.0 + np.exp(-np.log10(lam / self.stiffness_ref)
+                                        / STIFFNESS_SIGMOID_DECADES))
+                state_score += self.stiffness_kappa * one_edge * q
 
         elif self.state_score_type == "None" or None:
             pass
@@ -1254,7 +1313,7 @@ class Environment(gym.Env):
         # actually taken to reach that graph
         self.step_counter += 1
 
-        # one SVD serves rank, null space and margin
+        # one SVD serves rank, null space and stiffness
         rank_brm, _, lam = rigidity_decomposition(brm, self.rank_K)
         is_MBR, is_IBR, _ = self.network.is_MBR(
             rank_K=self.rank_K, brm=brm, rank_brm=rank_brm)
@@ -1262,7 +1321,7 @@ class Environment(gym.Env):
 
         # obs comes after the rigidity computation, not before: the rigidity
         # features have to describe the graph this step produced
-        self.compute_rigidity_features(brm, rank_brm, is_IBR)
+        self.compute_rigidity_features(brm, rank_brm, is_IBR, lam=lam)
         obs = self._get_obs()
 
         # computed once and shared
@@ -1587,7 +1646,7 @@ class Environment(gym.Env):
         self.was_IBR = None
         self.was_MBR = None
 
-        self.compute_rigidity_features(self.brm, rank_brm_0, is_IBR_0)
+        self.compute_rigidity_features(self.brm, rank_brm_0, is_IBR_0, lam=lam0)
         return self._get_obs(), {}
 
 
@@ -1600,8 +1659,8 @@ if __name__ == "__main__":
     # ACTION_TYPE = "AddEdgeDiscreteNoSkip"
     # ACTION_TYPE = "AddEdgeDiscreteNoSelfLoops"
     # ACTION_TYPE = "AddEdgeDiscreteNoSkipNoSelfLoops"
-    # ACTION_TYPE = "AddRemoveEdgeDiscreteNoSelfLoops"
-    ACTION_TYPE = "SelectNodesSequentially"
+    ACTION_TYPE = "AddRemoveEdgeDiscreteNoSelfLoops"
+    # ACTION_TYPE = "SelectNodesSequentially"
     # ACTION_TYPE = "DecideOnEdge"
 
     # ACTION_REWARDS_ENABLE = True
@@ -1609,8 +1668,8 @@ if __name__ == "__main__":
 
     TIME_PENALTY_VALUE = 0.0
 
-    SKIP_ENABLED = False
-    SKIP_IS_STOP = False
+    SKIP_ENABLED = True
+    SKIP_IS_STOP = True
     RANDOM_GRAPH_WITH_MEAN_MIN_EDGES = True
 
     TRACK_DATA_ENABLE = True
@@ -1655,8 +1714,8 @@ if __name__ == "__main__":
 
     ROTATION_AUGMENTATION = True
 
-    MARGIN_KAPPA = 2.0
-    MARGIN_REF_SAMPLES = 3
+    STIFFNESS_KAPPA = 2.0
+    STIFFNESS_REF_SAMPLES = 3
 
     INCLUDE_CANDIDATE_BEARINGS = True
 
@@ -1664,6 +1723,8 @@ if __name__ == "__main__":
     RIGIDITY_GLOBAL = True
     RIGIDITY_FLEX = True
     RIGIDITY_EDGE = True
+    RIGIDITY_STIFFNESS = True
+    RIGIDITY_REMOVAL = True
     #############################################
 
     if len(sys.argv) < 3:
@@ -1759,9 +1820,11 @@ if __name__ == "__main__":
         "rigidity_global": RIGIDITY_GLOBAL,
         "rigidity_flex": RIGIDITY_FLEX,
         "rigidity_edge": RIGIDITY_EDGE,
+        "rigidity_stiffness": RIGIDITY_STIFFNESS,
+        "rigidity_removal": RIGIDITY_REMOVAL,
         "rotation_augmentation": ROTATION_AUGMENTATION,
-        "margin_kappa": MARGIN_KAPPA,
-        "margin_ref_samples": MARGIN_REF_SAMPLES,
+        "stiffness_kappa": STIFFNESS_KAPPA,
+        "stiffness_ref_samples": STIFFNESS_REF_SAMPLES,
         "scenario": scenario_name,
     }
     env_filename = f"env_{model_name}.json"

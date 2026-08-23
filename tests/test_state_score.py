@@ -1,4 +1,5 @@
 """The state score phi."""
+import copy
 import numpy as np
 import pytest
 
@@ -114,11 +115,11 @@ KAPPA = 0.9
 
 def rigid_env(make_env, domain, n=6, kappa=KAPPA, **kw):
     """An env whose graph is complete, so the margin term is actually live."""
-    e = make_env(n=n, domains=[domain] * n, margin_kappa=kappa, **kw)
+    e = make_env(n=n, domains=[domain] * n, stiffness_kappa=kappa, **kw)
     e.reset()
     e.network.edges = e.network.fully_connected().edges
     np.fill_diagonal(e.network.edges, False)
-    e.margin_rng = np.random.default_rng(0)
+    e.stiffness_rng = np.random.default_rng(0)
     e.compute_episode_constants()
     return e
 
@@ -147,9 +148,9 @@ def test_margin_term_is_bounded_by_kappa_edges(make_env, domain):
     assert 0.0 <= phi - base <= KAPPA * one_edge(e) + 1e-12
 
 
-def test_q_is_one_half_when_lam_equals_lam_ref(make_env):
+def test_q_is_one_half_when_lambda_equals_stiffness_ref(make_env):
     e = rigid_env(make_env, "R^3")
-    e.lam_ref = 1.0
+    e.stiffness_ref = 1.0
     brm = e.network.extended_bearing_rigidity_matrix()
     base = (W_RANK * e.rank_K - W_EDGE * int(e.network.edges.sum()) * e.c_max) / e.rank_K
     got = e.compute_state_score(brm, True, False, e.rank_K, lam=1.0)
@@ -169,8 +170,8 @@ def test_more_margin_scores_higher_at_the_same_edge_count(make_env):
     e = rigid_env(make_env, "R^3")
     brm = e.network.extended_bearing_rigidity_matrix()
     args = dict(is_IBR=True, is_MBR=False, rank_brm=e.rank_K)
-    lo = e.compute_state_score(brm, lam=e.lam_ref / 10.0, **args)
-    hi = e.compute_state_score(brm, lam=e.lam_ref * 10.0, **args)
+    lo = e.compute_state_score(brm, lam=e.stiffness_ref / 10.0, **args)
+    hi = e.compute_state_score(brm, lam=e.stiffness_ref * 10.0, **args)
     assert hi > lo
 
 
@@ -181,7 +182,7 @@ def _transformed_phi(e, kind, planar):
         e.network.rotate_network([0, 0, 1] if planar else [0.3, 0.5, 0.81], 0.9)
     else:
         e.network.scale_network(2.7)
-    e.margin_rng = np.random.default_rng(0)      # same construction order, or lam_ref moves
+    e.stiffness_rng = np.random.default_rng(0)      # same construction order, or stiffness_ref moves
     e.compute_episode_constants()
     return phi_of(e)[0]
 
@@ -196,7 +197,7 @@ def test_margin_phi_is_exactly_invariant_to_translation_and_rotation(make_env, d
 
 @pytest.mark.parametrize("domain", ["R^2", "R^3"])
 def test_margin_phi_is_exactly_scale_invariant_without_attitude_columns(make_env, domain):
-    """In R^d every column of B carries 1/length, so a rescale cancels in lam/lam_ref."""
+    """In R^d every column of B carries 1/length, so a rescale cancels in lambda/stiffness_ref."""
     e = rigid_env(make_env, domain)
     before = phi_of(e)[0]
     assert abs(_transformed_phi(e, "scale", domain == "R^2") - before) < 1e-9
@@ -205,7 +206,7 @@ def test_margin_phi_is_exactly_scale_invariant_without_attitude_columns(make_env
 @pytest.mark.parametrize("domain", ["R^2xS^1", "R^3xS^1", "SE(3)"])
 def test_margin_phi_is_only_approximately_scale_invariant_with_attitude(make_env, domain):
     """A rescale reweights B's position columns against its attitude columns, so
-    lam/lam_ref moves -- by at most ~7% of one edge.4
+    lambda/stiffness_ref moves -- by at most ~7% of one edge.4
     """
     e = rigid_env(make_env, domain)
     before = phi_of(e)[0]
@@ -213,22 +214,22 @@ def test_margin_phi_is_only_approximately_scale_invariant_with_attitude(make_env
     assert 0 < drift < 0.07 * KAPPA * one_edge(e)
 
 
-def test_lam_ref_is_reproducible_from_the_seed(make_env):
+def test_stiffness_ref_is_reproducible_from_the_seed(make_env):
     a = rigid_env(make_env, "R^3")
-    b = make_env(n=6, domains=["R^3"] * 6, margin_kappa=KAPPA)
+    b = make_env(n=6, domains=["R^3"] * 6, stiffness_kappa=KAPPA)
     b.network = a.network
-    b.margin_rng = np.random.default_rng(0)
+    b.stiffness_rng = np.random.default_rng(0)
     b.compute_episode_constants()
-    assert a.lam_ref == b.lam_ref > 0
+    assert a.stiffness_ref == b.stiffness_ref > 0
 
 
-def test_enabling_the_margin_does_not_move_the_instance_stream(make_env):
-    """lam_ref's construction must draw from a private rng, not the global stream
+def test_enabling_stiffness_does_not_move_the_instance_stream(make_env):
+    """stiffness_ref's construction must draw from a private rng, not the global stream
     instances come from.
     """
     def edges_after_two_resets(kappa):
         np.random.seed(7)
-        e = make_env(n=6, domains=["R^3"] * 6, margin_kappa=kappa)
+        e = make_env(n=6, domains=["R^3"] * 6, stiffness_kappa=kappa)
         e.reset()
         e.reset()
         return e.network.edges.copy(), np.array(
@@ -238,3 +239,19 @@ def test_enabling_the_margin_does_not_move_the_instance_stream(make_env):
     e9, p9 = edges_after_two_resets(KAPPA)
     assert np.array_equal(e0, e9)
     assert np.allclose(p0, p9)
+
+
+def test_stiffness_ref_is_the_same_for_the_same_poses(make_env):
+    """phi has to be a function of the state. The reference construction draws from
+    a private rng, so it is reseeded per episode; without that every restore of one
+    instance scores under a different phi."""
+    e = make_env(n=6, domains=["R^3"] * 6, stiffness_kappa=KAPPA)
+    e.reset()
+    net = copy.deepcopy(e.network)
+    e.freeze_network = True
+    refs = []
+    for _ in range(4):
+        e.network = copy.deepcopy(net)
+        e.reset()
+        refs.append(e.stiffness_ref)
+    assert len(set(refs)) == 1 and refs[0] > 0

@@ -101,7 +101,7 @@ def _gsd(values):
 
 
 def _fmt_geo(v, times=" x/", mark="*"):
-    """`gmean x/ gsd`, flagged when zero-margin networks had to be left out."""
+    """`gmean x/ gsd`, flagged when zero-stiffness networks had to be left out."""
     if v["min_eig_gmean"] is None:
         return "-"
     partial = mark if v["min_eig_n_pos"] < v["min_eig_n"] else ""
@@ -144,12 +144,12 @@ def aggregate(rows):
             "minimal_pct": 100.0 * float(np.mean([r["is_MBR"] for r in sel])),
             "min_eig_mean": float(np.mean(eig)) if eig else None,
             "min_eig_sd": float(np.std(eig)) if eig else None,
-            # the margin spans decades, so an arithmetic sd implies a range crossing
+            # stiffness spans decades, so an arithmetic sd implies a range crossing
             # zero. The geometric pair is the honest spread for it: a multiplicative
             # factor you divide and multiply the geometric mean by.
             "min_eig_gmean": _gmean(pos),
             "min_eig_gsd": _gsd(pos),
-            # a non-rigid network has margin exactly 0, which no geometric mean can
+            # a non-rigid network has stiffness exactly 0, which no geometric mean can
             # take -- record how many networks the geometric pair actually saw
             "min_eig_n": len(eig),
             "min_eig_n_pos": len(pos),
@@ -171,7 +171,7 @@ def format_table(rows, context, brief=False):
     lines = []
 
     head1 = (f"  {'method':<9}{'edges':>12}{'score':>14}{'rigid':>8}{'minimal':>9}"
-             f"{'rigidity':>19}{'rigidity(geo)':>17}{'work':>11}{'best@':>12}")
+             f"{'stiffness':>19}{'stiffness(geo)':>17}{'work':>11}{'best@':>12}")
     head2 = (f"  {'':<9}{'(fewer)':>12}{'(higher)':>14}{'%':>8}{'%':>9}"
              f"{'mean+-sd':>19}{'gmean x/gsd':>17}{'edits':>11}{'step':>12}")
     if has_opt:
@@ -224,16 +224,16 @@ def format_table(rows, context, brief=False):
     lines.append("            measurements. This is the property being solved for.")
     lines.append("  minimal   % that are rigid AND use the fewest possible edges.")
     lines.append("            (heuristic on mixed-domain networks - may under-report)")
-    lines.append("  rigidity  how strongly the bearings react to a change in shape. Every")
+    lines.append("  stiffness how strongly the bearings react to a change in shape. Every")
     lines.append("            rigid network recovers its shape from exact bearings; larger")
     lines.append("            means it still does so under measurement noise, since shape")
     lines.append("            error scales as 1/sqrt(this). Its absolute size depends on how")
     lines.append("            far apart the agents are, so compare rows, not the number.")
-    lines.append("  rigidity(geo)")
-    lines.append("            the same margin as a geometric mean and spread, because it")
+    lines.append("  stiffness(geo)")
+    lines.append("            the same stiffness as a geometric mean and spread, because it")
     lines.append("            ranges over orders of magnitude: 'a x/b' means the typical")
     lines.append("            network sits between a/b and a*b. A '*' marks rows where")
-    lines.append("            non-rigid networks (margin exactly 0) had to be left out --")
+    lines.append("            non-rigid networks (stiffness exactly 0) had to be left out --")
     lines.append("            a zero cannot enter a geometric mean, so those rows describe")
     lines.append("            only the networks that came out rigid.")
     lines.append("  work      how many changes to the network the method actually made.")
@@ -298,7 +298,7 @@ PANELS = [
          note="directed bearing measurements in use - fewer is better", log=False),
     dict(field="rank", title="Rigidity matrix rank",
          note="the shape is fully determined once it reaches the dashed line", log=False),
-    dict(field="min_eig", title="Rigidity margin",
+    dict(field="min_eig", title="Stiffness",
          note="smallest nonzero eigenvalue of BᵀB - higher survives more noise", log=True),
 ]
 
@@ -690,7 +690,7 @@ OUTCOME_PANELS = [
     dict(field="rigid", title="Rigidity achieved",
          note="% of networks (final, best) or % of the run spent rigid (mean)",
          log=False, scale=100.0, fmt="{:.0f}"),
-    dict(field="min_eig", title="Rigidity margin",
+    dict(field="min_eig", title="Stiffness",
          note="smallest nonzero eigenvalue of BᵀB - higher survives more noise",
          log=True, scale=1.0, fmt="{:.1e}"),
 ]
@@ -710,7 +710,7 @@ def plot_outcomes(run_dir, traces, rows, header, filename="outcomes"):
         "across them.",
         "For a method that never moves (initial) or only improves (greedy), final and "
         "best are the same bar by construction.",
-        "The rigidity margin is plotted on a log axis; a non-rigid network has margin 0 "
+        "Stiffness is plotted on a log axis; a non-rigid network has stiffness 0 "
         "and cannot be drawn there.",
     ]
 
@@ -861,9 +861,9 @@ TABLE_COLUMNS = [
     dict(key="score",   title="score  φ", unit="higher is better", w=1.20, align="right"),
     dict(key="rigid",   title="rigid",    unit="% of networks",    w=0.85, align="right"),
     dict(key="minimal", title="minimal",  unit="% of networks",    w=0.85, align="right"),
-    dict(key="margin",  title="margin",   unit="mean ± sd, higher is better",
+    dict(key="margin",  title="stiffness", unit="mean ± sd, higher is better",
          w=1.50, align="right"),
-    dict(key="margin_geo", title="margin (geo)", unit="gmean ×/÷ gsd",
+    dict(key="margin_geo", title="stiffness (geo)", unit="gmean ×/÷ gsd",
          w=1.25, align="right"),
     dict(key="work",    title="work",     unit="edits applied",    w=1.05, align="right"),
     dict(key="best_at", title="best at",  unit="step reached",     w=1.10, align="right"),
@@ -878,13 +878,13 @@ TABLE_NOTES = [
     "rigid: the network's shape is fully determined by its bearing measurements - the "
     "property being solved for. minimal: rigid with the fewest possible edges "
     "(a heuristic on mixed-domain networks, so it can under-report).",
-    "margin: how strongly the bearings react to a change in shape. Every rigid network "
+    "stiffness: how strongly the bearings react to a change in shape. Every rigid network "
     "recovers its shape from exact bearings; larger means it still does so under "
-    "measurement noise, since shape error scales as 1/sqrt(margin). Its absolute size "
+    "measurement noise, since shape error scales as 1/sqrt(stiffness). Its absolute size "
     "depends on how far apart the agents are, so compare rows rather than the number.",
-    "margin (geo): the same quantity as a geometric mean and spread, because it ranges "
+    "stiffness (geo): the same quantity as a geometric mean and spread, because it ranges "
     "over orders of magnitude - 'a ×/÷ b' means the typical network sits between a/b and "
-    "a·b. A '*' marks rows where non-rigid networks had to be left out: their margin is "
+    "a·b. A '*' marks rows where non-rigid networks had to be left out: their stiffness is "
     "exactly 0, which no geometric mean can take, so those rows describe only the "
     "networks that came out rigid.",
     "work: changes to the network the method actually applied. best at: the step its best "

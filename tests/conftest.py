@@ -173,8 +173,10 @@ def config_dict(n=6, domains="R^3", **overrides):
         "rigidity_global": False,
         "rigidity_flex": False,
         "rigidity_edge": False,
-        "margin_kappa": 0.0,
-        "margin_ref_samples": 3,
+        "rigidity_stiffness": False,
+        "rigidity_removal": False,
+        "stiffness_kappa": 0.0,
+        "stiffness_ref_samples": 3,
         "scenario": None,
     }
     cfg.update(overrides)

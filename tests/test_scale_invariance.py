@@ -39,8 +39,8 @@ def channel_mean(make_env, n, domain, key, sl, reps=12):
 # (key, slice, label) for the channels that used to drift
 DRIFTING = [
     ("node_features", slice(5, 7), "degree"),
-    ("node_features", slice(10, 11), "flex_mag"),
-    ("edge_features", slice(6, 7), "add_gain"),
+    ("node_features", slice(10, 11), "node_freedom"),
+    ("edge_features", slice(6, 7), "add_independence"),
     ("edge_features", slice(8, 9), "add_rank"),
 ]
 
@@ -136,7 +136,7 @@ def test_aggregation_is_degree_normalized():
 def test_flex_features_are_comparable_across_domains(make_env, domain):
     """Different rank_K and deficits must not change the feature's scale."""
     v = channel_mean(make_env, 6, domain, "node_features", slice(10, 11), reps=20)
-    assert 0.3 < v < 1.8, f"{domain}: flex_mag mean {v:.3f}"
+    assert 0.3 < v < 1.8, f"{domain}: node_freedom mean {v:.3f}"
 
 
 def test_legacy_presets_keep_the_raw_counts(make_env):

@@ -26,7 +26,7 @@ PYTHONPATH=. uv run tools/<name>.py
 | `submodularity.py` | which objectives have diminishing returns, and therefore which ones greedy is guaranteed on? |
 | `checkpoint_fingerprint.py` | does an edit to `policy/` change what an already-trained checkpoint computes? |
 | `backbone_capacity.py` | at these settings, is the EGNN-vs-GINE comparison matched on width, on parameters, or on neither? |
-| `kappa_sweep.py` | what does raising `margin_kappa` buy in margin, and what does it cost in edges? |
+| `kappa_sweep.py` | what does raising `stiffness_kappa` buy in stiffness, and what does it cost in edges? |
 
 `constructive_greedy.py` is the standalone version of the `constructive` baseline
 now wired into `baselines.py`, for difficulty sweeps that need no env config. It

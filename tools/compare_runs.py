@@ -32,11 +32,34 @@ DEFAULT = [
 
 
 def load(run):
+    """Scalars from the NEWEST run in runs/<run>, not all of them merged.
+
+    Training twice under one name leaves both sets of event files in the same
+    directory, and pointing EventAccumulator at the directory silently splices
+    them into one series.
+    """
     from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
-    ea = EventAccumulator(f"runs/{run}", size_guidance={"scalars": 0})
-    ea.Reload()
-    tags = set(ea.Tags()["scalars"])
-    return {t: ea.Scalars(t) for t in tags}, tags
+    files = glob.glob(f"runs/{run}/events.out.tfevents.*")
+    # events.out.tfevents.<starttime>.<host>.<pid>.<n>. One training process writes
+    # several of these, sometimes a second apart, so the pid is what identifies a run.
+    groups = {}
+    for f in files:
+        parts = os.path.basename(f).split(".")
+        groups.setdefault(parts[5] if len(parts) > 5 else f, []).append(f)
+    if not groups:
+        return {}, set()
+    if len(groups) > 1:
+        print(f"  note: runs/{run} holds {len(groups)} runs; reading the newest only")
+    newest = groups[max(groups, key=lambda k: max(os.path.getmtime(f) for f in groups[k]))]
+
+    out, tags = {}, set()
+    for f in newest:
+        ea = EventAccumulator(f, size_guidance={"scalars": 0})
+        ea.Reload()
+        for t in ea.Tags()["scalars"]:
+            out.setdefault(t, ea.Scalars(t))
+            tags.add(t)
+    return out, tags
 
 
 def tail(series, frac=0.15):

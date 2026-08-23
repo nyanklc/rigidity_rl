@@ -473,8 +473,8 @@ def greedy_rigid_construction(network, rank_K, rng):
     return E, added, rank
 
 
-def reference_margin(network, rank_K, rng, samples=3):
-    """lam_ref: log-median lam over `samples` greedy constructions on these poses.
+def reference_stiffness(network, rank_K, rng, samples=3):
+    """stiffness_ref: log-median lambda over `samples` greedy graphs on these poses.
 
     0 if none reached rank_K.
     """
@@ -505,6 +505,63 @@ def nullspace(brmat, rank):
         return np.zeros((cols, 0))
     _, V = np.linalg.eigh(brmat.T @ brmat)          # eigenvalues ascending
     return V[:, :cols - rank]
+
+
+def nullspace_and_softest(brmat, rank):
+    """(ker(B), softest non-trivial mode, eigenvalues, eigenvectors) from one eigh.
+
+    The kernel is the smallest 6n - rank eigenvectors, and v is the very next one:
+    the eigenvector at the smallest NONZERO eigenvalue, which is the rigidity
+    eigenvalue. v is (6n, 1), or (6n, 0) when the framework is flexible. w and V
+    come back so a caller needing (B^T B)^+ does not decompose a second time.
+    """
+    cols = brmat.shape[1]
+    if brmat.size == 0 or rank == 0:
+        return np.eye(cols), np.zeros((cols, 0)), None, None
+    w, V = np.linalg.eigh(brmat.T @ brmat)          # eigenvalues ascending
+    if rank >= cols:
+        return np.zeros((cols, 0)), np.zeros((cols, 0)), w, V
+    return V[:, :cols - rank], V[:, cols - rank:cols - rank + 1], w, V
+
+
+# What an existing edge costs to delete. Both are exact: the leverage block
+# H = b (B^T B)^+ b^T has eigenvalues in [0, 1] and one per rank the edge alone
+# carries, and dropping its rows is the downdate B^T B - b^T b.
+def removal_costs(brmat, network, rank_K, lam=0.0, w=None, V=None, c_max=1):
+    """(rank_lost, stiffness_lost) over all pairs, nonzero only on existing edges.
+
+    rank_lost is in units of c_max, stiffness_lost the fraction of lambda given up,
+    1 when removal breaks rigidity. Pass w, V from nullspace_and_softest.
+    """
+    n = network.n
+    rank_lost = np.zeros((n, n))
+    stiffness_lost = np.zeros((n, n))
+    ii, jj = np.nonzero(network.edges)
+    if brmat.size == 0 or len(ii) == 0:
+        return rank_lost, stiffness_lost
+
+    G = brmat.T @ brmat
+    if w is None or V is None:
+        w, V = np.linalg.eigh(G)
+    cols = brmat.shape[1]
+    tol = max(float(w.max()), 1e-30) * 1e-10
+    Minv = (V * np.where(w > tol, 1.0 / np.maximum(w, 1e-300), 0.0)) @ V.T
+    cm = max(int(c_max), 1)
+
+    for k, (i, j) in enumerate(zip(ii, jj)):
+        # B carries one 3-row block per directed edge, in np.nonzero(edges) order,
+        # so the edge's own block is a slice rather than something to rebuild
+        b = brmat[3 * k:3 * k + 3, :]
+        # separation between "spanned by the others" and "uniquely carried" is
+        # eight orders of magnitude, so 1e-6 sits far from either side
+        c = int((np.linalg.eigvalsh(b @ Minv @ b.T) > 1.0 - 1e-6).sum())
+        rank_lost[i, j] = c / cm
+        if c > 0:
+            stiffness_lost[i, j] = 1.0          # removal breaks rigidity
+        elif lam > 0:
+            w2 = np.linalg.eigvalsh(G - b.T @ b)
+            stiffness_lost[i, j] = min(max(1.0 - w2[cols - rank_K] / lam, 0.0), 1.0)
+    return rank_lost, stiffness_lost
 
 
 def _node_projectors(network):

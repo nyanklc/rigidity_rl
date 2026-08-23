@@ -45,15 +45,16 @@ def test_layout_tracks_the_optional_flags(make_env):
     lean = names(graph_features=False)
     assert "closeness" not in lean and "edge_between" not in lean
     rich = names(graph_features=True, rigidity_flex=True, rigidity_edge=True,
-                 rigidity_global=True)
-    assert {"closeness", "edge_between", "flex_mag", "add_gain",
-            "block_rank", "add_rank", "rigidity_glob"} <= rich
+                 rigidity_global=True, rigidity_stiffness=True, rigidity_removal=True)
+    assert {"closeness", "edge_between", "node_freedom", "add_independence",
+            "pair_max_rank", "add_rank", "rigidity_glob", "node_slack",
+            "add_stiffness", "remove_rank", "remove_stiffness"} <= rich
 
 
 def test_stale_layout_degrades_instead_of_mislabelling(capsys):
     """A width mismatch must never silently reassign names to the wrong slices."""
-    flags = {k: True for k in ("graph_features", "edge_exists", "rigidity_global",
-                               "rigidity_flex", "rigidity_edge")}
+    flags = {f: True for _, _, f in ablation.NODE_BLOCKS + ablation.EDGE_BLOCKS
+             if f is not None}
     out = ablation._blocks(ablation.EDGE_BLOCKS, flags, 999, "edge_features")
     assert out == [("edge_features (whole)", slice(0, 999))]
     assert "mislabel" in capsys.readouterr().out

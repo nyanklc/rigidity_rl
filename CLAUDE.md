@@ -168,7 +168,7 @@ mask sentinel, n-invariance of every observation channel and of both backbones' 
 the flex tensor's frame and shape, the exact addition criterion against rebuilt-matrix
 ground truth in every domain, per-domain `rank_K`/`c_max`/`m_req`,
 similarity invariance per channel across all five domains, `allow_skip` over every model,
-the legacy obs presets being byte-exact, phi's closed form and its margin term, and
+the legacy obs presets being byte-exact, phi's closed form and its stiffness term, and
 every live model having a nonlinearity between stacked `Linear`s. Re-introducing a bug
 the suite covers makes a *named* test fail; that is the point of it, not the pass rate.
 
@@ -194,9 +194,9 @@ There is no linter or CI.
 - **`S -> rank(B_S)` is monotone submodular**, so minimum-edge rigidity is minimum submodular cover
   and the `constructive` baseline is Wolsey's greedy with an `H(c_max)` guarantee: exact at
   `c_max = 1`, 1.5 at `c_max = 2`. Measured, greedy sits 0-5% above `m_req`, so the headroom for any
-  method on edge count is small. **The rigidity margin is *not* submodular** (59% of tested triples
+  method on edge count is small. **The stiffness is *not* submodular** (59% of tested triples
   violate diminishing returns), so greedy carries no guarantee there. That asymmetry is the
-  structural argument for moving the objective from rank to margin. See `THEORY.md` §14.
+  structural argument for moving the objective from rank to stiffness. See `THEORY.md` §14.
 - `required_edge_count(network, ...)` → `m_req`, fewest edges that could make these poses rigid: closed form for homogeneous `R^d`, greedy block-rank accumulation otherwise. **A lower bound, not a ground truth** - it stays out of the reward and is used for reporting and the MBR metric only. Brute force finds it tight on everything checkable (24/24 at n=4, 6/6 at n=5, all five domains), which is evidence, not proof.
 
 ### Environment (`environment.py`)
@@ -214,17 +214,17 @@ To add a variant, add an `elif` branch in the relevant dispatcher, plus a matchi
 
 **Reward structure** (`step()`): `reward = -time_penalty + [action_reward if action_rewards_enable] + (state_score(s') - state_score(s)) + [terminal bonus]`. The state-score term is **potential-based shaping** - the reward is how much *better* the graph got, not the absolute quality. `WeightedNormalized` is `(w_rank·rank - w_edge·m·c_max) / rank_K` at `(100, 25)` - dimensionless, so its optimum is ~75 at any `n` and in any domain. The older `Weighted` is `20·rank(B) - 10·m` and does **not** transfer (see below); it is kept only so old runs replay.
 
-**The rigidity margin is in `phi`, behind `margin_kappa` (default `0.0` = off).** At `κ > 0`,
+**The stiffness is in `phi`, behind `stiffness_kappa` (default `0.0` = off).** At `κ > 0`,
 `WeightedNormalized` gains `κ · one_edge · 1[IBR] · q(λ)`, where `q` is a sigmoid of
 `log10(λ/λ_ref)` over 0.75 decades and `one_edge = w_edge·c_max/rank_K` - so **κ is denominated in
-edges** and the whole margin range is worth κ of them. `λ_ref` is the median λ of
-`margin_ref_samples` (default 3) greedy constructions on *this episode's* poses, an episode
+edges** and the whole stiffness range is worth κ of them. `λ_ref` is the median λ of
+`stiffness_ref_samples` (default 3) greedy constructions on *this episode's* poses, an episode
 constant, so the shaping stays potential-based. λ itself is free - `step()` already computes it -
-and all the cost is in `reset()`. `κ < 1` makes margin a tie-break sparsity always wins; `κ > 1` is
+and all the cost is in `reset()`. `κ < 1` makes stiffness a tie-break sparsity always wins; `κ > 1` is
 a real trade-off answered by a front over κ rather than a number, and at `κ > 1` **`is_MBR`/minimality is no
 longer the headline metric**, because the policy is deliberately allowed to spend edges. Measured on
-`greedy` at n=8/R^3: margin ×2.0 at κ=0.9 and ×12.4 at κ=2, at a flat edge count. See `THEORY.md`
-§15 and `DESIGN_NOTES.md#margin-in-phi`.
+`greedy` at n=8/R^3: stiffness ×2.0 at κ=0.9 and ×12.4 at κ=2, at a flat edge count. See `THEORY.md`
+§15 and `DESIGN_NOTES.md#stiffness-in-phi`.
 
 **The discount factor is not a free hyperparameter here.** With a purely potential-based reward,
 γ=1 and no stop action, the episode return telescopes to `φ(s_T) - φ(s_0)`, so the advantage is
@@ -249,11 +249,11 @@ configuration (50 at n=4/R^2, 300 at n=8/R^3), shifting the critic's target rang
 
 **Best-state-visited metric.** `Environment` tracks the highest-scoring graph seen during an episode (`best_state_score` / `best_edges` / `best_step` / `best_stats` with `m`/`is_IBR`/`is_MBR`/`rank`/`min_eig`, updated in `update_best_state()`), exposed in `info` and logged as `Episode/ Best *`. This is observational - the reward does not use it. It exists because scoring an episode on its *final* state conflates "found a good topology" with "learned to stop on it", which matters under `MaxSteps` where the agent is expected to converge and then hold with `skip`. `best_step` records how many steps it took to get there, which is the only way to tell a policy that converges fast from one that stumbles onto the same graph late.
 
-`Best min eig` has no meaningful absolute scale: rigidity-matrix entries scale as `1/‖p_ij‖`, so it tracks `random_scenario`'s `pos_limits` (`scenario.py`, currently `[-1, 1]`; it was `[-100, 100]`, which put the eigenvalue at ~1e-5). Plot it on a log axis and don't compare across pose ranges. It frequently sits *below* `Min eig`, which is correct: `Weighted` has `w_eig = 0`, so φ trades rigidity margin away for fewer edges.
+`Best min eig` has no meaningful absolute scale: rigidity-matrix entries scale as `1/‖p_ij‖`, so it tracks `random_scenario`'s `pos_limits` (`scenario.py`, currently `[-1, 1]`; it was `[-100, 100]`, which put the eigenvalue at ~1e-5). Plot it on a log axis and don't compare across pose ranges. It frequently sits *below* `Min eig`, which is correct: `Weighted` has `w_eig = 0`, so φ trades stiffness away for fewer edges.
 
 **Scenarios.** With `"scenario": "<name>"`, `initialize()` loads `scenarios/<name>.json` and caches it. What a scenario contributes on reset depends on `only_randomize_edges`: `false` carries over only the **domain mix** (poses and edges are redrawn each episode - use this for heterogeneous generalization experiments), `true` keeps the scenario's **actual geometry** and resamples only the edges (use this for a fixed case-study figure). Both paths honour `random_graph_with_mean_min_edges`.
 
-**Config format keeps moving - regenerate, never hand-edit.** Current keys: `state_score_type`, `skip_is_stop`, `random_graph_with_mean_min_edges`, `include_candidate_bearings`, `rotation_augmentation`, `margin_kappa` / `margin_ref_samples`, plus the `graph_features` / `rigidity_*` flags. `max_steps` is now `4*m_req + 10` (n=8/R^3 → 50, `mixed` → 78, n=16/R^3 → 98), not `4*n*(n-1)`. Three switchable arms, **all off in generated configs**: the stop action (`skip_enabled` + `skip_is_stop` + `time_penalty_value`), `rotation_augmentation`, and the margin term (`margin_kappa`). For a scenario the generator writes the **full per-agent domain list** rather than `domains[0]`, which used to label every mixed config with one domain. See `DESIGN_NOTES.md#horizon` and `#rotation-augmentation`. `environments/` is gitignored and accumulates files from older formats, which will either `KeyError` in `load()` or raise on a merged-away `obs_type`. **Regenerating is the user's call** - see the note under "Gitignored" below. The filename no longer carries the obs type, since there is only one.
+**Config format keeps moving - regenerate, never hand-edit.** Current keys: `state_score_type`, `skip_is_stop`, `random_graph_with_mean_min_edges`, `include_candidate_bearings`, `rotation_augmentation`, `stiffness_kappa` / `stiffness_ref_samples`, plus the `graph_features` / `rigidity_*` flags (`rigidity_global`, `rigidity_flex`, `rigidity_edge`, `rigidity_stiffness`, `rigidity_removal`). `max_steps` is now `4*m_req + 10` (n=8/R^3 → 50, `mixed` → 78, n=16/R^3 → 98), not `4*n*(n-1)`. Three switchable arms, **all off in generated configs**: the stop action (`skip_enabled` + `skip_is_stop` + `time_penalty_value`), `rotation_augmentation`, and the stiffness term (`stiffness_kappa`). **`margin_kappa` / `margin_ref_samples` / `rigidity_margin` were renamed to `stiffness_*` / `rigidity_stiffness`; `load()` raises on the old key rather than silently defaulting, so pre-rename configs must be regenerated.** For a scenario the generator writes the **full per-agent domain list** rather than `domains[0]`, which used to label every mixed config with one domain. See `DESIGN_NOTES.md#horizon` and `#rotation-augmentation`. `environments/` is gitignored and accumulates files from older formats, which will either `KeyError` in `load()` or raise on a merged-away `obs_type`. **Regenerating is the user's call** - see the note under "Gitignored" below. The filename no longer carries the obs type, since there is only one.
 
 ### Domains and scaling (measured, all five domains, n up to 64)
 
@@ -367,8 +367,30 @@ result, not the informed arm's number. Note `c_k` (per-edge block rank) is const
 homogeneous domain and so carries nothing at n=4/8/16 - it has its own flag for that reason. See
 `DESIGN_NOTES.md#rigidity-features`.
 
+**`rigidity_stiffness` is the channel that survives rigidity.** `add_independence`, `add_rank` and `node_freedom`
+all come from `ker(B)`, which on a rigid framework is only the trivial motions, so they are
+**identically zero the moment the graph becomes rigid** - measured 0/100 pairs, against 9/100 while
+flexible. Stiffness only exists once rigid, so a policy trained on `stiffness_kappa > 0` had no
+spectral information at the moment it needed it. `add_stiffness[i,j] = ||b_ij v||` and `node_slack[i]`,
+with `v` the mode at the rigidity eigenvalue, are nonzero on 100% of pairs there. They are a ranking
+prior rather than an oracle (log-log correlation 0.93 with the true stiffness gain of *adding*, but
+0.35 for *removing*, and the top pick is the true best 0/6 times), and they are exactly
+rotation-invariant where raw bearings in `R^d` are not. The information is irreducibly pairwise: a
+node-only reduction `||v_i||·||v_j||` scores 0.40 against the pair channel's 0.93, because `D_p`
+projects orthogonal to the bearing and two soft nodes moving along their mutual bearing are
+invisible to it. See `THEORY.md` §16.
+
+**`rigidity_removal` says what deleting an edge costs.** Every other pair channel asks an
+*addition* question, so nothing told the policy which existing edges are safe to prune - and 70% of
+them are, in a typical mid-episode graph. `remove_rank[i,j]` is the rank lost, exact via the block
+leverage `H = b (B^T B)^+ b^T` whose unit eigenvalues count it (118/118 against ground truth), and
+`remove_stiffness[i,j]` is the fraction of λ lost, exact via the rank-3 downdate `B^T B - b^T b`.
+Both zero on non-edges, so `add_*` and `remove_*` have complementary support. `remove_rank` is the
+only rigidity channel informative in **both** regimes. Exactly similarity invariant including
+scaling, unlike `add_stiffness`. Costs ~+66% of a step at n=10 (pinned). See `THEORY.md` §17.
+
 **The pair channels are exact, not heuristic.** With `Z` an orthonormal basis of `ker(B)`, adding
-edge `i -> j` raises the rank by exactly `rank(b_ij Z)`, so `add_gain = ||b_ij Z||/||b_ij||` is zero
+edge `i -> j` raises the rank by exactly `rank(b_ij Z)`, so `add_independence = ||b_ij Z||/||b_ij||` is zero
 precisely on the pairs that would add nothing and `add_rank = rank(b_ij Z)/c_max` is the gain
 itself. Measured AUC 1.000 with a clean split in all five domains and three heterogeneous mixes,
 exact rank on 1,501 pairs. `candidate_gain_reference` is the readable loop form and
@@ -392,6 +414,10 @@ holds - but **not for `R^2` / `R^3`**, where `Agent.get_bearing` returns the glo
 is homogeneous `R^d`, so in practice global-frame vectors are being consumed as invariant scalar
 features: rotate the whole network and the policy output changes, which defeats the reason for
 choosing an EGNN.
+
+**The `AddRemoveEdge` heads take `e_ij`**, not just `adj_ij`, so pair scalars reach the head directly
+instead of only through three rounds of mean aggregation over `n-1` pairs. Head width follows
+`edge_feat_dim`. `SelectNodesSequentially` is unchanged.
 
 **The pointer head has no pairwise term.** `SelectNodesSequentially` models score target `j` given
 selected `i` as `MLP([h_j, h_i])` - no `e_ij`, no `adj_ij`, no `p̂_ij`, and no flag separating the
@@ -439,8 +465,16 @@ carry the two caveats above as columns.
 What it found, and why it is not the failure it looks like: **destroying any geometric channel costs
 the policy nothing.** That holds in all three modes and is the robust result. It is the *correct*
 behaviour under an objective with no geometry in it (`THEORY.md` §14.0), not shortcut learning, and
-it is the test for the margin objective: with `margin_kappa > 0` the geometric channels must start
+it is the test for the stiffness objective: with `stiffness_kappa > 0` the geometric channels must start
 costing something.
+
+**The ablation stops at the reference's convergence and caps every variant to that budget.** A
+forced-action policy cycles once it has its answer (20/20 episodes, median step 14 of 78); without
+the cap, ablating a channel buys extra exploration and every channel reads as *beneficial*.
+`coord_features` is the null control: GINE never receives coordinates, so its cost must be exactly
+0.00 in every mode, and it is what exposed a phi that was not a function of the state. Use
+`--live-env` when an environment-side measurement fix has to reach the ablation, since `load_run`
+otherwise replays the archived environment. See `DESIGN_NOTES.md#ablation-protocol`.
 
 **Run more than one mode before believing a positive.** Under `zero`, `degree`, `rigidity_glob` and
 `add_rank` look enormously important (+14.09, +12.20, +8.48 phi). Under `shuffle` they collapse to
@@ -470,7 +504,7 @@ beating it is only meaningful in `R^3` / `R^3xS^1` / `SE(3)`. See
 
 **`greedy` is the expensive baseline**, not brute force: it evaluates all `n(n-1)` candidate
 toggles per single edit, so cost is `O(n^2)` φ-evaluations per improvement. `score_network()`
-takes rank *and* `lam` from one `rigidity_decomposition` (so `greedy` is margin-aware at `margin_kappa > 0`
+takes rank *and* `lam` from one `rigidity_decomposition` (so `greedy` is stiffness-aware at `stiffness_kappa > 0`
 for free) and
 therefore skips `is_MBR` (which costs one rank computation *per edge* on top of the full-matrix
 rank) unless the configured `state_score_type` actually reads the flag - `Weighted` does not. The
@@ -505,10 +539,10 @@ meant different things per method), episode count moved into the header, every c
 direction, and a legend explains each method and column in plain language (`--brief` drops it).
 Every column is a mean over the episodes carrying its own `+-` spread; the percentage columns
 (`rigid`/`minimal`/`=best`) deliberately have none, because they are means of a 0/1 indicator
-whose sd is `sqrt(p(1-p))` - fully determined by the value already shown. The margin appears
+whose sd is `sqrt(p(1-p))` - fully determined by the value already shown. Stiffness appears
 twice, arithmetic (`mean+-sd`) and geometric (`gmean x/gsd`, via `_gmean`/`_gsd`), because it
 spans decades and an arithmetic `+-` implies a range crossing zero. `_fmt_geo` marks a row `*`
-when zero-margin (non-rigid) networks had to be dropped, since a geometric mean cannot take them.
+when zero-stiffness (non-rigid) networks had to be dropped, since a geometric mean cannot take them.
 
 **The figures are built to survive being pasted into a slide with no caption.** Every one carries
 a title block (what the figure is, then the *full* environment and model names, wrapped rather

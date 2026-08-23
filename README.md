@@ -105,8 +105,8 @@ the bearings, the agent coordinates and the null-space channels costs it nothing
 is the correct response to an objective that contains no geometric term.
 
 The objective has since been extended past the combinatorial rank. It can now charge for the
-rigidity margin as well as for edges, weighted so that the margin is worth a stated number of edges.
-On greedy hill-climbing, which needs no training, turning it on raises the margin of the resulting
+stiffness as well as for edges, weighted so that stiffness is worth a stated number of edges.
+On greedy hill-climbing, which needs no training, turning it on raises the stiffness of the resulting
 networks by 2x to 20x at an unchanged edge count.
 
 ## Evaluation
