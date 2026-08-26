@@ -30,12 +30,23 @@ apply to every task in this repository.
 - **NEVER commit, and never create a branch's first commit for the user.** `git add` / `git commit`
   / `git push` are the user's job - they verify every change manually first. Leave work in the
   working tree, say what changed, and stop there. Creating a branch is fine; committing to it is not.
-- **Keep the documentation current as you go, not at the end.** Correct `CLAUDE.md`, `THEORY.md`
-  and `DESIGN_NOTES.md` in the same change that invalidates them. The test is whether a *fresh
+- **NEVER edit documentation unless explicitly asked.** `README.md`, `THEORY.md`,
+  `DESIGN_NOTES.md`, `ROADMAP.md` and this file are the user's to write. This is not a preference
+  about style, it is about the user being able to see what changed: doc edits buried inside a code
+  change are invisible in review, and wrong claims have reached `README.md` more than once that way.
+  When a change makes something in them stale or false, **say so and stop** - name the file, quote
+  the line, say what it should say instead, and wait for an answer. Do not fix it yourself, do not
+  fix it "while you are in there", and do not treat "keep the docs current" as authorisation.
+  Reporting staleness is required; editing is not yours to do.
+- **What the documents are for**, when you are asked to write one. The test is whether a *fresh
   session with no conversation history* can read the repo and continue the work. Document the
   current state, not how it got there - no changelogs, no decision logs, no "this used to be X".
   Git history is the record of what changed; a stale narrative in a file that loads into every
   session costs more than it is worth.
+- **Every number in a document must be re-derivable.** If a measurement is quoted anywhere, the
+  script that produces it belongs in `tools/`. A number whose derivation exists only in a deleted
+  section or in a past conversation cannot be checked and will eventually be wrong without anyone
+  noticing.
 - **Keep useful throwaways.** If a script written to answer a question would be worth having again
   (a verification, a regression, an ablation, a table of every configurable switch, a plot of some
   invariant), say so and offer to keep it. Real tests go in `tests/`; anything else useful goes in

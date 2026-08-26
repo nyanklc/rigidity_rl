@@ -7,8 +7,7 @@ enough. Adding every possible measurement makes that trivial and is wasteful, ea
 sensing, tracking and communication. This thesis asks which links to keep, and learns the answer
 with a graph neural network trained by reinforcement learning.
 
-**Status: work in progress.** Interfaces, configuration formats and model architectures change
-frequently, and the repository carries superseded code from earlier experiments.
+**Status: work in progress.**
 
 ## Main References
 
@@ -47,7 +46,7 @@ Architectures:
 8. K. Xu, W. Hu, J. Leskovec, and S. Jegelka, "How Powerful are Graph Neural Networks?," *ICLR*,
    2019. [arXiv:1810.00826](https://arxiv.org/abs/1810.00826)
 
-A [draft presentation](resources/rigidity_rl_260807-1.pdf) covers the same material with figures.
+[Status presentations](resources/) are used in meetings with the thesis supervisors.
 
 ## Problem and Methodology
 
@@ -62,7 +61,8 @@ A [draft presentation](resources/rigidity_rl_260807-1.pdf) covers the same mater
    does it not?
 5. What are the properties of resultant graphs, and why?
 
-The longer-term motivation is a *distributed* protocol for maintaining rigid formations in swarms. The centralized formulation here is a deliberate first step.
+One of the main focuses of this work is on generalizability across networks. A key goal is a single policy that generalizes across network sizes and
+heterogeneous agent domains. The longer-term motivation is a *distributed* protocol for maintaining rigid formations in swarms.
 
 A formation of `n` agents is modelled as a **directed graph**. Each node is an agent with a pose
 and a *domain* fixing which degrees of freedom it actually has (`R^2`, `R^3`, `R^2xS^1`, `R^3xS^1`, `SE(3)`). For example, a planar ground robot cannot leave its plane, and a quadrotor with a fixed-axis gimbal can rotate about one axis only. A directed edge `i -> j` means agent `i` measures the bearing to agent `j`, in `i`'s own frame. The relation is not symmetric: `i` seeing `j` does not imply `j` sees `i`.
@@ -80,36 +80,7 @@ objective `phi` that rewards rigidity and charges for each edge. A graph neural 
 the network into node embeddings, and an action head turns those into Q-values (DQN) or logits
 (PPO). Invalid actions are masked inside the model.
 
-## Current state
-
-On heterogeneous networks of 10 agents spanning all five domains at once, a trained DQN
-policy reaches 17.05 edges on average against a proven lower bound of 17, rigid on every instance of a frozen
-20-instance benchmark and minimal on 95% of them. Greedy hill-climbing on the same objective and
-the same instances reaches 80%, and a 20-restart constructive-greedy oracle reaches 50%. The policy
-gets there with roughly 270x fewer rigidity-matrix evaluations than the oracle.
-
-Transfer degrades with agent complexity. Without retraining the policy runs at 5, 8 and 16
-agents. At 8 agents in homogeneous `R^3` it ties both classical baselines, reaching 50% minimal
-where a random policy reaches 0%. At 16 it ties the weaker one and loses to greedy (23.20 edges and
-0% minimal against 22.65 and 45%). The one configuration where it beats both classical methods is
-the heterogeneous mixture it trained on. Across homogeneous domains at 8 agents,
-however, transfer tracks the degrees of freedom each agent carries. It matches the baselines at 3
-DOF per agent (`R^3`, `R^2xS^1`) and fails at 4 and 6 (`R^3xS^1` 10% minimal against 85-100% for the
-baselines, `SE(3)` 25% against 100%). On `SE(3)` it scores below a uniform random policy on the
-objective while remaining rigid everywhere, so the failure is over-density rather than
-infeasibility.
-
-Channel-wise ablation, run in three independent modes, shows that
-the policy solves the problem from graph structure alone and reads no geometry at all. Destroying
-the bearings, the agent coordinates and the null-space channels costs it nothing in any mode. That
-is the correct response to an objective that contains no geometric term.
-
-The objective has since been extended past the combinatorial rank. It can now charge for the
-stiffness as well as for edges, weighted so that stiffness is worth a stated number of edges.
-On greedy hill-climbing, which needs no training, turning it on raises the stiffness of the resulting
-networks by 2x to 20x at an unchanged edge count.
-
-## Evaluation
+## Example evaluation outputs
 
 ![Baseline comparison table](resources/baselines-table.png)
 ![Run trajectories](resources/baselines-trajectories.png)
@@ -120,10 +91,9 @@ networks by 2x to 20x at an unchanged edge count.
 
 | File | Contents |
 |---|---|
-| [THEORY.md](THEORY.md) | the mathematics: rigidity matrix, rank, null space, objective |
-| [DESIGN_NOTES.md](DESIGN_NOTES.md) | why the implementation is the way it is |
-| [ROADMAP.md](ROADMAP.md) | what is planned next |
-| [docs/](docs/) | note on the heterogeneous rigidity matrix, with verification scripts |
+| [Bearing Rigidity Matrix Formulation](docs/dof_restriction_note.pdf) | Note on the heterogeneous rigidity matrix |
+| [THEORY.md](THEORY.md) | Background on rigidity theory and how it is used in the project |
+| [DESIGN_NOTES.md](DESIGN_NOTES.md) | implementation details |
 
 ## Running the code
 
@@ -134,9 +104,9 @@ Requires Python 3.12, an NVIDIA GPU, and [`uv`](https://docs.astral.sh/uv/).
 ```
 
 ```bash
-uv run environment.py 8 "R^3"          # generate an environment configuration
+uv run environment.py 8 "R^3"
 uv run train_dqn.py <env_name> <run_name>
-uv run baselines.py <env_name> --model <run_name>    # against random, greedy, optimal
+uv run baselines.py <env_name> --model <run_name>
 tensorboard --logdir runs
 ```
 
@@ -145,19 +115,29 @@ tensorboard --logdir runs
 ```
 rigidity.py         bearing rigidity matrix, rigidity tests, derived quantities
 network.py          Agent and Network, graph features
-environment.py      the gymnasium environment and its dispatchers
 scenario.py         random and file-backed scenario generation
+util.py             geometry helpers
+environment.py      the gymnasium environment and its dispatchers
 policy/             GNN backbones and one model per (backbone x action space)
 train_dqn.py        training (train_ppo.py for PPO)
+probe.py            periodic deterministic evaluation during training
+manifest.py         run manifests, archived sources and provenance
+agent_loader.py     rebuilds a trained agent from its manifest
 baselines.py        evaluation and comparison against baselines
 benchmark.py        frozen evaluation instances
-manifest.py         run manifests, archived sources and provenance
+report.py           tables, plots and CSVs for evaluation runs
+ablation.py         which observation channels a policy actually uses
+inference.py        roll out a trained model
+manual.py           interactive GUI for editing a graph by hand
+benchmarks/         the frozen instance sets, tracked on purpose
 tests/              invariant tests
 tools/              scripts worth keeping, verifications, ablations, measurements
 docs/               notes
+resources/          figures used in this README
 ```
 
-Directories produced by runs (`environments/`, `models/`, `runs/`, `train/`) are not tracked.
+Directories produced by runs (`environments/`, `scenarios/`, `models/`, `runs/`, `train/`,
+`runs_baselines/`) are not tracked.
 
 ## License
 
