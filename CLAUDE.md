@@ -155,6 +155,11 @@ uv run benchmark.py list
 # Which observation channels does a trained policy actually depend on?
 uv run ablation.py <model_name> [environment_name] [--episodes N] [--mode shuffle|zero|noise] [--channels a,b] [--csv out.csv]
 
+# Estimation error: does the prediction hold, do the criteria differ, which one matters
+PYTHONPATH=. uv run tools/crlb_validation.py        # measured vs predicted, and where it breaks
+PYTHONPATH=. uv run tools/spectral_criteria.py      # do A / D / E rank graphs differently
+PYTHONPATH=. uv run tools/functional_vs_error.py    # which of them predicts the measured error
+
 # Reproduce every number in the heterogeneous rigidity-matrix note (docs/)
 PYTHONPATH=. uv run docs/verify_dof_restriction.py [--quick]
 PYTHONPATH=. uv run docs/verify_dof_restriction_2.py   # independent reimplementation
@@ -170,7 +175,7 @@ tensorboard --logdir runs
 
 Names are filenames without extension: `<environment_name>` → `environments/<name>.json`, `<scenario_name>` → `scenarios/<name>.json`.
 
-**Tests: `uv run tests/run_all.py`** (fast suite, ~40 s, 608 checks) or
+**Tests: `uv run tests/run_all.py`** (fast suite, ~50 s, 726 checks) or
 `uv run tests/run_all.py --slow` (~3 min, adds training runs, brute force and large n).
 Individual files run standalone: `uv run pytest tests/test_flex.py -v`.
 
@@ -179,7 +184,8 @@ mask sentinel, n-invariance of every observation channel and of both backbones' 
 the flex tensor's frame and shape, the exact addition criterion against rebuilt-matrix
 ground truth in every domain, per-domain `rank_K`/`c_max`/`m_req`,
 similarity invariance per channel across all five domains, `allow_skip` over every model,
-the legacy obs presets being byte-exact, phi's closed form and its stiffness term, and
+the legacy obs presets being byte-exact, phi's closed form and its stiffness term,
+the shape estimator agreeing with the Cramer-Rao bound it is supposed to measure, and
 every live model having a nonlinearity between stacked `Linear`s. Re-introducing a bug
 the suite covers makes a *named* test fail; that is the point of it, not the pass rate.
 
@@ -199,6 +205,7 @@ There is no linter or CI.
 - `extended_bearing_rigidity_matrix(network)` → `B`, shape `(3m, 6n)`, built as `[D_p E^T S | D_a E_o^T P]` with `S`, `P` block-diagonal over nodes. Rows come in **3-row blocks, one block per directed edge**, in `np.nonzero(edges)` order - this per-edge block structure is what `is_MBR` exploits. Homogeneous output is bit-identical to the previous per-edge construction; a coordinate an agent cannot vary is now an exactly-zero column, which is what Michieletto's nullity accounting requires. Validated against its own definition by central differences (`tests/test_rigidity_matrix.py`).
 - `is_IBR` - Infinitesimally Bearing Rigid iff `rank(B) == rank(B_K)`, where `B_K` is the rigidity matrix of the fully-connected graph on the same poses. `rank_K` is cached on the env per episode; always pass it through rather than recomputing.
 - `rigidity_eigenvalue` - the first nonzero eigenvalue of `B^T B` (index `6n - rank_K` into the ascending spectrum). **Not a degree of rigidity**: rigidity is binary and generic, and a rigid framework recovers its shape from exact bearings at any `λ > 0`. It is the *conditioning* of that recovery - shape error scales as `1/sqrt(λ)` under bearing noise. See `THEORY.md` §15.0.
+- `estimation_error(s, rank_K)` → `(a_opt, e_opt, d_opt)`, the A-, D- and E-optimality criteria: total mean squared shape error `tr((B^T B)^+)`, the worst mode `1/λ`, and the log-volume `-Σ log w`. Read off the singular values `rigidity_decomposition` already returns, so all three are free. `estimation_error_of(network, rank_K)` runs it on the length-normalised `B` (`scaled_rigidity_matrix`), which is what makes the number comparable across `n`, domain and pose range - λ is not. `estimation_error_blocks` splits the trace into its position and attitude parts, needed only when comparing against a measured position error. **Measured: A and E rank graphs identically (corr 0.99), and D is worse than both at predicting real error.** See `THEORY.md` §18.
 - `is_MBR(network, rank_K, brmat)` - the **minimality heuristic**. Per-edge block rank `c_k = rank(B[3k:3k+3, :])`, sorted descending, greedily accumulated until `Σ c ≥ rank_K`, giving `m_req`; minimal iff IBR and `m == m_req`. See "Known issues / open questions" below for its reliability.
 - `MBR_required_Rd(n, d)` - closed-form minimum edge count, **valid only for homogeneous `R^d`**.
 - `max_edge_rank(network, brmat_K)` → `c_max`, the most rank a single edge can contribute. **Exact.** This is what `WeightedNormalized` normalizes by.
@@ -209,6 +216,36 @@ There is no linter or CI.
   violate diminishing returns), so greedy carries no guarantee there. That asymmetry is the
   structural argument for moving the objective from rank to stiffness. See `THEORY.md` §14.
 - `required_edge_count(network, ...)` → `m_req`, fewest edges that could make these poses rigid: closed form for homogeneous `R^d`, greedy block-rank accumulation otherwise. **A lower bound, not a ground truth** - it stays out of the reward and is used for reporting and the MBR metric only. Brute force finds it tight on everything checkable (24/24 at n=4, 6/6 at n=5, all five domains), which is evidence, not proof.
+- `repair_edge_count(network, ...)` → fewest edges that could make a **broken** graph rigid again, which is the question after an agent leaves or a link fails. Same subadditivity argument as `required_edge_count` but starting from the graph in hand: sort the exact per-pair marginals `rank(b_ij Z)` over the absent pairs, accumulate until they cover `rank_K - rank(B)`. Returns 0 on a rigid graph and reproduces `required_edge_count` exactly from the empty one. Karimian and Tron (CDC 2017) settle the homogeneous 2-D case exactly by rigid-component decomposition; **this is their `c_max = 1` formula generalised to 3-D, heterogeneous and directed graphs**, which their conclusions list as open. See `THEORY.md` §19.
+
+### Estimation (`estimation.py`)
+
+The empirical half of the error metrics, and **evaluation only** - nothing here is
+called from `step()`. `rigidity.estimation_error` predicts how far the recovered
+formation lands from the true one; this measures it. `perturb_bearings` adds
+tangent-plane noise of `sigma` **radians** to every bearing, `solve_shape` recovers
+the poses by damped Gauss-Newton with `B` as the Jacobian (steps restricted to each
+agent's admissible DOFs via `node_dof_projectors`), `shape_error` reports the error
+with the unobservable directions projected out, and `monte_carlo_error` drives the
+sweep. `predicted_error` is the analytic counterpart, split into position and
+attitude.
+
+Three things that are easy to get wrong and are pinned by `tests/test_estimation.py`:
+the noise is full 2-DOF tangent in **every** domain (a planar agent's motion is
+restricted, its camera is not); `B` must be the Jacobian of *this* module's bearing
+map, checked against central differences in all five domains; and the gauge quotient
+is **linear**, so it is a small-error metric - a formation collapsed to a point would
+otherwise score as a perfect estimate, which `max_scale_ratio` now catches. Do not
+"improve" it by centring and rescaling exactly: 3-D centring shifts `z` for a planar
+agent, whose `z` is not a free coordinate, and that measurably deletes real error
+(agreement with the bound drops 0.93 -> 0.82 on a five-domain mix).
+
+**Measured**: predicted and measured RMS error agree to a few percent in every
+domain, and the error is exactly linear in `sigma` over four decades. That is the
+first empirical support for the `1/sqrt(λ)` claim `THEORY.md` §15.0 has always
+asserted. It stops holding once the predicted *relative* error approaches order 1 -
+`R^3` and `SE(3)` hold to 5.7 degrees, a poorly conditioned `R^2xS^1` instance
+departs by 0.06. See `THEORY.md` §18 and `tools/crlb_validation.py`.
 
 ### Environment (`environment.py`)
 
@@ -550,10 +587,18 @@ meant different things per method), episode count moved into the header, every c
 direction, and a legend explains each method and column in plain language (`--brief` drops it).
 Every column is a mean over the episodes carrying its own `+-` spread; the percentage columns
 (`rigid`/`minimal`/`=best`) deliberately have none, because they are means of a 0/1 indicator
-whose sd is `sqrt(p(1-p))` - fully determined by the value already shown. Stiffness appears
-twice, arithmetic (`mean+-sd`) and geometric (`gmean x/gsd`, via `_gmean`/`_gsd`), because it
-spans decades and an arithmetic `+-` implies a range crossing zero. `_fmt_geo` marks a row `*`
-when zero-stiffness (non-rigid) networks had to be dropped, since a geometric mean cannot take them.
+whose sd is `sqrt(p(1-p))` - fully determined by the value already shown. **Stiffness and shape
+error** are both geometric (`gmean x/gsd`, via `_gmean`/`_gsd`), because both span decades and an
+arithmetic `+-` implies a range crossing zero; `_fmt_geo(v, key=...)` renders either. It marks a row
+`*` when non-rigid networks had to be dropped - their stiffness is exactly 0 and their shape error
+infinite, and a geometric mean can take neither.
+
+**`shape err` is the column to read, not `stiffness`.** It is the RMS state error per radian of
+bearing noise (position in formation radii, attitude in radians), so `8.0` means one degree of
+bearing error displaces the shape by ~14% of its own size. **Lower is better**, and unlike λ it is
+comparable across `n`, domain and pose range, so rows from different configurations can be compared
+directly. It comes from `Environment.shape_error_now()` - one SVD, cheaper than building `B` - and
+is validated against actually perturbing the bearings (`estimation.py`, `THEORY.md` §18).
 
 **The figures are built to survive being pasted into a slide with no caption.** Every one carries
 a title block (what the figure is, then the *full* environment and model names, wrapped rather

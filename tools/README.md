@@ -27,6 +27,10 @@ PYTHONPATH=. uv run tools/<name>.py
 | `checkpoint_fingerprint.py` | does an edit to `policy/` change what an already-trained checkpoint computes? |
 | `backbone_capacity.py` | at these settings, is the EGNN-vs-GINE comparison matched on width, on parameters, or on neither? |
 | `kappa_sweep.py` | what does raising `stiffness_kappa` buy in stiffness, and what does it cost in edges? |
+| `crlb_validation.py` | does the predicted shape error match the measured one, and at what noise level does the prediction stop holding? |
+| `spectral_criteria.py` | do A-, D- and E-optimality rank graphs differently, or are they the same statistic? |
+| `functional_vs_error.py` | which spectral criterion orders topologies the way the measured error does? |
+| `repair_bound.py` | is the repair bound sound, and is it the true minimum? |
 
 `constructive_greedy.py` is the standalone version of the `constructive` baseline
 now wired into `baselines.py`, for difficulty sweeps that need no env config. It
@@ -68,3 +72,11 @@ understate any arm with short episodes.
 `submodularity.py` reproduces `THEORY.md` §14. It is slow (a few minutes) because
 every triple costs three rank or eigenvalue computations; the conclusion is not
 close to the noise floor, so the default trial count is enough.
+
+The three estimation scripts answer one question each and are meant to be read in
+that order. `spectral_criteria.py` says the trace is a monotone restatement of the
+min eigenvalue and that log-det is the only one decorrelated from it;
+`crlb_validation.py` says the analytic prediction is right where it applies;
+`functional_vs_error.py` says that log-det's decorrelation is not signal, which is
+what stopped a training run being spent on it. `functional_vs_error.py` is the slow
+one -- it solves for the shape once per topology per noise level per trial.

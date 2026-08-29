@@ -1207,3 +1207,250 @@ removals, the informed arm now has an **exact one-step oracle in both directions
 objectives**. Its results therefore say what a learned policy adds *on top of* perfect greedy
 lookahead, not whether it can learn rigidity from geometry. The uninformed arm remains the headline,
 and `rigidity_removal` is a separate flag precisely so that off-against-on prices this.
+
+## 18. Estimation error: A-, D- and E-optimality, and what it measures
+
+§15 calls λ the conditioning of the bearing → shape inverse problem, and states that shape error
+scales as `1/sqrt(λ)`. Until this section that was an assertion: **no code in the repository had
+ever perturbed a bearing.** This section derives the quantity properly, measures it, and reports
+which spectral criterion actually predicts it.
+
+### 18.1 The three criteria
+
+A bearing is a unit vector, so measurement noise lives in its tangent plane. With independent
+isotropic tangent noise of variance `σ²` on each of the `m` bearings, the log-likelihood is
+`−‖B δχ − δz‖²/2σ²` to first order, so the Fisher information is `BᵀB/σ²` and the Cramér-Rao
+covariance of the shape estimate is `σ²(BᵀB)⁺` on the identifiable subspace. Three scalars
+summarise it, and they are the classical experiment-design criteria:
+
+```
+a_opt = tr((BᵀB)⁺) = Σ_k 1/w_k      A-optimality: total mean squared error      (18.1)
+e_opt = 1/λ        = 1/w_min        E-optimality: the worst mode alone
+d_opt = −Σ_k log w_k                D-optimality: log-volume of the ellipsoid
+```
+
+`w_k` are the `rank_K` nonzero eigenvalues of `BᵀB`, i.e. `s_k²` over the `rank_K` largest singular
+values — so **all three are free**, read off the SVD `rigidity_decomposition` already performs and
+discards (`rigidity.estimation_error`). Larger is worse for all three; all three are `+inf` on a
+flexible framework, where the shape is not identifiable at all.
+
+**Units.** `B`'s position columns carry `1/length` and its attitude columns are dimensionless
+(§13.4), so a spectrum read off the raw matrix mixes units and tracks the pose range rather than the
+topology. `scaled_rigidity_matrix` multiplies the position columns by `characteristic_length` first,
+the same length unit `nullspace_in_scaled_units` uses. Position error is then in **formation radii**
+and attitude error in **radians**, both dimensionless, and (18.1) is a well-defined sum over them.
+λ has the same defect today and escapes it only because `λ_ref` shares the scale (§15.4).
+
+The environment logs `shape_err = sqrt(a_opt / n)`: **RMS state error per radian of bearing noise**.
+Unlike λ it has an absolute meaning and is comparable across `n`, domain and pose range — `8.0`
+means one degree of bearing error (0.017 rad) displaces the shape by about 14% of its own size.
+
+### 18.2 Measuring it (`estimation.py`)
+
+`perturb_bearings` draws `z = normalize(b + σ (I − bbᵀ) ε)`, the small-angle limit of von
+Mises-Fisher, so **σ is an angle in radians**. The noise is full 2-DOF tangent in *every* domain: a
+planar agent's motion is restricted, its camera is not, and the component the restriction makes
+unobservable is exactly the one `B` already zeroes as a zero row.
+
+`solve_shape` runs damped Gauss-Newton on `Σ ‖b_ij(χ) − z_ij‖²` with `B` as the Jacobian — verified
+against central differences of the estimator's *own* bearing map in all five domains
+(`tests/test_estimation.py`), so the step really is a Newton step. `lstsq`'s minimum-norm solution
+puts zero in `ker(B)`, which is the inadmissible DOFs together with the gauge, so the iterate
+neither leaves an agent's domain nor drifts along a direction no bearing can see.
+
+`shape_error` projects the error off `ker(B_K)`, the trivial variation space. **This quotient is
+linearised**, exact to first order — which is the same linearisation the Cramér-Rao prediction
+makes, so the two are comparable by construction. Measured: exact to 1e-16 in `R^d`, where
+translation and scaling are linear in position, and `O(δ²)` in the oriented domains, where the
+rotational gauge is curved. The experiment initialises at the true poses and so stays at `O(σ)`,
+where the `O(σ²)` remainder is negligible.
+
+**Initialising at the truth measures *local* accuracy**, which is what the Cramér-Rao bound
+describes. Global convergence from a cold start is a different property and would need a different
+experiment.
+
+### 18.3 The prediction holds (`tools/crlb_validation.py`)
+
+Cramér-Rao bounds `E[‖x‖²]`, so the **RMS** over trials is what it predicts; the mean sits about
+`1/(4k)` below that for `k` identifiable modes, which is the ~10% gap a mean-based comparison shows.
+200 noise draws per cell, ratio = measured / predicted:
+
+| domain | 0.006° | 0.06° | 0.6° | 1.7° | 5.7° |
+|---|---|---|---|---|---|
+| `R^3` | 0.960 | 0.961 | 0.968 | **0.989** | 1.128 |
+| `R^2xS^1` | 1.046 | 1.187 | 0.639 | 0.696 | 0.305 |
+| `R^3xS^1` | 0.962 | 0.962 | 1.051 | 0.832 | 0.570 |
+| `SE(3)` | 0.973 | 0.973 | 0.980 | 1.035 | 1.059 |
+| `mixed` | 1.012 | 1.010 | 1.176 | 0.831 | 0.579 |
+
+**The bound is confirmed**: agreement within a few percent at small σ in every domain, and the error
+is exactly linear in σ over four decades. §15.0's claim is now measured rather than asserted.
+
+**Where it stops.** The agreement degrades as the predicted *relative* error approaches order 1, and
+it fails in both directions — above 1 the nonlinearity amplifies the error, below 1 the estimator
+saturates on a wrong-but-bounded configuration rather than running off. The transition is not sharp
+and is instance-dependent: `R^3` and `SE(3)` hold to 5.7°, while the poorly conditioned `R^2xS^1`
+instance departs already at 0.06°. Treat the analytic metric as valid at the percent level of
+relative error and check `tools/crlb_validation.py` before quoting it outside that.
+
+### 18.4 A ≈ E, and D measures something else (`tools/spectral_criteria.py`)
+
+288 rigid graphs per configuration:
+
+| config | corr(logE, logA) | corr(logE, D) | p10–p90 logA | p10–p90 logE | median `a_opt·λ` |
+|---|---|---|---|---|---|
+| n8 `R^3` | **0.9923** | 0.5977 | 1.64 | 2.02 | 1.77 |
+| n8 `SE(3)` | **0.9888** | 0.7974 | 1.53 | 2.10 | 1.93 |
+| n8 `R^2xS^1` | **0.9976** | 0.7908 | 2.86 | 3.11 | 1.21 |
+| `mixed` n=10 | **0.9915** | 0.6206 | 1.65 | 2.08 | 1.68 |
+
+**A-optimality is a monotone restatement of E-optimality.** `a_opt·λ` has median 1.21–1.93, so the
+softest mode alone carries 52–83% of the entire trace: the spectrum is bottom-dominated and the two
+criteria rank graphs the same way. Swapping the trace for the min eigenvalue in the state score
+cannot change what a policy learns.
+
+**D-optimality is decorrelated** (0.60–0.80), because `Σ log w_k` weights every mode equally in log
+space instead of being dragged by the bottom one. §18.5 is what decides whether that is signal.
+
+### 18.5 Which criterion predicts the measured error (`tools/functional_vs_error.py`)
+
+At small σ the measured error *is* `σ·sqrt(a_pos/n)` — §18.3 verifies it to a few percent — so
+ranking graphs by A-optimality there is circular. The question that is not circular is whether a
+criterion still orders *topologies on the same poses* the way the measured error does at realistic
+noise. Spearman rank correlation, within each pose set, 6 pose sets × 10 topologies:
+
+| domain | σ | A (trace) | E (1/λ) | D (logdet) |
+|---|---|---|---|---|
+| `R^3` | 0.006° | **0.986** | 0.976 | 0.683 |
+| `R^3` | 1° | **0.982** | 0.972 | 0.685 |
+| `R^3` | 5° | **0.945** | 0.925 | 0.669 |
+| `SE(3)` | 0.006° | **0.832** | 0.808 | 0.792 |
+| `SE(3)` | 1° | **0.806** | 0.782 | 0.798 |
+| `SE(3)` | 5° | 0.519 | 0.459 | **0.588** |
+| `R^2xS^1` | 0.006° | **0.958** | 0.954 | 0.820 |
+| `R^2xS^1` | 1° | 0.618 | 0.620 | 0.606 |
+| `R^2xS^1` | 5° | 0.069 | 0.061 | **0.164** |
+| `mixed` | 0.006° | **0.877** | 0.873 | 0.564 |
+| `mixed` | 1° | **0.846** | 0.842 | 0.537 |
+| `mixed` | 5° | **0.622** | 0.600 | 0.366 |
+
+Three results, and the second is a negative one that saved a training run:
+
+1. **A beats E, but barely** — by 0.004 to 0.025 everywhere. Consistent with §18.4: they are the
+   same statistic. The trace is worth adopting for *interpretability*, not for ranking power.
+2. **D-optimality is the worst of the three at every noise level except deep in the nonlinear
+   regime.** §18.4 showed it is decorrelated from λ; this shows the decorrelation is not signal.
+   Whole-spectrum volume is simply not what determines shape error, so D does not belong in the
+   reward — which is the opposite of what its decorrelation alone suggested.
+3. **At realistic bearing noise the spectral criteria stop predicting the error at all.** In
+   `R^2xS^1` the rank correlation is 0.958 at 0.006° and **0.069 at 5°** — no signal. The same
+   collapse appears more slowly in `mixed` and `SE(3)`. So a topology optimised for λ, for the
+   trace, or for logdet is optimised for a quantity that does not determine performance at the noise
+   levels a real formation would see, and only the measured error is a valid objective there.
+
+**Consequence for the state score.** No spectral functional is a meaningfully better training signal
+than λ. The gain from this section is the *evaluation* metric and its interpretation, not a better
+reward — and point 3 is a stronger argument for measuring error directly than for replacing one
+eigenvalue statistic with another.
+
+## 19. Repairing a broken framework
+
+§5 asks how few edges could make a set of poses rigid, starting from nothing. This section
+asks the question that arises *after* a formation exists and something goes wrong: an agent
+leaves, a link fails, and the survivors have to restore rigidity. `required_edge_count` cannot
+answer it, because it starts from the empty graph and so throws away everything the survivors
+still have.
+
+### 19.1 The bound
+
+Let `G` be the current (flexible) graph, `Z` an orthonormal basis of `ker(B_G)`, and write the
+deficit as
+
+```
+deficit = rank_K − rank(B_G)                                                         (19.1)
+```
+
+By §13.1 the exact rank an absent pair `i -> j` would add *right now* is `rank(b_ij Z)`. Sort
+those marginals over the absent pairs, descending, and accumulate:
+
+```
+m_repair  =  smallest k with  Σ_{first k marginals} ≥ deficit                        (19.2)
+```
+
+**(19.2) is a lower bound.** `S ↦ rank(B_S)` is monotone submodular (§14.2), so an edge's
+marginal contribution can only shrink as other edges are added. No set of `k` edges can
+therefore close more of the deficit than the `k` largest marginals available now. ∎
+
+Two details decide whether it is sound rather than merely plausible:
+
+- **The marginals must be the per-pair gains `rank(b_ij Z)`, not the complete graph's block
+  ranks `c_k`.** An edge whose own block has rank 2 may contribute only 1 to *this* graph,
+  because part of its block already lies in the row space. Using `c_k` would overstate what
+  each edge can do and so *understate* the count — an unsound bound, not a loose one.
+- **Only absent pairs count.** An existing edge already lies in the row space, so `b_ij Z = 0`
+  and its marginal is zero anyway; excluding them explicitly is what makes (19.2) read "how
+  many *more*".
+
+`repair_edge_count` returns 0 on a rigid graph, and from the empty graph it reproduces
+`required_edge_count` exactly in every domain and on the `mixed` mixture — the two are one
+construction seen from different starting points, which makes that agreement a check rather
+than a coincidence.
+
+### 19.2 Relation to Karimian and Tron
+
+Karimian and Tron (CDC 2017) settle the homogeneous **2-D** case exactly. They decompose the
+framework into its maximal rigid components, which meet at shared vertices they call *pins*,
+and count
+
+```
+m_r = 2n − 3 − Σ_{X ∈ X_r} (2|X| − 3)                                                (19.3)
+```
+
+over the cover `X_r` of rigid components, proving a greedy algorithm attains it (their
+Theorem 5).
+
+**(19.3) is the `c_max = 1` case of (19.2).** In `R^2` every edge block has rank 1, so every
+useful marginal is exactly 1 and (19.2) collapses to `deficit`. Components meeting only at
+pins contribute independent constraints, so `rank(B_G) = Σ_X (2|X| − 3)`, and
+`deficit = (2n − 3) − Σ_X (2|X| − 3)`, which is (19.3). `tests/test_rigidity_derived.py`
+asserts the collapse directly.
+
+What (19.2) adds is everything outside their hypotheses: `c_max = 2` domains, agents carrying
+their own frames, heterogeneous mixtures, and directed edges. Their conclusions list the 3-D
+extension as open, and this is it — at the cost of being a bound rather than a proven minimum,
+which is the same standing §5's `m_req` has.
+
+Note also what they used their construction *for*: their combinatorial search returns both the
+first valid repair and the **best**, ranked by the second-smallest singular value of a
+normalised bearing matrix — essentially λ, used as a tie-break among equally sparse repairs.
+That is the same design as §15's stiffness term, arrived at independently, and it leaves open
+the question of which criterion the tie-break should use, which is what §18 measures.
+
+### 19.3 Validation
+
+Exhaustive search over broken graphs at n=5 (n=4 for the mixes), against every edge set up to
+the search cap. **Soundness is the property the bound must have**; attainment is evidence, and
+is proved only in 2-D.
+
+| config | n | cases | sound | attained | mean gap |
+|---|---|---|---|---|---|
+| `R^2` | 5 | 14 | **14/14** | 14/14 | 0.00 |
+| `R^3` | 5 | 14 | **14/14** | 14/14 | 0.00 |
+| `R^2xS^1` | 5 | 10 | **10/10** | 10/10 | 0.00 |
+| `R^3xS^1` | 5 | 13 | **13/13** | 13/13 | 0.00 |
+| `SE(3)` | 5 | 11 | **11/11** | 11/11 | 0.00 |
+| mix `R^2/R^3/SE(3)/R^3xS^1` | 4 | 19 | **19/19** | 19/19 | 0.00 |
+| mix `R^2/R^2/R^2xS^1/R^3` | 4 | 16 | **16/16** | 15/16 | 0.06 |
+
+Sound in **97/97** cases, and attained in **96/97**. The single miss is heterogeneous,
+which is where it was expected: the greedy sum over the largest marginals need not be
+jointly realisable when the marginals differ between pairs, and that is the same caveat
+§5 records for `required_edge_count`. In the homogeneous domains the bound was the true
+minimum every time, which is what Karimian and Tron prove for `R^2` and what §14.3's
+matroid argument predicts wherever `c_max = 1`.
+
+Reproduce with `tools/repair_bound.py`.
+
+The bound is also checked against a construction that cannot fail: removing `k` edges from a
+rigid graph leaves one repairable in at most `k`, since putting those `k` back will do, so any
+bound above `k` would be unsound. That holds for `k = 1, 2, 3` in all five domains.

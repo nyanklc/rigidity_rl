@@ -72,7 +72,8 @@ def score_network(env, need_mbr=None):
     return score, bool(is_IBR), bool(is_MBR), int(rank), int(env.network.edges.sum())
 
 
-def result(method, score, is_IBR, is_MBR, m, work=0, best_at=0, min_eig=None):
+def result(method, score, is_IBR, is_MBR, m, work=0, best_at=0, min_eig=None,
+           shape_err=None):
     """One method's outcome on one instance.
 
     `work` counts graph modifications actually applied and `best_at` is the step the best
@@ -87,6 +88,9 @@ def result(method, score, is_IBR, is_MBR, m, work=0, best_at=0, min_eig=None):
         "work": int(work),
         "best_at": int(best_at),
         "min_eig": None if min_eig is None else float(min_eig),
+        # RMS state error per radian of bearing noise: what the topology costs the
+        # thing the bearings are for. None while flexible, where it is infinite.
+        "shape_err": None if shape_err is None else float(shape_err),
     }
 
 
@@ -97,7 +101,8 @@ def record(trace, method, episode, step, stats):
     trace.append({"episode": episode, "method": method, "step": int(step),
                   "score": stats["score"], "edges": stats["m"], "rank": stats["rank"],
                   "rank_K": stats["rank_K"], "is_IBR": stats["is_IBR"],
-                  "is_MBR": stats["is_MBR"], "min_eig": stats["min_eig"]})
+                  "is_MBR": stats["is_MBR"], "min_eig": stats["min_eig"],
+                  "shape_err": stats.get("shape_err")})
 
 
 def stats_now(env, need_mbr=True):
@@ -105,7 +110,8 @@ def stats_now(env, need_mbr=True):
     score, is_IBR, is_MBR, rank, m = score_network(env, need_mbr=need_mbr)
     return {"score": score, "m": m, "rank": rank, "rank_K": int(env.rank_K),
             "is_IBR": is_IBR, "is_MBR": is_MBR,
-            "min_eig": float(rigidity_eigenvalue(env.network, rank_K=env.rank_K))}
+            "min_eig": float(rigidity_eigenvalue(env.network, rank_K=env.rank_K)),
+            "shape_err": env.shape_error_now() if hasattr(env, "shape_error_now") else None}
 
 
 def step_stats(env, tracing):
@@ -125,7 +131,7 @@ def run_initial(env, trace=None, episode=0):
     st = stats_now(env)
     record(trace, "initial", episode, 0, st)
     return result("initial", st["score"], st["is_IBR"], st["is_MBR"], st["m"],
-                  min_eig=st["min_eig"])
+                  min_eig=st["min_eig"], shape_err=st.get("shape_err"))
 
 
 def run_greedy(env, max_steps=200, verbose=True, trace=None, episode=0):
@@ -192,7 +198,8 @@ def run_greedy(env, max_steps=200, verbose=True, trace=None, episode=0):
     st = stats_now(env)
     # greedy stops at its own best, so work and best@ coincide
     return result("greedy", st["score"], st["is_IBR"], st["is_MBR"], st["m"],
-                  work=steps, best_at=steps, min_eig=st["min_eig"])
+                  work=steps, best_at=steps, min_eig=st["min_eig"],
+                  shape_err=st.get("shape_err"))
 
 
 def _construct_once(env, order, rng):
@@ -248,7 +255,8 @@ def run_constructive(env, rng, restarts=20, verbose=True, trace=None, episode=0)
     st = stats_now(env)
     # monotone construction: it ends on its own best graph
     return result("constructive", st["score"], st["is_IBR"], st["is_MBR"], st["m"],
-                  work=len(added), best_at=len(added), min_eig=st["min_eig"])
+                  work=len(added), best_at=len(added), min_eig=st["min_eig"],
+                  shape_err=st.get("shape_err"))
 
 
 def rollout_result(method, env, work):
@@ -256,7 +264,8 @@ def rollout_result(method, env, work):
     return result(method, env.best_state_score, env.best_stats["is_IBR"],
                   env.best_stats["is_MBR"], env.best_stats["m"],
                   work=work, best_at=env.best_step,
-                  min_eig=env.best_stats.get("min_eig"))
+                  min_eig=env.best_stats.get("min_eig"),
+                  shape_err=env.best_stats.get("shape_err"))
 
 
 def run_random(env, steps, trace=None, episode=0):
@@ -385,7 +394,7 @@ def run_brute_force(env, verbose=True):
         env.network.set_edges_list(best_subset)
         st = stats_now(env)
         best = result("optimal", st["score"], st["is_IBR"], st["is_MBR"], st["m"],
-                      min_eig=st["min_eig"])
+                      min_eig=st["min_eig"], shape_err=st.get("shape_err"))
 
     env.network.set_edges(saved)
     return best

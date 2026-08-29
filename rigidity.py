@@ -341,6 +341,56 @@ def required_edge_count(network, rank_K=None, brmat_K=None, block_ranks=None):
 
 # Rank each edge's own 3-row block. Constant (d-1) in homogeneous R^d, so it only
 # carries information on heterogeneous networks.
+# Fewest edges that could make a BROKEN graph rigid again, which is the question
+# after an agent leaves or a link fails. required_edge_count cannot answer it: it
+# starts from the empty graph and ignores what the survivors still have.
+# Karimian and Tron Theorem 4 is the c_max = 1 case of this, exact in homogeneous
+# R^2; the 3-D and heterogeneous extension is what makes this a bound instead.
+def repair_edge_count(network, rank_K=None, brmat=None, rank_brm=None,
+                      length_scale=None):
+    """Lower bound on the edges needed to restore rigidity. 0 if already rigid.
+
+        deficit = rank_K - rank(B)
+        m_rep   = smallest k with sum of the k largest marginals >= deficit   (19.2)
+
+    The marginals are the exact per-pair gains rank(b_ij Z) over the absent
+    pairs, not the complete graph's block ranks: an edge's block may have rank 2
+    while contributing 1 here, and using the block rank would undercount.
+    """
+    n = network.n
+    if n < 2:
+        return 0
+
+    if brmat is None:
+        brmat = extended_bearing_rigidity_matrix(network)
+    if rank_K is None:
+        rank_K = int(np.linalg.matrix_rank(
+            extended_bearing_rigidity_matrix(network.fully_connected())))
+    if rank_brm is None:
+        rank_brm = int(np.linalg.matrix_rank(brmat)) if brmat.size else 0
+
+    deficit = int(rank_K) - int(rank_brm)
+    if deficit <= 0:
+        return 0
+
+    if length_scale is None:
+        length_scale = characteristic_length(network)
+    Z = nullspace_in_scaled_units(nullspace(brmat, int(rank_brm)), n, length_scale)
+    gains = candidate_gain(network, Z, length_scale=length_scale)[1]
+
+    absent = np.logical_and(~network.edges.astype(bool), ~np.eye(n, dtype=bool))
+    available = sorted((g for g in gains[absent].tolist() if g > 0), reverse=True)
+
+    total = 0
+    for k, g in enumerate(available, start=1):
+        total += g
+        if total >= deficit:
+            return k
+
+    # only a rank threshold can land here; report the whole budget rather than lie
+    return len(available)
+
+
 def edge_block_ranks(brmat):
     return [np.linalg.matrix_rank(brmat[3*k:3*(k+1), :]) for k in range(brmat.shape[0] // 3)]
 
@@ -441,6 +491,73 @@ def rigidity_decomposition(brmat, rank_K):
     rank = int((s > tol).sum())
     lam = float(s[rank_K - 1] ** 2) if rank >= rank_K and rank_K - 1 < len(s) else 0.0
     return rank, s, lam
+
+
+def estimation_error(s, rank_K, rank=None):
+    """(a_opt, e_opt, d_opt) from B's singular values, descending.        (18.1)
+
+    tr((B^T B)^+), 1/lam and -sum log w over the rank_K nonzero eigenvalues
+    w_k = s_k^2. inf for all three on a flexible framework, where the shape is
+    not identifiable.
+    """
+    if rank is None:
+        rank = int(len(s))
+    if rank_K < 1 or len(s) < rank_K or rank < rank_K:
+        return np.inf, np.inf, np.inf
+
+    w = np.asarray(s[:rank_K], dtype=float) ** 2
+    if w[-1] <= 0.0:
+        return np.inf, np.inf, np.inf
+
+    return float((1.0 / w).sum()), float(1.0 / w[-1]), float(-np.log(w).sum())
+
+
+# B's position columns carry 1/length while its attitude columns do not, so a
+# spectrum read off the raw matrix mixes units.
+def scaled_rigidity_matrix(network, brmat=None, length_scale=None):
+    """B with its position columns in units of the formation's RMS radius."""
+    if brmat is None:
+        brmat = extended_bearing_rigidity_matrix(network)
+    if brmat.size == 0:
+        return brmat
+    if length_scale is None:
+        length_scale = characteristic_length(network)
+    out = brmat.copy()
+    out[:, :3 * network.n] *= length_scale
+    return out
+
+
+def estimation_error_blocks(brmat, rank_K, n):
+    """(a_pos, a_att): tr((B^T B)^+) over the position and attitude blocks.
+
+    What the position and attitude RMS errors are separately predicted by;
+    a_opt alone predicts a quantity mixing lengths and radians. The cut is by
+    index rather than tolerance, so squaring B costs no accuracy in the rank.
+    """
+    if brmat.size == 0:
+        return np.inf, np.inf
+    cols = brmat.shape[1]
+    k = cols - int(rank_K)
+    if k < 0:
+        return np.inf, np.inf
+
+    w, V = np.linalg.eigh(brmat.T @ brmat)     # ascending
+    w, V = w[k:], V[:, k:]                     # drop ker(B)
+    if w.min() <= 0:
+        return np.inf, np.inf
+
+    inv = 1.0 / w
+    return (float((inv * (V[:3 * n] ** 2).sum(axis=0)).sum()),
+            float((inv * (V[3 * n:] ** 2).sum(axis=0)).sum()))
+
+
+def estimation_error_of(network, rank_K, brmat=None, length_scale=None):
+    """estimation_error on the length-normalised B. One SVD."""
+    Bs = scaled_rigidity_matrix(network, brmat, length_scale)
+    if Bs.size == 0:
+        return np.inf, np.inf, np.inf
+    rank, s, _ = rigidity_decomposition(Bs, rank_K)
+    return estimation_error(s, rank_K, rank=rank)
 
 
 def greedy_rigid_construction(network, rank_K, rng):

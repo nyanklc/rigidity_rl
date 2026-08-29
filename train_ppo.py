@@ -18,12 +18,12 @@ import manifest
 from probe import Probe
 
 ######################################
-TOTAL_TIMESTEPS = int(6e5)
-NR_ENVS = 4
+TOTAL_TIMESTEPS = int(4e5)
+NR_ENVS = 1
 ROLLOUT_SIZE = 256
 SEED = 0
 
-BACKBONE = "Equivariant"
+BACKBONE = "GINE"
 GNN_HIDDEN_DIM = 128
 ACTOR_HEAD_HIDDEN_DIM = 256
 

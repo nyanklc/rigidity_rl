@@ -680,6 +680,104 @@ Use it for reporting and for the MBR metric. **Do not put it in the reward** - s
 Cost is `n(n-1)` small rank computations, so call it once per episode and cache it;
 `Environment.compute_episode_constants()` does.
 
+### repair-edge-count
+
+`repair_edge_count()` is the same question asked of a graph that is already there:
+**how few edges could make THIS graph rigid again**, after an agent left or a link
+failed. `required_edge_count` cannot answer it -- it starts from the empty graph and
+so ignores everything the survivors still have.
+
+The argument is the same subadditivity, moved: the deficit is `rank_K - rank(B)`, and
+no `k` edges can close more of it than the `k` largest marginals available now,
+because rank is monotone submodular ([THEORY.md §14.2](THEORY.md)) and adding edges
+can only shrink a marginal.
+
+Two choices worth stating:
+
+- **The marginals are the exact per-pair gains `rank(b_ij Z)` (§13), not the complete
+  graph's block ranks.** An edge whose own block has rank 2 may contribute only 1 to
+  this particular graph, and using the block rank would understate the count -- which
+  would make the bound unsound, not merely loose.
+- **Only absent pairs are counted.** An existing edge already lies in the row space,
+  so its marginal is 0 and it would be filtered out anyway; excluding them explicitly
+  is what makes the function say "how many *more*".
+
+It returns 0 on a rigid graph, and from the empty graph it reproduces
+`required_edge_count` exactly in every domain and on the `mixed` mixture -- the two
+are the same construction seen from different starting points, so that agreement is a
+real check rather than a coincidence.
+
+**Prior work, and what is new.** Karimian and Tron (CDC 2017) solve the homogeneous
+2-D case exactly: decompose into rigid components and count
+`2n - 3 - sum_X (2|X| - 3)`, attained by a greedy algorithm they prove optimal. In
+`R^2`, `c_max = 1`, every useful edge closes exactly one unit of deficit, and this
+bound collapses to `rank_K - rank(B)` -- their formula, since the component ranks add.
+Their stated open problems are the 3-D extension and a criterion for *which* edges to
+add; this is the former, and phi with the shape-error metric is aimed at the latter.
+
+Same status as `required_edge_count`: **a lower bound, not a ground truth**, and it
+stays out of the reward for the same reason.
+
+---
+
+## estimation.py
+
+### estimation-monte-carlo
+
+`rigidity.estimation_error` predicts how far a recovered formation lands from the true
+one. `estimation.py` measures it, so the prediction stops being an assertion. It runs
+in evaluation only -- never in `step()`.
+
+Four decisions, each of which was arrived at by getting it wrong first:
+
+- **The noise is full 2-DOF tangent in every domain.** A bearing is a unit vector, so
+  noise lives in its tangent plane, and `sigma` is then an angle in radians. It is
+  tempting to restrict a planar agent's bearing noise to its plane; that is wrong. The
+  DOF restriction is on the agent's *motion*, not on its camera, and the component the
+  restriction makes unobservable is exactly the one `B` already carries as a zero row.
+- **The solver's Jacobian must be `B`, and `B` must differentiate THIS module's bearing
+  map.** `true_bearings` therefore builds `R_i^T p_hat_ij` the way
+  `extended_bearing_rigidity_matrix` does, rather than calling `Agent.get_bearing`,
+  which returns the *world* vector for `R^2`/`R^3` and agrees only because those agents
+  happen to keep an identity orientation. A test checks it against central differences
+  in all five domains.
+- **Steps are restricted through `node_dof_projectors`.** `lstsq`'s minimum-norm
+  solution already lands there, since `B` zeroes those columns, but doing it explicitly
+  makes "an agent never leaves its domain" a property of the code rather than of the
+  solver's tolerance.
+- **The gauge quotient is linear, and that makes it a small-error metric.** The
+  unobservable directions are `ker(B_K)`, and projecting the error off them is exact
+  only to first order -- which is the same linearisation the Cramer-Rao prediction
+  makes, so the two are comparable by construction rather than by luck.
+
+**Do not replace the linear quotient with an exact one.** Centring and rescaling both
+formations looks safer and is not: 3-D centring shifts `z` for a planar agent, whose
+`z` is not a free coordinate, so it deletes real error. Measured on a five-domain mix,
+that alone moves agreement with the bound from 0.93 to 0.82. `ker(B_K)` is the only
+description of the gauge that is right in every domain.
+
+**One thing the linear quotient genuinely cannot do** is score a gross failure. A
+scaling by zero is a gauge direction like any other, so a formation collapsed to a
+single point projected to *no error at all* -- found by implementing the anchored
+linear solve below and watching it collapse. `max_scale_ratio` catches it and returns
+`inf`. It cannot fire in the Monte-Carlo experiment, where the solver starts from the
+truth under small noise; it is there for callers handing in an estimate from elsewhere,
+which the robustness harness will.
+
+**Why Gauss-Newton rather than the anchored linear solve.** In `R^d` each bearing says
+`(p_j - p_i)` is parallel to `z_ij`, i.e. `(I - z z^T)(p_j - p_i) = 0`, which is linear
+in the positions -- fix a couple of agents and solve. Measured at n=8, `sigma = 1e-3`,
+it works: 1.86e-03 against Gauss-Newton's 2.03e-03, slightly better because fixing two
+agents pins 6 numbers where only 4 are free and the extra 2 are true values handed to
+the solver. It does **not** carry over to the oriented domains: there `z_ij = R_i^T
+p_hat_ij` with `R_i` unknown, so the equation is bilinear in `(R, p)`, and running it
+anyway gives 3.3e-01 against 1.7e-03 in `SE(3)`. The number of coordinates that may be
+anchored is also the gauge dimension, which is domain dependent (4 in `R^3`, 7 in
+`SE(3)`) -- anchor too few and the formation collapses, too many and the estimate is
+being fed the answer. Gauss-Newton needs none of that bookkeeping, covers all five
+domains in one path, and is the maximum-likelihood estimator the Cramer-Rao bound
+describes, which is why the agreement lands at 1.00 rather than merely near it.
+
 ---
 
 ## train_ppo.py

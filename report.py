@@ -100,16 +100,22 @@ def _gsd(values):
     return float(np.exp(np.std(np.log(values)))) if values else None
 
 
-def _fmt_geo(v, times=" x/", mark="*"):
-    """`gmean x/ gsd`, flagged when zero-stiffness networks had to be left out."""
-    if v["min_eig_gmean"] is None:
+def _fmt_geo(v, key="min_eig", times=" x/", mark="*"):
+    """`gmean x/ gsd`, flagged when non-rigid networks had to be left out.
+
+    Serves both spectral columns: stiffness is 0 on a flexible network and shape
+    error is infinite on one, and neither can enter a geometric mean, so both
+    report over the rigid subset and mark the row when that is not all of them.
+    """
+    gmean, gsd = v[f"{key}_gmean"], v[f"{key}_gsd"]
+    if gmean is None:
         return "-"
-    partial = mark if v["min_eig_n_pos"] < v["min_eig_n"] else ""
+    partial = mark if v[f"{key}_n_pos"] < v[f"{key}_n"] else ""
     # one surviving network has no spread; printing "x/1.0" would read as "no spread"
     # rather than "nothing to spread over"
-    if v["min_eig_n_pos"] < 2:
-        return f"{v['min_eig_gmean']:.1e}{partial}"
-    return f"{v['min_eig_gmean']:.1e}{times}{v['min_eig_gsd']:.1f}{partial}"
+    if v[f"{key}_n_pos"] < 2:
+        return f"{gmean:.1e}{partial}"
+    return f"{gmean:.1e}{times}{gsd:.1f}{partial}"
 
 
 def _fmt(mean, sd=None, spec=".2f", pm="+-"):
@@ -133,6 +139,11 @@ def aggregate(rows):
         sel = [r for r in rows if r["method"] == m]
         eig = [r["min_eig"] for r in sel if r.get("min_eig") is not None]
         pos = [e for e in eig if e > 0]
+        # shape error is None exactly where the network came out flexible, where it
+        # is infinite rather than large -- those rows are dropped, and the count is
+        # kept so the table can mark it
+        err = [r["shape_err"] for r in sel
+               if r.get("shape_err") is not None and r["shape_err"] > 0]
         matched = [r for r in sel if r["episode"] in opt]
         out[m] = {
             "episodes": len(sel),
@@ -153,6 +164,10 @@ def aggregate(rows):
             # take -- record how many networks the geometric pair actually saw
             "min_eig_n": len(eig),
             "min_eig_n_pos": len(pos),
+            "shape_err_gmean": _gmean(err),
+            "shape_err_gsd": _gsd(err),
+            "shape_err_n": len(sel),
+            "shape_err_n_pos": len(err),
             "work_mean": float(np.mean([r.get("work", 0) for r in sel])),
             "work_sd": float(np.std([r.get("work", 0) for r in sel])),
             "best_at_mean": float(np.mean([r.get("best_at", 0) for r in sel])),
@@ -171,9 +186,9 @@ def format_table(rows, context, brief=False):
     lines = []
 
     head1 = (f"  {'method':<9}{'edges':>12}{'score':>14}{'rigid':>8}{'minimal':>9}"
-             f"{'stiffness':>19}{'stiffness(geo)':>17}{'work':>11}{'best@':>12}")
+             f"{'stiffness(geo)':>17}{'shape err':>16}{'work':>11}{'best@':>12}")
     head2 = (f"  {'':<9}{'(fewer)':>12}{'(higher)':>14}{'%':>8}{'%':>9}"
-             f"{'mean+-sd':>19}{'gmean x/gsd':>17}{'edits':>11}{'step':>12}")
+             f"{'gmean x/gsd':>17}{'gmean x/gsd':>16}{'edits':>11}{'step':>12}")
     if has_opt:
         head1 += f"{'=best':>7}"
         head2 += f"{'%':>7}"
@@ -193,14 +208,14 @@ def format_table(rows, context, brief=False):
 
     for m, v in agg.items():
         ref = m in ("initial", "optimal")
-        eig = _fmt(v["min_eig_mean"], v["min_eig_sd"], ".1e")
         work = "-" if ref else _fmt(v["work_mean"], v["work_sd"], ".1f")
         best = "-" if ref else _fmt(v["best_at_mean"], v["best_at_sd"], ".1f")
         row = (f"  {m:<9}"
                f"{_fmt(v['edges_mean'], v['edges_sd']):>12}"
                f"{_fmt(v['score_mean'], v['score_sd']):>14}"
                f"{v['rigid_pct']:>8.0f}{v['minimal_pct']:>9.0f}"
-               f"{eig:>19}{_fmt_geo(v):>17}{work:>11}{best:>12}")
+               f"{_fmt_geo(v):>17}{_fmt_geo(v, key='shape_err'):>16}"
+               f"{work:>11}{best:>12}")
         if has_opt:
             row += ("-" if v["matches_opt_pct"] is None
                     else f"{v['matches_opt_pct']:.0f}").rjust(7)
@@ -224,18 +239,22 @@ def format_table(rows, context, brief=False):
     lines.append("            measurements. This is the property being solved for.")
     lines.append("  minimal   % that are rigid AND use the fewest possible edges.")
     lines.append("            (heuristic on mixed-domain networks - may under-report)")
-    lines.append("  stiffness how strongly the bearings react to a change in shape. Every")
-    lines.append("            rigid network recovers its shape from exact bearings; larger")
-    lines.append("            means it still does so under measurement noise, since shape")
-    lines.append("            error scales as 1/sqrt(this). Its absolute size depends on how")
-    lines.append("            far apart the agents are, so compare rows, not the number.")
-    lines.append("  stiffness(geo)")
-    lines.append("            the same stiffness as a geometric mean and spread, because it")
-    lines.append("            ranges over orders of magnitude: 'a x/b' means the typical")
-    lines.append("            network sits between a/b and a*b. A '*' marks rows where")
-    lines.append("            non-rigid networks (stiffness exactly 0) had to be left out --")
-    lines.append("            a zero cannot enter a geometric mean, so those rows describe")
-    lines.append("            only the networks that came out rigid.")
+    lines.append("  stiffness how strongly the bearings react to a change in shape, as a")
+    lines.append("            geometric mean and spread since it ranges over orders of")
+    lines.append("            magnitude: 'a x/b' means the typical network sits between a/b")
+    lines.append("            and a*b. Higher is better. Its absolute size depends on how far")
+    lines.append("            apart the agents are, so compare rows, not the number.")
+    lines.append("  shape err how far the recovered formation is from the true one, per")
+    lines.append("            radian of error in the bearing measurements. Position is")
+    lines.append("            counted in formation radii and attitude in radians, so the")
+    lines.append("            number is a fraction: 8.0 means one degree of bearing error")
+    lines.append("            (0.017 rad) displaces the shape by about 14% of its own size.")
+    lines.append("            LOWER is better, and unlike stiffness it is comparable across")
+    lines.append("            network sizes, domains and pose ranges.")
+    lines.append("            A '*' on either column marks rows where non-rigid networks had")
+    lines.append("            to be left out -- their stiffness is 0 and their shape error is")
+    lines.append("            infinite, and neither can enter a geometric mean, so those rows")
+    lines.append("            describe only the networks that came out rigid.")
     lines.append("  work      how many changes to the network the method actually made.")
     lines.append("  best@     the step at which its best network was found. Lower means it")
     lines.append("            converged faster; the rest of the budget added nothing.")
@@ -260,9 +279,9 @@ def format_table(rows, context, brief=False):
 
 # ── output files ──────────────────────────────────────────────────────────────────────
 RESULT_FIELDS = ["episode", "method", "m", "score", "is_IBR", "is_MBR",
-                 "min_eig", "work", "best_at"]
+                 "min_eig", "shape_err", "work", "best_at"]
 TRACE_FIELDS = ["episode", "method", "step", "score", "edges", "rank", "rank_K",
-                "is_IBR", "is_MBR", "min_eig"]
+                "is_IBR", "is_MBR", "min_eig", "shape_err"]
 
 
 def write_csvs(run_dir, rows, traces):
@@ -861,10 +880,10 @@ TABLE_COLUMNS = [
     dict(key="score",   title="score  φ", unit="higher is better", w=1.20, align="right"),
     dict(key="rigid",   title="rigid",    unit="% of networks",    w=0.85, align="right"),
     dict(key="minimal", title="minimal",  unit="% of networks",    w=0.85, align="right"),
-    dict(key="margin",  title="stiffness", unit="mean ± sd, higher is better",
-         w=1.50, align="right"),
-    dict(key="margin_geo", title="stiffness (geo)", unit="gmean ×/÷ gsd",
-         w=1.25, align="right"),
+    dict(key="margin_geo", title="stiffness", unit="gmean ×/÷ gsd, higher is better",
+         w=1.30, align="right"),
+    dict(key="shape_err", title="shape error", unit="gmean ×/÷ gsd, lower is better",
+         w=1.35, align="right"),
     dict(key="work",    title="work",     unit="edits applied",    w=1.05, align="right"),
     dict(key="best_at", title="best at",  unit="step reached",     w=1.10, align="right"),
     dict(key="opt",     title="= best",   unit="% matched",        w=0.80, align="right"),
@@ -878,15 +897,17 @@ TABLE_NOTES = [
     "rigid: the network's shape is fully determined by its bearing measurements - the "
     "property being solved for. minimal: rigid with the fewest possible edges "
     "(a heuristic on mixed-domain networks, so it can under-report).",
-    "stiffness: how strongly the bearings react to a change in shape. Every rigid network "
-    "recovers its shape from exact bearings; larger means it still does so under "
-    "measurement noise, since shape error scales as 1/sqrt(stiffness). Its absolute size "
+    "stiffness: how strongly the bearings react to a change in shape, higher is better. "
+    "Shown as a geometric mean and spread because it ranges over orders of magnitude - "
+    "'a ×/÷ b' means the typical network sits between a/b and a·b. Its absolute size "
     "depends on how far apart the agents are, so compare rows rather than the number.",
-    "stiffness (geo): the same quantity as a geometric mean and spread, because it ranges "
-    "over orders of magnitude - 'a ×/÷ b' means the typical network sits between a/b and "
-    "a·b. A '*' marks rows where non-rigid networks had to be left out: their stiffness is "
-    "exactly 0, which no geometric mean can take, so those rows describe only the "
-    "networks that came out rigid.",
+    "shape error: how far the recovered formation lands from the true one, per radian of "
+    "error in the bearing measurements - position counted in formation radii, attitude in "
+    "radians. LOWER is better. 8.0 means one degree of bearing error (0.017 rad) displaces "
+    "the shape by about 14% of its own size. Unlike stiffness it is comparable across "
+    "network sizes, domains and pose ranges. A '*' on either column marks rows where "
+    "non-rigid networks had to be left out: their stiffness is exactly 0 and their shape "
+    "error infinite, and neither can enter a geometric mean.",
     "work: changes to the network the method actually applied. best at: the step its best "
     "network was reached - lower means it converged sooner and the rest of the budget "
     "added nothing.",
@@ -934,11 +955,11 @@ def plot_table(run_dir, rows, header, filename="table", width=12.0):
             return f"{v['rigid_pct']:.0f}"
         if key == "minimal":
             return f"{v['minimal_pct']:.0f}"
-        if key == "margin":
-            return ("-" if v["min_eig_mean"] is None
-                    else _fmt(v["min_eig_mean"], v["min_eig_sd"], ".1e", " ±"))
         if key == "margin_geo":
             return "-" if v["min_eig_gmean"] is None else _fmt_geo(v, times=" ×/÷")
+        if key == "shape_err":
+            return ("-" if v["shape_err_gmean"] is None
+                    else _fmt_geo(v, key="shape_err", times=" ×/÷"))
         if key == "work":
             return "-" if ref else _fmt(v["work_mean"], v["work_sd"], ".1f", " ±")
         if key == "best_at":

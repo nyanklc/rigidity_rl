@@ -1,11 +1,13 @@
-"""c_k, c_max, m_req, is_MBR. 4-6."""
+"""c_k, c_max, m_req, is_MBR, and the repair bound. 4-6, 19."""
+import copy
 import itertools
 import numpy as np
 import pytest
 
 from conftest import ALL_DOMAINS, C_MAX, RANK_K_FORMULA
 from rigidity import (extended_bearing_rigidity_matrix as B_of, edge_block_ranks,
-                      max_edge_rank, required_edge_count, MBR_required_Rd, is_MBR)
+                      greedy_rigid_construction, max_edge_rank, repair_edge_count,
+                      required_edge_count, MBR_required_Rd, is_MBR)
 from scenario import random_scenario
 
 
@@ -123,3 +125,89 @@ def test_m_req_bound_is_tight_by_brute_force(doms):
         if np.linalg.matrix_rank(B_of(N)) == rank_K:
             return
     pytest.fail(f"no rigid graph with m_req={m_req} edges for {doms}")
+
+
+# ---------------------------------------------------------------- the repair bound
+def rigid_net(domains, n=8, seed=0):
+    doms = [domains] * n if isinstance(domains, str) else list(domains)
+    net_, _ = random_scenario(len(doms), doms, edge_count=0)
+    rank_K = int(np.linalg.matrix_rank(B_of(net_.fully_connected())))
+    greedy_rigid_construction(net_, rank_K, np.random.default_rng(seed))
+    return net_, rank_K
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+def test_a_rigid_graph_needs_no_repair(domain):
+    net_, rank_K = rigid_net(domain, n=6)
+    assert repair_edge_count(net_, rank_K=rank_K) == 0
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS + [["R^2", "R^3", "SE(3)", "R^3xS^1"]])
+def test_repairing_the_empty_graph_is_building_it(domain):
+    """From the empty graph the repair bound equals required_edge_count."""
+    doms = [domain] * 6 if isinstance(domain, str) else list(domain)
+    net_, _ = random_scenario(len(doms), doms, edge_count=0)
+    net_.edges[:] = False
+    rank_K = int(np.linalg.matrix_rank(B_of(net_.fully_connected())))
+    assert repair_edge_count(net_, rank_K=rank_K) == required_edge_count(net_, rank_K=rank_K)
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+def test_putting_back_what_was_removed_bounds_the_repair(domain):
+    """Removing k edges leaves a graph the bound says is repairable in at most k."""
+    net_, rank_K = rigid_net(domain, n=6)
+    rng = np.random.default_rng(1)
+    present = list(zip(*np.nonzero(net_.edges)))
+    for k in (1, 2, 3):
+        work = copy.deepcopy(net_)
+        for idx in rng.choice(len(present), k, replace=False):
+            i, j = present[idx]
+            work.edges[i, j] = False
+        assert repair_edge_count(work, rank_K=rank_K) <= k
+
+
+def test_in_the_plane_the_bound_is_the_rank_deficit():
+    """In R^2 the bound is exactly the rank deficit."""
+    for seed in range(4):
+        net_, rank_K = rigid_net("R^2", n=7, seed=seed)
+        rng = np.random.default_rng(seed)
+        present = list(zip(*np.nonzero(net_.edges)))
+        for idx in rng.choice(len(present), 3, replace=False):
+            i, j = present[idx]
+            net_.edges[i, j] = False
+        brm = B_of(net_)
+        deficit = rank_K - int(np.linalg.matrix_rank(brm))
+        assert rank_K == 2 * net_.n - 3
+        assert repair_edge_count(net_, rank_K=rank_K, brmat=brm) == deficit
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+def test_the_repair_bound_is_sound_against_brute_force(domain):
+    """No edge set smaller than the bound restores rigidity."""
+    import itertools
+    n = 5
+    rng = np.random.default_rng(0)
+    checked = 0
+    for trial in range(8):
+        net_, _ = random_scenario(n, [domain] * n, edge_count=0)
+        rank_K = int(np.linalg.matrix_rank(B_of(net_.fully_connected())))
+        pairs = [(i, j) for i in range(n) for j in range(n) if i != j]
+        net_.edges[:] = False
+        for idx in rng.choice(len(pairs), int(rng.integers(2, 9)), replace=False):
+            net_.edges[pairs[idx]] = True
+        brm = B_of(net_)
+        if np.linalg.matrix_rank(brm) >= rank_K:
+            continue
+
+        lb = repair_edge_count(net_, rank_K=rank_K, brmat=brm)
+        absent = [(i, j) for i, j in pairs if not net_.edges[i, j]]
+        for k in range(1, lb):
+            for sub in itertools.combinations(absent, k):
+                work = copy.deepcopy(net_)
+                for i, j in sub:
+                    work.edges[i, j] = True
+                assert np.linalg.matrix_rank(B_of(work)) < rank_K, (
+                    f"{domain}: {k} edges sufficed, bound said {lb}")
+        checked += 1
+    assert checked > 0

@@ -1023,6 +1023,8 @@ class Environment(gym.Env):
             "sum_MBR": 0.0,
             "sum_min_eig": 0.0,
             "n_min_eig": 0, # min eig is not always computed, so it needs its own count
+            "sum_shape_err": 0.0,
+            "n_shape_err": 0,   # infinite while flexible, so it needs its own count
             # decision quality: what each step actually accomplished.
             "useful": 0,        # steps where phi strictly increased
             "kinds": {"add": 0, "remove": 0, "noop": 0, "skip": 0, "select": 0},
@@ -1041,6 +1043,7 @@ class Environment(gym.Env):
         m_initial = int(self.initial_m)
         m_req = max(int(getattr(self, "m_req", 1) or 1), 1)
         n_eig = acc["n_min_eig"]
+        n_err = acc["n_shape_err"]
         return {
             "Episode index": self.episode_counter,
             "Length": acc["steps"],
@@ -1066,6 +1069,7 @@ class Environment(gym.Env):
             "Final is rigid": float(is_IBR),
             "Final is min rigid": float(is_MBR),
             "Final min eig": None if min_eig is None else float(min_eig),
+            "Final shape err": self.last_stats.get("shape_err") if self.last_stats else None,
             # negative = the episode removed edges, positive = it added them
             "Edge delta": m_final - m_initial,
 
@@ -1075,6 +1079,7 @@ class Environment(gym.Env):
             "Best is rigid": float(self.best_stats["is_IBR"]),
             "Best is min rigid": float(self.best_stats["is_MBR"]),
             "Best min eig": self.best_stats["min_eig"],
+            "Best shape err": self.best_stats.get("shape_err"),
             "Best step": self.best_step,
             # 0 means the episode ended on the best graph it found; positive means
             # it found something better and then moved off it -- the difference
@@ -1087,6 +1092,7 @@ class Environment(gym.Env):
             "Rigid fraction": acc["sum_IBR"] / steps,
             "Min rigid fraction": acc["sum_MBR"] / steps,
             "Mean min eig": (acc["sum_min_eig"] / n_eig) if n_eig else None,
+            "Mean shape err": (acc["sum_shape_err"] / n_err) if n_err else None,
 
             # Decision quality -- blind to best-state-visited, so a policy that only
             # searches cannot score well here.
@@ -1116,7 +1122,16 @@ class Environment(gym.Env):
     # -----------------------------------
     # Keeps the highest-scoring graph seen this episode, so a policy can be judged
     # on what it found rather than on where it happened to stop.
-    def update_best_state(self, state_score, is_IBR, is_MBR, rank_brm, min_eig=None, reset=False):
+    # RMS state error per radian of bearing noise: position in formation radii,
+    # attitude in radians, both dimensionless once B is length-normalised.
+    def shape_error_now(self, brm=None, rank_brm=None):
+        a_opt, _, _ = estimation_error_of(self.network, self.rank_K, brmat=brm)
+        if not np.isfinite(a_opt):
+            return None
+        return float(np.sqrt(a_opt / max(self.network.n, 1)))
+
+    def update_best_state(self, state_score, is_IBR, is_MBR, rank_brm, min_eig=None,
+                          shape_err=None, reset=False):
         if (not reset) and state_score <= self.best_state_score:
             return
         # only computed when this state is actually the new best, and reused from the
@@ -1135,6 +1150,7 @@ class Environment(gym.Env):
             "is_MBR": bool(is_MBR),
             "rank": int(rank_brm),
             "min_eig": float(min_eig),
+            "shape_err": None if shape_err is None else float(shape_err),
         }
 
     # -----------------------------------
@@ -1327,7 +1343,9 @@ class Environment(gym.Env):
         # computed once and shared
         tracking = self.track_data_enable and self.writer is not None
         min_eig = lam if (tracking or self.trace_min_eig) else None
-        self.update_best_state(state_score, is_IBR, is_MBR, rank_brm, min_eig=min_eig)
+        shape_err = self.shape_error_now(brm, rank_brm) if min_eig is not None else None
+        self.update_best_state(state_score, is_IBR, is_MBR, rank_brm, min_eig=min_eig,
+                               shape_err=shape_err)
 
         # everything an outside observer needs about this step, so nothing has to be
         # recomputed to record a trajectory
@@ -1339,6 +1357,7 @@ class Environment(gym.Env):
             "is_IBR": bool(is_IBR),
             "is_MBR": bool(is_MBR),
             "min_eig": float(min_eig) if min_eig is not None else None,
+            "shape_err": float(shape_err) if shape_err is not None else None,
         }
 
         # (incremental) reward from state score
@@ -1441,6 +1460,9 @@ class Environment(gym.Env):
         if min_eig is not None:
             acc["sum_min_eig"] += float(min_eig)
             acc["n_min_eig"] += 1
+        if shape_err is not None and np.isfinite(shape_err):
+            acc["sum_shape_err"] += float(shape_err)
+            acc["n_shape_err"] += 1
 
         # per-step detail for whoever is watching a single rollout (inference.py
         # renders this); it is not logged, so keep it free of extra computation
@@ -1634,6 +1656,7 @@ class Environment(gym.Env):
             "is_IBR": bool(is_IBR_0),
             "is_MBR": bool(is_MBR_0),
             "min_eig": float(self.best_stats["min_eig"]),
+            "shape_err": self.best_stats.get("shape_err"),
         }
 
         self.stop_action = False
@@ -1668,8 +1691,8 @@ if __name__ == "__main__":
 
     TIME_PENALTY_VALUE = 0.0
 
-    SKIP_ENABLED = True
-    SKIP_IS_STOP = True
+    SKIP_ENABLED = False
+    SKIP_IS_STOP = False
     RANDOM_GRAPH_WITH_MEAN_MIN_EDGES = True
 
     TRACK_DATA_ENABLE = True
