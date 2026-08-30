@@ -136,3 +136,48 @@ def test_legacy_names_map_to_a_backbone():
     assert OBS_BACKBONE["DictEquivariantNodeFeaturesAndAdjAndSelection"] == "Equivariant"
     assert OBS_BACKBONE["DictNodeFeaturesAndEdgeFeaturesAndAdjAndSelection"] == "GINE"
     assert "Dict" not in OBS_BACKBONE      # the current type implies nothing
+
+
+# The state-quality channel.
+def quality_env(make_env, **kw):
+    return make_env(n=6, domains="R^3", rigidity_global=True, rigidity_quality=True, **kw)
+
+
+def test_quality_adds_exactly_one_node_channel(make_env):
+    plain = make_env(n=6, domains="R^3", rigidity_global=True)
+    rich = quality_env(make_env)
+    a, _ = plain.reset()
+    b, _ = rich.reset()
+    assert b["node_features"].shape[1] == a["node_features"].shape[1] + 1
+
+
+def test_quality_is_zero_while_flexible_and_rises_with_edges(make_env):
+    import copy
+    from rigidity import (extended_bearing_rigidity_matrix as B_of,
+                          greedy_rigid_construction, rigidity_decomposition)
+    e = quality_env(make_env)
+    e.reset()
+    e.freeze_network = True
+
+    def quality(edges):
+        e.network.edges = edges.copy()
+        e.reset()
+        brm = B_of(e.network)
+        rank, _, lam = rigidity_decomposition(brm, e.rank_K)
+        return e.state_quality(brm, rank >= e.rank_K, lam)
+
+    built = copy.deepcopy(e.network)
+    built.edges[:] = False
+    greedy_rigid_construction(built, e.rank_K, np.random.default_rng(0))
+    complete = ~np.eye(e.network.n, dtype=bool)
+
+    assert quality(np.zeros_like(e.network.edges)) == 0.0
+    assert 0.0 < quality(built.edges) < 1.0
+    assert quality(complete) > quality(built.edges)
+
+
+def test_quality_is_tiled_identically_across_nodes(make_env):
+    e = quality_env(make_env)
+    obs, _ = e.reset()
+    col = obs["node_features"][:, -1]
+    assert np.allclose(col, col[0])

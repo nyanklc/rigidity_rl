@@ -132,6 +132,142 @@ What matters here is the plumbing:
   zero, which at `kappa > 0` is not the configured phi. The side effect is that `greedy` becomes
   stiffness-aware for free.
 
+### spectral-functional
+
+`WeightedNormalizedSpectral` is `WeightedNormalized` with the spectral bonus read off
+whichever functional `spectral_functional` names -- `eigenvalue`, `trace` or `logdet`.
+
+It exists for a negative result, not for an arm that is expected to win.
+`THEORY.md` §18.4-18.5 measures that the trace is a monotone restatement of λ
+(rank correlation 0.99) and that log-det, though decorrelated from λ, predicts the
+*measured* error worse than either. A config key makes that reproducible without
+a training run; a second `state_score_type` would have implied there was something
+to choose between.
+
+Three things it has to get right:
+
+- **`eigenvalue` must be bit-identical to `WeightedNormalized`**, or the comparison
+  is against a moving baseline. `reference_spectral(functional="eigenvalue")` returns
+  `median(log10 lam)` over the same greedy constructions with the same RNG that
+  `reference_stiffness` uses, so `g - g_ref` reproduces `log10(lam/stiffness_ref)`
+  exactly. A test asserts equality, not closeness.
+- **The sigmoid width is per functional.** §15.2's 0.75 decades came from λ's own
+  p10-p90 spread; `logdet` is measured in nats and spans 17-25 of them, so copying
+  0.75 would put the whole achievable band inside a hair of the sigmoid.
+  `SPECTRAL_SIGMOID_WIDTH` scales each width by the functional's measured spread
+  (`tools/spectral_criteria.py` prints them).
+- **`trace` and `logdet` cost an extra SVD per step**, since they need
+  `estimation_error_of` on the length-normalised `B` where λ comes free from the
+  decomposition `step()` already performs. `eigenvalue` pays nothing.
+
+### state-quality
+
+`rigidity_quality` adds one tiled node channel: how good the current graph is on the axis
+nothing else covers. `rigidity_global` gives rank deficit, `m/m_req` and `is_IBR`, and every
+pair channel answers a *difference* question -- what adding or removing an edge would do.
+Once the graph is rigid, none of them says whether its conditioning is good, so the policy
+cannot distinguish "already good, stop" from "bad, keep going".
+
+`Environment.state_quality()` reuses the state score's own sigmoid: 0 while flexible, ~0.5
+for a graph as good as a typical greedy construction on the same poses, rising towards 1.
+
+Two choices worth stating:
+
+- **Not raw lambda.** It has no absolute scale and tracks the pose range, so a policy would
+  learn a threshold that means nothing at another `n` or domain. The sigmoid against a
+  per-episode reference is dimensionless and bounded, which is what makes the channel
+  transferable at all.
+- **Its own flag, not folded into `rigidity_global`.** The ablation has to be able to price
+  it separately, and turning it on at the same time as a reward change would make that
+  ablation unreadable for the reason THEORY.md 16 gives.
+
+The reference is an episode constant, so the channel costs nothing per step beyond the
+decomposition `step()` already performs -- except under `spectral_functional != eigenvalue`,
+which needs one more SVD.
+
+### formation-figures
+
+`uncertainty`, `softest_mode` and `sensitivity` draw the network itself rather than a
+statistic of it. Four decisions, each of which was wrong first:
+
+- **Real 3-D axes.** A bearing formation is a spatial object, and a projection onto its
+  two widest directions hides the axis it is worst determined along -- which for these
+  formations is often exactly the interesting one.
+- **Marker shape is the domain.** On a five-domain mixture a plain scatter throws away
+  the thing that makes the formation heterogeneous. `DOMAIN_MARKER` fixes the shape per
+  domain and the card carries the key, so identity is never colour-alone.
+- **One exaggeration factor for the ellipsoids, set from the MEDIAN panel.** A true-scale
+  1-sigma shell is a few percent of the formation and invisible. Setting the factor from
+  the worst panel made every other panel invisible instead; the factor is shared so the
+  panels stay comparable, and the true percentage is printed above each one. The softest
+  mode is the opposite case -- the eigenvector is normalised, so lengths do not compare
+  between panels anyway and each is scaled to its own largest arrow.
+- **The panels place themselves.** `tight_layout` does not know about the title band a
+  3-D panel needs above it and silently undoes an explicit `set_position`, so these
+  figures compute their own cell rects from the header/card band and pass `tight=False`.
+
+Panel subtitles say `<m> edges, final` or `<m> edges, best visited`, because a rollout
+row reports the best state it saw and an edit-space row reports where it stopped. Which
+one is being drawn is not guessable from the picture.
+
+### measurement-sensitivity
+
+Perturbing one bearing at a time, and perturbing one agent's bearings at a time, are
+not two Monte-Carlo sweeps. Noise on measurement `k` reaches the estimate through
+`B^+`, so its contribution to the squared shape error is the squared norm of the
+matching columns of `B^+`, and those contributions sum to `tr((B^T B)^+)` exactly.
+One pseudo-inverse gives every share, and the shares read as percentages of the
+total because they are.
+
+`measurement_sensitivity` returns both groupings: per edge, and per agent over the
+edges it measures. Validated against actually perturbing a single bearing.
+
+The per-agent version is the *input* side and is not the uncertainty ellipse, which
+is the output side -- one says whose sensing the error comes from, the other says
+whose position is badly determined. Drawn together they are the two halves of the
+same question.
+
+### decision-analysis
+
+At each step `edit_landscape` scores every legal single-edge change, and
+`decision_record` ranks the one the policy took among them.
+
+**It is ranked twice, and the second ranking is the point.** The policy is trained on
+phi, which rewards rank and charges for edges; it is never asked about shape error. A
+high phi percentile beside a chance-level error percentile therefore says the
+*objective* is what leaves error behind, not the policy -- which is a different
+conclusion from "the policy chooses badly", and the two are indistinguishable without
+both rankings.
+
+Two details that would otherwise mislead:
+
+- **Percentiles are midrank.** Several edits are often exactly as good, especially on
+  a minimal graph where every redundant removal scores the same. Counting only
+  strictly-worse alternatives scored a genuinely optimal choice at 67%. `phi_best` is
+  the separate flag for "was it actually one of the best".
+- **The error ranking is absent while the graph is flexible**, where every edit leaves
+  the error infinite. Those steps carry a phi rank and no error rank, rather than a
+  zero.
+
+Gated by `MAX_DECISION_ANALYSIS_N`: it costs `n(n-1)` score evaluations per step.
+
+### noise-sweep
+
+`evaluation.py --noise-sweep` measures what each method's graph actually costs: perturb
+every bearing by that many degrees, recover the formation, compare against the truth
+(`estimation.py`). The table prints measured against predicted, and `plots/*/noise.*`
+draws both.
+
+It runs on **the graph each row reports**, which for a rollout is the best state
+visited rather than whatever the episode stopped on -- so `result()` carries the edge
+set it is about. Rows that came out flexible carry no sweep at all: their error is
+infinite, not large, and a number there would be read as a measurement.
+
+The point of showing prediction beside measurement is that the gap is itself the
+result. They track while the error is small; measurement falling below prediction is
+the signature of leaving the regime where the analytic metric means anything
+(`THEORY.md` §18.3).
+
 ### episode-constants
 
 `compute_episode_constants()` depends on the poses but not the edge set, so it runs once per
@@ -346,7 +482,7 @@ use), but the maths is correct for arbitrary axes and the environment could not 
 ### benchmarks
 
 `benchmark.py` freezes evaluation instances (poses, orientations, domains, rotation axes, initial
-edges) into `benchmarks/<name>.npz`; `baselines.py --benchmark <name>` evaluates on them instead of
+edges) into `benchmarks/<name>.npz`; `evaluation.py --benchmark <name>` evaluates on them instead of
 sampling, and records the name and a content digest in `meta.json`.
 
 This exists because regenerating an env config silently resamples the instance distribution, and
@@ -594,7 +730,7 @@ is scale-invariant anyway, but the rigidity eigenvalue is not.
 
 When tracking is on, the rigidity eigenvalue is needed for logging anyway, so `step()` computes it
 once and hands it to the best-state tracker rather than letting that recompute it. `trace_min_eig`
-asks for the same value without a writer attached - `baselines.py` records the rigidity eigenvalue
+asks for the same value without a writer attached - `evaluation.py` records the rigidity eigenvalue
 over time.
 
 ---
@@ -784,7 +920,7 @@ describes, which is why the agreement lands at 1.00 rather than merely near it.
 
 ### constructive-baseline
 
-`baselines.py --methods constructive`. From the empty graph, keep any edge that raises `rank(B)`,
+`evaluation.py --methods constructive`. From the empty graph, keep any edge that raises `rank(B)`,
 stop at `rank_K`; best of `--restarts` independent random orders. This is the classical algorithm
 for the problem and the one the learned policy has to beat. `tools/constructive_greedy.py` is the
 standalone version, used for difficulty sweeps that do not need an env config.

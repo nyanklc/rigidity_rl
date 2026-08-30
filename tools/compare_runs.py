@@ -8,7 +8,7 @@ in the tail alone.
 A caution the stop-action comparison ran into: training episodes carry epsilon
 exploration, so these curves understate any arm with short episodes. One random
 action costs proportionally more over 8 steps than over 50, and it can be the
-stop action. Judge terminations on an argmax evaluation (baselines.py with a
+stop action. Judge terminations on an argmax evaluation (evaluation.py with a
 frozen benchmark), not on these curves.
 
     PYTHONPATH=. uv run tools/compare_runs.py runA runB runC

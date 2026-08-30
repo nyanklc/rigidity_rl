@@ -551,6 +551,51 @@ def estimation_error_blocks(brmat, rank_K, n):
             float((inv * (V[3 * n:] ** 2).sum(axis=0)).sum()))
 
 
+def error_covariance(brmat, rank_K):
+    """(B^T B)^+, the shape-error covariance per unit bearing-noise variance.
+
+    (6n, 6n). Its per-agent 3x3 position blocks are what an uncertainty ellipse
+    is drawn from.
+    """
+    cols = brmat.shape[1]
+    k = cols - int(rank_K)
+    if brmat.size == 0 or k < 0:
+        return np.full((cols, cols), np.inf)
+    w, V = np.linalg.eigh(brmat.T @ brmat)
+    w, V = w[k:], V[:, k:]
+    if w.min() <= 0:
+        return np.full((cols, cols), np.inf)
+    return (V * (1.0 / w)) @ V.T
+
+
+# Noise on one measurement propagates through B^+, so that measurement's share of
+# the total squared shape error is ||B^+ restricted to its columns||_F^2. The shares
+# sum to tr((B^T B)^+) exactly, which is what makes them readable as fractions.
+def measurement_sensitivity(network, rank_K, brmat=None, length_scale=None):
+    """(per_edge, per_node): each measurement's share of the total shape error.
+
+    per_edge is in np.nonzero(edges) order; per_node groups by the agent that
+    takes the measurement, i.e. over its outgoing edges. Both sum to a_opt.
+    """
+    n = network.n
+    Bs = scaled_rigidity_matrix(network, brmat, length_scale)
+    m = Bs.shape[0] // 3
+    if m == 0:
+        return np.zeros(0), np.zeros(n)
+
+    M = error_covariance(Bs, rank_K)
+    if not np.isfinite(M).all():
+        return np.full(m, np.inf), np.full(n, np.inf)
+
+    per_edge = np.array([np.linalg.norm(M @ Bs[3 * k:3 * k + 3, :].T) ** 2
+                         for k in range(m)])
+
+    per_node = np.zeros(n)
+    for k, i in enumerate(np.nonzero(network.edges)[0]):
+        per_node[i] += per_edge[k]
+    return per_edge, per_node
+
+
 def estimation_error_of(network, rank_K, brmat=None, length_scale=None):
     """estimation_error on the length-normalised B. One SVD."""
     Bs = scaled_rigidity_matrix(network, brmat, length_scale)
@@ -588,6 +633,82 @@ def greedy_rigid_construction(network, rank_K, rng):
 
     network.edges = E
     return E, added, rank
+
+
+# Repair by marginal gain: add the absent pair that raises rank(B) most, until
+# rigid. In the c_max = 1 domains the independent sets are a matroid, so this is
+# minimum-edge there by the same argument that makes greedy optimal in 1.4.
+def greedy_rigid_repair(network, rank_K, rng=None, brmat=None, length_scale=None):
+    """Restore rigidity by adding edges. (edges, added), mutating network.edges.
+
+    Unlike greedy_rigid_construction this keeps the edges already present, which
+    is the difference between rebuilding a formation and repairing one.
+    """
+    rng = np.random.default_rng(0) if rng is None else rng
+    n = network.n
+    if length_scale is None:
+        length_scale = characteristic_length(network)
+
+    added = []
+    brm = extended_bearing_rigidity_matrix(network) if brmat is None else brmat
+    rank = int(np.linalg.matrix_rank(brm)) if brm.size else 0
+
+    while rank < rank_K:
+        Z = nullspace_in_scaled_units(nullspace(brm, rank), n, length_scale)
+        gains = candidate_gain(network, Z, length_scale=length_scale)[1]
+        gains[network.edges.astype(bool)] = -1
+        np.fill_diagonal(gains, -1)
+        if gains.max() <= 0:
+            break                                  # nothing left that would help
+
+        best = np.argwhere(gains == gains.max())
+        i, j = best[rng.integers(len(best))]
+        network.edges[i, j] = True
+        added.append((int(i), int(j)))
+
+        brm = extended_bearing_rigidity_matrix(network)
+        rank = int(np.linalg.matrix_rank(brm))
+
+    return network.edges, added
+
+
+# Higher is better for all three, so a state score can use any of them the same
+# way. Widths are the eigenvalue's 0.75 decades scaled by each functional's
+# measured p10-p90 spread (tools/spectral_criteria.py); logdet is in nats.
+SPECTRAL_FUNCTIONALS = ("eigenvalue", "trace", "logdet")
+SPECTRAL_SIGMOID_WIDTH = {"eigenvalue": 0.75, "trace": 0.60, "logdet": 6.7}
+
+
+def spectral_value(functional, lam, a_opt=None, d_opt=None):
+    """The scalar a spectral state score reads. None when it is undefined."""
+    if functional == "eigenvalue":
+        return float(np.log10(lam)) if lam and lam > 0 else None
+    if functional == "trace":
+        return -float(np.log10(a_opt)) if a_opt and np.isfinite(a_opt) else None
+    if functional == "logdet":
+        return -float(d_opt) if d_opt is not None and np.isfinite(d_opt) else None
+    raise ValueError(f"unknown spectral functional {functional!r}")
+
+
+def reference_spectral(network, rank_K, rng, samples=3, functional="eigenvalue"):
+    """Median spectral_value over `samples` greedy graphs on these poses.
+
+    None if none reached rank_K. At functional="eigenvalue" this is
+    log10(reference_stiffness), so the two agree by construction.
+    """
+    vals = []
+    for _ in range(max(1, int(samples))):
+        work = copy.deepcopy(network)
+        _, _, rank = greedy_rigid_construction(work, rank_K, rng)
+        if rank < rank_K:
+            continue
+        brm = extended_bearing_rigidity_matrix(work)
+        lam = rigidity_decomposition(brm, rank_K)[2]
+        a_opt, _, d_opt = estimation_error_of(work, rank_K, brmat=brm)
+        v = spectral_value(functional, lam, a_opt, d_opt)
+        if v is not None:
+            vals.append(v)
+    return float(np.median(vals)) if vals else None
 
 
 def reference_stiffness(network, rank_K, rng, samples=3):

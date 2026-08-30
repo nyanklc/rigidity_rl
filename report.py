@@ -1,10 +1,11 @@
-"""Rendering for baselines.py: the comparison table, the CSVs and the plots.
+"""Rendering for evaluation.py: the comparison table, the CSVs and the plots.
 
 The table is written for someone who does not know the topic: every column says which
 direction is better, jargon is spelled out in a legend, and the two different meanings the
 old `steps` column carried are split into `work` and `best@`.
 """
 
+import copy
 import csv
 import json
 import os
@@ -103,9 +104,7 @@ def _gsd(values):
 def _fmt_geo(v, key="min_eig", times=" x/", mark="*"):
     """`gmean x/ gsd`, flagged when non-rigid networks had to be left out.
 
-    Serves both spectral columns: stiffness is 0 on a flexible network and shape
-    error is infinite on one, and neither can enter a geometric mean, so both
-    report over the rigid subset and mark the row when that is not all of them.
+    Serves both spectral columns; neither 0 nor inf can enter a geometric mean.
     """
     gmean, gsd = v[f"{key}_gmean"], v[f"{key}_gsd"]
     if gmean is None:
@@ -128,6 +127,29 @@ def _fmt(mean, sd=None, spec=".2f", pm="+-"):
     return f"{mean:{spec}}{pm}{sd:{spec}}"
 
 
+def _noise_summary(sel):
+    """{sigma: (measured gmean, predicted gmean, failed fraction)} per noise level.
+
+    `failed` is the share of recoveries that blew up rather than landing near the
+    truth. Those carry no error to average, so they are counted, not averaged.
+    """
+    def usable(r, sigma):
+        v = r.get("noise", {}).get(sigma)
+        return (v is not None and np.isfinite(v) and v > 0
+                and r.get("pred_err") and np.isfinite(r["pred_err"]))
+
+    out = {}
+    for sigma in sorted({s for r in sel for s in r.get("noise", {})}):
+        rows_here = [r for r in sel if usable(r, sigma)]
+        failed = [r.get("noise_failed", {}).get(sigma, 0.0) for r in sel
+                  if r.get("noise_failed") is not None]
+        if rows_here:
+            out[sigma] = (_gmean([r["noise"][sigma] for r in rows_here]),
+                          _gmean([sigma * r["pred_err"] for r in rows_here]),
+                          float(np.mean(failed)) if failed else 0.0)
+    return out
+
+
 def aggregate(rows):
     """{method: {...}} means/sds over episodes, in a stable display order."""
     methods = [m for m in METHOD_ORDER if any(r["method"] == m for r in rows)]
@@ -139,9 +161,8 @@ def aggregate(rows):
         sel = [r for r in rows if r["method"] == m]
         eig = [r["min_eig"] for r in sel if r.get("min_eig") is not None]
         pos = [e for e in eig if e > 0]
-        # shape error is None exactly where the network came out flexible, where it
-        # is infinite rather than large -- those rows are dropped, and the count is
-        # kept so the table can mark it
+        # None exactly where the network came out flexible; the count is kept so
+        # the table can mark the row
         err = [r["shape_err"] for r in sel
                if r.get("shape_err") is not None and r["shape_err"] > 0]
         matched = [r for r in sel if r["episode"] in opt]
@@ -164,6 +185,7 @@ def aggregate(rows):
             # take -- record how many networks the geometric pair actually saw
             "min_eig_n": len(eig),
             "min_eig_n_pos": len(pos),
+            "noise": _noise_summary(sel),
             "shape_err_gmean": _gmean(err),
             "shape_err_gsd": _gsd(err),
             "shape_err_n": len(sel),
@@ -222,6 +244,29 @@ def format_table(rows, context, brief=False):
         lines.append(row)
     lines.append("")
 
+    sweep = {m: v["noise"] for m, v in agg.items() if v["noise"]}
+    if sweep:
+        sigmas = sorted({s for v in sweep.values() for s in v})
+        lines.append("MEASURED SHAPE ERROR UNDER BEARING NOISE  (predicted in brackets)")
+        lines.append("  " + "method".ljust(13)
+                     + "".join(f"{np.degrees(s):.2f} deg".rjust(22) for s in sigmas))
+        marked = False
+        for m, v in sweep.items():
+            cells = ""
+            for s in sigmas:
+                if s not in v:
+                    cells += "-".rjust(22)
+                    continue
+                got, pred, failed = v[s]
+                mark = "*" if failed > 0.005 else ""
+                cells += f"{got:.3f} [{pred:.3f}]{mark}".rjust(22)
+                marked = marked or bool(mark)
+            lines.append(f"  {m:<13}{cells}")
+        if marked:
+            lines.append("  * some recoveries blew up at that noise level and are not "
+                         "in the average")
+        lines.append("")
+
     if brief:
         return "\n".join(lines)
 
@@ -261,6 +306,14 @@ def format_table(rows, context, brief=False):
     if has_opt:
         lines.append("  =best     % of networks where the method tied the exhaustive optimum.")
     lines.append("")
+    if sweep:
+        lines.append("  The noise block is what actually happens when every bearing is")
+        lines.append("  perturbed by that many degrees and the formation is recovered from")
+        lines.append("  the noisy measurements: RMS position error in formation radii. The")
+        lines.append("  bracketed number is what the rigidity matrix predicts. They agree")
+        lines.append("  while the error stays small; a measured value far below the")
+        lines.append("  prediction means the noise is too large for the prediction to hold.")
+        lines.append("")
     lines.append("HOW TO READ IT")
     lines.append("  Every value is a mean over the networks; '+-' is the standard deviation")
     lines.append("  across them, i.e. how much the method varies from one network to the next.")
@@ -486,6 +539,25 @@ def _panel_title(ax, title, note):
                 va="bottom", annotation_clip=False)
 
 
+# two lines of title, in inches, reserved above every 3-D panel
+PANEL_TITLE_BAND = 0.52
+
+
+def _title_band(fig):
+    return PANEL_TITLE_BAND / fig.get_figheight()
+
+
+def _panel_title_3d(ax, title, note):
+    """Titles for a 3-D panel, in the band _formation_axes leaves free above it."""
+    fig = ax.figure
+    x0, y0, w, h = ax._panel_rect
+    band = _title_band(fig)
+    fig.text(x0 + 0.02 * w, y0 + h, title, color=INK, fontsize=11,
+             ha="left", va="top")
+    fig.text(x0 + 0.02 * w, y0 + h - band * 0.52, note, color=MUTED, fontsize=8.2,
+             ha="left", va="top")
+
+
 def _style_axes(ax, log=False):
     ax.set_facecolor(SURFACE)
     ax.grid(True, color=GRID, linewidth=0.8, zorder=0)
@@ -602,24 +674,30 @@ def _draw_panel(ax, traces, field, log, methods, ref_lines, aggregate_over_episo
     _place_end_labels(ax, end_labels, x_at=max_len - 1)
 
 
-def _figure(header, kind, methods, notes, panel_h=3.6, width=11.0):
-    """A figure laid out as: title block, 2x2 panels, notes card. Sized to fit all three."""
+def _figure(header, kind, methods, notes, panel_h=3.6, width=11.0, panels=(2, 2),
+            axes3d=False):
+    """A figure laid out as: title block, panels, notes card. Sized to fit all three."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     head_h = _header_height(header, width)
     card_h = _card_height(methods, notes, width)
-    fig_h = 2 * panel_h + head_h + card_h
+    nrows, ncols = panels
+    fig_h = nrows * panel_h + head_h + card_h
     fig = plt.figure(figsize=(width, fig_h), facecolor=SURFACE)
-    axes = [fig.add_subplot(2, 2, i + 1) for i in range(4)]
+    # a 3-D caller adds its own projection="3d" panels
+    axes = ([] if axes3d
+            else [fig.add_subplot(nrows, ncols, i + 1) for i in range(nrows * ncols)])
     top = _draw_header(fig, header, kind)
     return fig, axes, (card_h, card_h / fig_h), top, width
 
 
-def _finish(fig, card, methods, notes, width, top, run_dir, name):
+def _finish(fig, card, methods, notes, width, top, run_dir, name, tight=True):
     card_h, bottom = card
-    fig.tight_layout(rect=(0, bottom, 1, top), h_pad=1.6, w_pad=2.0)
+    # a figure that placed its own panels (the 3-D ones) must not be re-laid out
+    if tight:
+        fig.tight_layout(rect=(0, bottom, 1, top), h_pad=1.6, w_pad=2.0)
     _draw_card(fig, methods, notes, width, card_h)
     return _save(fig, run_dir, name)
 
@@ -669,7 +747,7 @@ def plot_trajectories(run_dir, traces, rows, header, filename="trajectories",
 def outcome_stats(traces):
     """Per method, the three views of each run: {method: {stat: [per-episode dict]}}.
 
-    Mirrors what the environment logs per episode, so a baselines figure and a
+    Mirrors what the environment logs per episode, so an evaluation figure and a
     tensorboard curve mean the same thing by "final", "best" and "mean".
     """
     per = {}
@@ -792,6 +870,573 @@ def plot_outcomes(run_dir, traces, rows, header, filename="outcomes"):
         ax.set_xlabel("bars in each group, left to right:   final  ·  best  ·  mean",
                       color=MUTED, fontsize=7.5, labelpad=6)
         _panel_title(ax, panel["title"], panel["note"])
+
+    return _finish(fig, card, methods, notes, width, top, run_dir, filename)
+
+
+def plot_noise_sweep(run_dir, rows, header, filename="noise"):
+    """Measured shape error against bearing noise, per method, over the prediction."""
+    agg = aggregate(rows)
+    sweep = {m: v["noise"] for m, v in agg.items() if v["noise"]}
+    if not sweep:
+        return None
+
+    methods = list(sweep)
+    notes = [
+        "Each line is one method: the formation it produced, with every bearing "
+        "perturbed by the noise on the x axis, recovered from those noisy "
+        "measurements and compared against the truth.",
+        "y is RMS position error in formation radii, so 0.1 means the recovered "
+        "shape is off by a tenth of the formation's own size. Lower is better.",
+        "The dashed line is what the rigidity matrix predicts for the same "
+        "topology. Measurement following prediction means the topology's "
+        "conditioning explains the error; measurement falling below it means the "
+        "noise is past the point where the prediction applies.",
+    ]
+    fig, axes, card, top, width = _figure(
+        header, "Shape error under bearing noise", methods, notes,
+        panel_h=4.6, width=11.0, panels=(1, 1))
+    ax = axes[0]
+
+    for m, v in sweep.items():
+        style = METHOD_STYLE.get(m, {"color": INK_2, "ls": "-", "z": 2})
+        sig = np.array(sorted(v))
+        got = np.array([v[s][0] for s in sig])
+        pred = np.array([v[s][1] for s in sig])
+        ax.plot(np.degrees(sig), got, "-o", color=style["color"], linewidth=2.0,
+                markersize=4, label=m, zorder=style["z"] + 2)
+        ax.plot(np.degrees(sig), pred, "--", color=style["color"], alpha=0.45,
+                linewidth=1.5, zorder=style["z"])
+
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("bearing noise per measurement (degrees)")
+    ax.set_ylabel("RMS position error (formation radii)")
+    _style_axes(ax, log=True)
+    _panel_title(ax, "Measured against predicted",
+                 "solid: measured   dashed: predicted from the rigidity matrix")
+    ax.legend(frameon=False, fontsize=8)
+
+    return _finish(fig, card, methods, notes, width, top, run_dir, filename)
+
+
+# ── formation drawings ────────────────────────────────────────────────────────────────
+# These draw the network itself rather than a statistic of it, in real 3-D: a bearing
+# formation is a spatial object and a flat projection hides the axis it is worst
+# determined along. Marker shape carries the agent's domain, which is the other thing
+# a plain scatter throws away on a mixed formation.
+DOMAIN_MARKER = {
+    "R^2":     ("s", "planar, no heading"),
+    "R^2xS^1": ("^", "planar with heading"),
+    "R^3":     ("o", "spatial, no heading"),
+    "R^3xS^1": ("D", "spatial, one rotation axis"),
+    "SE(3)":   ("P", "full pose"),
+}
+DOMAIN_ORDER = ["R^2", "R^2xS^1", "R^3", "R^3xS^1", "SE(3)"]
+
+
+def _domains_present(net):
+    seen = {a.domain for a in net.agents}
+    return [d for d in DOMAIN_ORDER if d in seen]
+
+
+def _domain_note(net):
+    """The marker key, as a card line, only when there is more than one domain."""
+    present = _domains_present(net)
+    if len(present) < 2:
+        return None
+    return "Marker shape is the agent's domain: " + ", ".join(
+        f"{DOMAIN_MARKER[d][0]} {d} ({DOMAIN_MARKER[d][1]})" for d in present) + "."
+
+
+def _formation_cell(nrows, ncols, index, band):
+    """The rect of panel `index` (1-based) inside the band left by header and card."""
+    top, bottom = band
+    row, col = divmod(index - 1, ncols)
+    cell_w, cell_h = 1.0 / ncols, (top - bottom) / nrows
+    return col * cell_w, top - (row + 1) * cell_h, cell_w, cell_h
+
+
+def _formation_axes(fig, nrows, ncols, index, positions, band, pad=0.14):
+    """A 3-D panel with equal scale on every axis and recessive furniture.
+
+    Placed explicitly rather than through tight_layout, which does not know about
+    the title band a 3-D panel needs above it.
+    """
+    x0, y0, w, h = _formation_cell(nrows, ncols, index, band)
+    ax = fig.add_axes([x0 + 0.012 * w, y0, w * 0.98, h], projection="3d")
+    ax._panel_rect = (x0, y0, w, h)
+    centre = positions.mean(axis=0)
+    span = float(np.abs(positions - centre).max()) * (1.0 + pad) or 1.0
+    for setter, c in ((ax.set_xlim, centre[0]), (ax.set_ylim, centre[1]),
+                      (ax.set_zlim, centre[2])):
+        setter(c - span, c + span)
+    ax.set_box_aspect((1, 1, 1))
+    ax.view_init(elev=22, azim=-58)
+    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        axis.pane.set_facecolor(SURFACE)
+        axis.pane.set_edgecolor(AXIS)
+        axis.pane.set_alpha(1.0)
+        axis._axinfo["grid"]["color"] = GRID
+        axis._axinfo["grid"]["linewidth"] = 0.6
+    ax.tick_params(colors=MUTED, labelsize=6.5, pad=1)   # negative pad clips minus signs
+    # matplotlib leaves a wide margin round a 3-D box; the drawing is the point
+    title_h = _title_band(fig)
+    ax.set_position([x0 + 0.005 * w, y0 + 0.010, w * 0.99, h - title_h - 0.010])
+    for lab, setter in (("x", ax.set_xlabel), ("y", ax.set_ylabel), ("z", ax.set_zlabel)):
+        setter(lab, color=MUTED, fontsize=7, labelpad=-6)
+    return ax
+
+
+def _draw_agents(ax, net, P, size=52, extra=None):
+    """One scatter per domain so the marker shape reads as the domain."""
+    doms = [a.domain for a in net.agents]
+    for d in _domains_present(net):
+        idx = [i for i, x in enumerate(doms) if x == d]
+        sizes = size if extra is None else size + extra[idx]
+        ax.scatter(P[idx, 0], P[idx, 1], P[idx, 2], s=sizes,
+                   marker=DOMAIN_MARKER[d][0], facecolors=SURFACE, edgecolors=INK,
+                   linewidths=1.1, depthshade=False, zorder=6)
+
+
+def _draw_edges_3d(ax, P, edges, color=INK_2, alpha=0.28, width=0.8, widths=None):
+    ii, jj = np.nonzero(edges)
+    for k, (i, j) in enumerate(zip(ii, jj)):
+        a, b = P[i], P[j]
+        d = b - a
+        lw = width if widths is None else widths[k]
+        al = alpha if widths is None else min(0.95, 0.25 + 0.65 * lw / max(widths.max(), 1e-9))
+        # stop short of the marker so the arrowhead is not buried in it
+        ax.quiver(a[0], a[1], a[2], *(d * 0.88), color=color, alpha=al,
+                  linewidth=lw, arrow_length_ratio=0.16, zorder=3)
+
+
+def _ellipsoid(ax, cov3, centre, scale, color, res=18):
+    """The 1-sigma ellipsoid of a 3x3 covariance, as a translucent shell."""
+    w, V = np.linalg.eigh(cov3)
+    w = np.maximum(w, 0.0)
+    u = np.linspace(0, 2 * np.pi, 2 * res)
+    v = np.linspace(0, np.pi, res)
+    unit = np.stack([np.outer(np.cos(u), np.sin(v)),
+                     np.outer(np.sin(u), np.sin(v)),
+                     np.outer(np.ones_like(u), np.cos(v))])
+    pts = (V @ (np.sqrt(w)[:, None] * unit.reshape(3, -1))) * scale
+    x, y, z = (pts.reshape(3, *unit.shape[1:]) + centre[:, None, None])
+    ax.plot_surface(x, y, z, color=color, alpha=0.38, linewidth=0, shade=False,
+                    zorder=8)
+
+
+def _nice_factor(x):
+    """Round to something a caption can state: 1, 2, 5, 10, 20, 50, ..."""
+    if x <= 1.5:
+        return 1
+    mag = 10 ** int(np.floor(np.log10(x)))
+    return int(min((c * mag for c in (1, 2, 5, 10)), key=lambda c: abs(c - x)))
+
+
+def _grid_for(count):
+    """Panel grid that does not leave a hole: 1x1, 1x2, 2x2, then rows of three."""
+    if count <= 2:
+        return 1, count
+    if count <= 4:
+        return 2, 2
+    return int(np.ceil(count / 3)), 3
+
+
+def _panel_rows(rows, episode=0):
+    """The rows one formation figure draws, in display order."""
+    sel = [r for r in rows if r.get("episode") == episode
+           and r.get("edges") is not None and r.get("is_IBR")]
+    return sorted(sel, key=lambda r: METHOD_ORDER.index(r["method"])
+                  if r["method"] in METHOD_ORDER else 99)
+
+
+def _which_graph(row):
+    return f"{row['m']} edges, {row.get('edges_are', 'final')}"
+
+
+def plot_uncertainty(run_dir, instances, rows, header, sigma=0.0175,
+                     filename="uncertainty"):
+    """Where each agent could actually be, given noisy bearings, per method."""
+    from rigidity import error_covariance, extended_bearing_rigidity_matrix
+    if not instances:
+        return None
+    net = instances[0]
+    ep_rows = _panel_rows(rows)
+    if not ep_rows:
+        return None
+
+    P = np.array([a.pose.position for a in net.agents], dtype=float)
+    radius = float(np.sqrt(np.mean(((P - P.mean(axis=0)) ** 2).sum(axis=1)))) or 1.0
+
+    rank_K = int(np.linalg.matrix_rank(
+        extended_bearing_rigidity_matrix(net.fully_connected())))
+    blocks, worsts = [], []
+    for row in ep_rows:
+        work = copy.deepcopy(net)
+        work.edges = row["edges"].copy()
+        cov = error_covariance(extended_bearing_rigidity_matrix(work), rank_K)
+        per_agent = [cov[3 * i:3 * i + 3, 3 * i:3 * i + 3] for i in range(work.n)]
+        blocks.append(per_agent)
+        worsts.append(max(float(np.sqrt(max(np.linalg.eigvalsh(c).max(), 0.0)))
+                          for c in per_agent))
+
+    # one factor for every panel, or the panels stop being comparable. It is set from
+    # the MEDIAN panel: setting it from the worst made every other panel invisible.
+    typical = float(np.median([w * sigma for w in worsts])) or 1.0
+    exaggeration = _nice_factor(0.30 * radius / typical)
+
+    methods = [r["method"] for r in ep_rows]
+    notes = [
+        f"One formation, one panel per method: identical agents and poses, only the "
+        f"measured bearings differ. Drawn on the first evaluated network.",
+        f"Each shell is where that agent ends up when every bearing carries "
+        f"{np.degrees(sigma):.1f} degrees of error. Bigger means the topology pins that "
+        f"agent down less well; the percentage above each panel is the worst agent, at "
+        f"true scale.",
+        f"Shells are drawn {exaggeration}x larger than life so they are visible at all, "
+        f"and the same factor is used in every panel so the panels compare.",
+        "Arrows run from the measuring agent to the one it measures.",
+    ]
+    dom = _domain_note(net)
+    if dom:
+        notes.append(dom)
+
+    nrows, ncols = _grid_for(len(ep_rows))
+    fig, _, card, top, width = _figure(
+        header, "Where the noise puts each agent", methods, notes,
+        panel_h=5.4, width=6.8 * ncols, panels=(nrows, ncols), axes3d=True)
+    band = (top, card[1])
+
+    for k, (row, per_agent, worst) in enumerate(zip(ep_rows, blocks, worsts)):
+        ax = _formation_axes(fig, nrows, ncols, k + 1, P, band)
+        work = copy.deepcopy(net)
+        work.edges = row["edges"].copy()
+        style = METHOD_STYLE.get(row["method"], {"color": INK_2})
+        _draw_edges_3d(ax, P, work.edges)
+        _draw_agents(ax, work, P)
+        for i, cov3 in enumerate(per_agent):
+            _ellipsoid(ax, cov3, P[i], sigma * exaggeration, style["color"])
+        _panel_title_3d(ax, row["method"],
+                        f"{_which_graph(row)}   worst agent off by "
+                        f"{worst * sigma / radius:.1%} of the formation")
+
+    return _finish(fig, card, methods, notes, width, top, run_dir, filename, tight=False)
+
+
+def plot_softest_mode(run_dir, instances, rows, header, filename="softest_mode"):
+    """The deformation the bearings can barely see, per method."""
+    from rigidity import (extended_bearing_rigidity_matrix, nullspace_and_softest,
+                          rigidity_decomposition)
+    if not instances:
+        return None
+    net = instances[0]
+    ep_rows = _panel_rows(rows)
+    if not ep_rows:
+        return None
+
+    P = np.array([a.pose.position for a in net.agents], dtype=float)
+    span = float(np.abs(P - P.mean(axis=0)).max()) or 1.0
+    rank_K = int(np.linalg.matrix_rank(
+        extended_bearing_rigidity_matrix(net.fully_connected())))
+
+    modes, lams = [], []
+    for row in ep_rows:
+        work = copy.deepcopy(net)
+        work.edges = row["edges"].copy()
+        brm = extended_bearing_rigidity_matrix(work)
+        rank, _, lam = rigidity_decomposition(brm, rank_K)
+        _, v, _, _ = nullspace_and_softest(brm, rank)
+        modes.append(v[:3 * work.n, 0].reshape(-1, 3) if v.shape[1] else np.zeros_like(P))
+        lams.append(lam)
+    scales = [0.30 * span / (float(np.abs(d).max()) or 1.0) for d in modes]
+
+    methods = [r["method"] for r in ep_rows]
+    notes = [
+        "The softest mode: the way of deforming the formation that changes the bearings "
+        "least, and so the direction an estimator confuses most easily. Drawn on the "
+        "first evaluated network.",
+        "The mode is normalised and each panel is scaled to its own largest arrow, so "
+        "the arrows show the SHAPE of that deformation - which agents move, together or "
+        "against each other. Arrow lengths do not compare between panels.",
+        "How soft it is, is the rigidity eigenvalue above each panel: smaller means the "
+        "bearings resist that deformation less and the shape is pinned down worse. "
+        "Larger is better.",
+    ]
+    dom = _domain_note(net)
+    if dom:
+        notes.append(dom)
+
+    nrows, ncols = _grid_for(len(ep_rows))
+    fig, _, card, top, width = _figure(
+        header, "The deformation the bearings barely see", methods, notes,
+        panel_h=5.4, width=6.8 * ncols, panels=(nrows, ncols), axes3d=True)
+    band = (top, card[1])
+
+    for k, (row, disp, lam, scale) in enumerate(zip(ep_rows, modes, lams, scales)):
+        ax = _formation_axes(fig, nrows, ncols, k + 1, P, band)
+        work = copy.deepcopy(net)
+        work.edges = row["edges"].copy()
+        style = METHOD_STYLE.get(row["method"], {"color": INK_2})
+        _draw_edges_3d(ax, P, work.edges)
+        _draw_agents(ax, work, P)
+        d = disp * scale
+        ax.quiver(P[:, 0], P[:, 1], P[:, 2], d[:, 0], d[:, 1], d[:, 2],
+                  color=style["color"], linewidth=2.0, arrow_length_ratio=0.22, zorder=9)
+        _panel_title_3d(ax, row["method"],
+                        f"{_which_graph(row)}   rigidity eigenvalue {lam:.2e}")
+
+    return _finish(fig, card, methods, notes, width, top, run_dir, filename, tight=False)
+
+
+def plot_sensitivity(run_dir, instances, rows, header, filename="sensitivity"):
+    """Which measurements the shape error actually comes from, per method."""
+    from rigidity import extended_bearing_rigidity_matrix, measurement_sensitivity
+    if not instances:
+        return None
+    net = instances[0]
+    ep_rows = _panel_rows(rows)
+    if not ep_rows:
+        return None
+
+    P = np.array([a.pose.position for a in net.agents], dtype=float)
+    methods = [r["method"] for r in ep_rows]
+    notes = [
+        "Noise on one bearing propagates into the recovered shape by a known amount, and "
+        "those amounts add up to the total error exactly. So every measurement has a "
+        "share of the error and the shares sum to 100%. Drawn on the first evaluated "
+        "network.",
+        "Arrow thickness is that single bearing's share. Marker size is the share "
+        "contributed by every bearing that agent takes - a large marker is an agent "
+        "whose own sensing the formation leans on.",
+        "A formation that leans hard on one measurement is fragile in a way the edge "
+        "count does not show.",
+    ]
+    dom = _domain_note(net)
+    if dom:
+        notes.append(dom)
+
+    nrows, ncols = _grid_for(len(ep_rows))
+    fig, _, card, top, width = _figure(
+        header, "Where the error comes from", methods, notes,
+        panel_h=5.4, width=6.8 * ncols, panels=(nrows, ncols), axes3d=True)
+    band = (top, card[1])
+
+    rank_K = int(np.linalg.matrix_rank(
+        extended_bearing_rigidity_matrix(net.fully_connected())))
+
+    for k, row in enumerate(ep_rows):
+        ax = _formation_axes(fig, nrows, ncols, k + 1, P, band)
+        work = copy.deepcopy(net)
+        work.edges = row["edges"].copy()
+        per_edge, per_node = measurement_sensitivity(work, rank_K)
+        total = per_edge.sum()
+        if not np.isfinite(total) or total <= 0:
+            continue
+        e_share, n_share = per_edge / total, per_node / total
+        style = METHOD_STYLE.get(row["method"], {"color": INK_2})
+
+        _draw_edges_3d(ax, P, work.edges, color=style["color"],
+                       widths=0.7 + 6.0 * e_share)
+        _draw_agents(ax, work, P, size=44, extra=1400 * n_share)
+        _panel_title_3d(ax, row["method"],
+                        f"{_which_graph(row)}   worst bearing {e_share.max():.0%}, "
+                        f"worst agent {n_share.max():.0%} of the error")
+
+    return _finish(fig, card, methods, notes, width, top, run_dir, filename, tight=False)
+
+
+def plot_prediction_check(run_dir, rows, header, filename="prediction"):
+    """Does the rigidity matrix predict the error the noise actually causes?
+
+    One point per (method, instance, noise level). On the diagonal means the
+    topology's conditioning explains the error; below it means the noise is past
+    the point where the analytic metric applies.
+    """
+    pts = [(r["method"], sigma * r["pred_err"], measured)
+           for r in rows
+           if r.get("noise") and r.get("pred_err") and np.isfinite(r["pred_err"])
+           for sigma, measured in r["noise"].items()
+           if measured is not None and np.isfinite(measured) and measured > 0]
+    if len(pts) < 3:
+        return None
+
+    methods = [m for m in METHOD_ORDER if any(p[0] == m for p in pts)]
+    notes = [
+        "x is the error the rigidity matrix predicts for that network at that noise "
+        "level; y is the error measured by actually perturbing every bearing and "
+        "recovering the formation.",
+        "On the dashed diagonal, the prediction is right and the analytic metric can "
+        "be trusted. Points falling below it are where the noise is large enough "
+        "that the linear theory stops applying.",
+        "Both axes are RMS position error in formation radii. One point per method, "
+        "network and noise level.",
+    ]
+    fig, axes, card, top, width = _figure(
+        header, "Predicted against measured error", methods, notes,
+        panel_h=4.6, width=11.0, panels=(1, 1))
+    ax = axes[0]
+
+    lo = min(min(p[1] for p in pts), min(p[2] for p in pts)) * 0.7
+    hi = max(max(p[1] for p in pts), max(p[2] for p in pts)) * 1.4
+    ax.plot([lo, hi], [lo, hi], "--", color=MUTED, linewidth=1.2, zorder=1)
+
+    for m in methods:
+        sel = [p for p in pts if p[0] == m]
+        style = METHOD_STYLE.get(m, {"color": INK_2, "z": 2})
+        ax.scatter([p[1] for p in sel], [p[2] for p in sel], s=26,
+                   color=style["color"], alpha=0.75, edgecolors=SURFACE,
+                   linewidths=0.6, label=m, zorder=style.get("z", 2) + 2)
+
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
+    ax.set_aspect("equal")
+    ax.set_xlabel("predicted RMS position error (formation radii)")
+    ax.set_ylabel("measured RMS position error")
+    _style_axes(ax, log=True)
+    _panel_title(ax, "Prediction against measurement",
+                 "on the diagonal: the rigidity matrix explains the error")
+    ax.legend(frameon=False, fontsize=8, loc="upper left")
+
+    return _finish(fig, card, methods, notes, width, top, run_dir, filename)
+
+
+def plot_repair_choice(run_dir, spread, header, filename="repair_choice"):
+    """Among repairs of the same size, how much does the choice matter?
+
+    `spread` is what evaluation.py collected: one record per broken instance with
+    every minimum-size repair's shape error and where greedy's pick landed.
+    """
+    if not spread:
+        return None
+
+    notes = [
+        "After a formation breaks, several different edge sets of the same minimum "
+        "size restore rigidity. Each grey dot is one of them, on one broken network.",
+        "Height is the shape error that repair leaves behind, relative to the best "
+        "repair available on that network - so 1 is the best possible and 10 is ten "
+        "times worse, for the same number of edges.",
+        "The marked point is what marginal-gain greedy picked. A wide column means "
+        "the choice matters; greedy sitting high in it means the count-optimal "
+        "criterion does not make that choice well.",
+    ]
+    methods = ["greedy"]
+    fig, axes, card, top, width = _figure(
+        header, "Does it matter which repair you pick?", methods, notes,
+        panel_h=4.6, width=11.0, panels=(1, 1))
+    ax = axes[0]
+
+    rng = np.random.default_rng(0)
+    for k, rec in enumerate(spread):
+        errs = np.asarray(rec["errors"], dtype=float)
+        errs = errs[np.isfinite(errs) & (errs > 0)]
+        if len(errs) < 2:
+            continue
+        rel = errs / errs.min()
+        jitter = k + (rng.random(len(rel)) - 0.5) * 0.55
+        ax.scatter(jitter, rel, s=16, color=MUTED, alpha=0.45, linewidths=0, zorder=2)
+        if rec.get("greedy") and rec["greedy"] > 0:
+            ax.scatter([k], [rec["greedy"] / errs.min()], s=70, marker="D",
+                       color=METHOD_STYLE["greedy"]["color"], edgecolors=SURFACE,
+                       linewidths=1.0, zorder=5,
+                       label="greedy's pick" if k == 0 else None)
+
+    import matplotlib.ticker as mticker
+    ax.axhline(1.0, color=INK_2, linestyle="--", linewidth=1.1, zorder=1)
+    ax.set_yscale("log")
+    ax.set_xlabel("broken network")
+    ax.set_ylabel("shape error, relative to the best repair of the same size")
+    ax.set_xticks([])
+    _style_axes(ax, log=True)
+    # a log axis over one decade labels only the decade, which reads as "no scale"
+    ax.yaxis.set_major_locator(mticker.LogLocator(subs=(1.0, 2.0, 3.0, 5.0)))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(
+        lambda v, _: f"{v:g}x" if v >= 1 else ""))
+    ax.yaxis.set_minor_formatter(mticker.NullFormatter())
+    _panel_title(ax, "Every minimum-size repair, on each broken network",
+                 "1x is the best repair available; higher is worse for the same edge count")
+    ax.legend(frameon=False, fontsize=8, loc="upper left")
+
+    return _finish(fig, card, methods, notes, width, top, run_dir, filename)
+
+
+DECISION_FIELDS = ["episode", "step", "kind", "phi_pct", "err_pct", "share_pct",
+                   "phi_best", "err_best", "dphi", "derr"]
+
+
+def write_decisions(run_dir, decisions):
+    os.makedirs(run_dir, exist_ok=True)
+    with open(os.path.join(run_dir, "decisions.csv"), "w", newline="") as f:
+        wr = csv.DictWriter(f, fieldnames=DECISION_FIELDS, extrasaction="ignore")
+        wr.writeheader()
+        for d in decisions:
+            wr.writerow(d)
+
+
+def plot_decisions(run_dir, decisions, header, filename="decisions"):
+    """Where the policy's chosen edit ranked among all the edits it could have made.
+
+    Scored two ways on purpose. phi is what it was trained on; shape error is what
+    we care about but never asked for. The gap between the two panels says whether
+    a shortfall belongs to the policy or to the objective.
+    """
+    if not decisions:
+        return None
+
+    panels = [
+        ("phi_pct", "Ranked by phi", "the objective it was trained on"),
+        ("err_pct", "Ranked by shape error", "the objective it was NOT trained on"),
+        ("share_pct", "Ranked by how sensitive the agent is",
+         "does it act where the error already is?"),
+    ]
+    kinds = ["add", "remove"]
+    notes = [
+        "At every step, every legal single-edge change is scored, and the one the "
+        "policy actually made is ranked among them. 100% would be the best available "
+        "edit; the dashed line at 50% is what picking at random scores.",
+        "The policy is trained on phi, which rewards rank and charges for edges - not "
+        "on shape error. A high phi panel with a middling error panel therefore says "
+        "the objective is what leaves error behind, not the policy.",
+        "The third panel asks whether the edit touches an agent already carrying much "
+        "of the error. Adds and removes are separated because they mean opposite "
+        "things: acting on a loaded agent is what you want when adding, and what you "
+        "want to avoid when removing.",
+    ]
+    methods = ["learned"]
+    fig, axes, card, top, width = _figure(
+        header, "Were the policy's edits good ones?", methods, notes,
+        panel_h=4.0, width=13.0, panels=(1, 3))
+
+    for ax, (key, title, sub) in zip(axes, panels):
+        data = [[d[key] for d in decisions if d["kind"] == k and d.get(key) is not None]
+                for k in kinds]
+        if not any(data):
+            _style_axes(ax)
+            _panel_title(ax, title, "no edits to rank")
+            continue
+
+        ax.axhline(50.0, color=INK_2, linestyle="--", linewidth=1.1, zorder=1)
+        rng = np.random.default_rng(0)
+        for pos, (k, vals) in enumerate(zip(kinds, data)):
+            if not vals:
+                continue
+            colour = METHOD_STYLE["learned"]["color"] if k == "add" else INK_2
+            ax.scatter(pos + (rng.random(len(vals)) - 0.5) * 0.5, vals, s=16,
+                       color=colour, alpha=0.40, linewidths=0, zorder=2)
+            ax.scatter([pos], [np.mean(vals)], s=110, marker="D", color=colour,
+                       edgecolors=SURFACE, linewidths=1.2, zorder=5)
+            ax.annotate(f"{np.mean(vals):.0f}%", (pos, np.mean(vals)), fontsize=8.5,
+                        color=INK, ha="center", va="bottom",
+                        xytext=(0, 11), textcoords="offset points", zorder=6)
+
+        ax.set_xticks(range(len(kinds)))
+        ax.set_xticklabels([f"{k}\n({len(v)})" for k, v in zip(kinds, data)])
+        ax.set_ylim(-4, 108)
+        ax.set_ylabel("percentile among all legal edits")
+        _style_axes(ax)
+        _panel_title(ax, title, sub)
 
     return _finish(fig, card, methods, notes, width, top, run_dir, filename)
 

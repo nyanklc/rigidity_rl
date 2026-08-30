@@ -251,3 +251,58 @@ def test_a_stiffer_graph_estimates_better():
     sparse_err = E.monte_carlo_error(net, 1e-3, **kw)["position"]["rms"]
     dense_err = E.monte_carlo_error(dense, 1e-3, **kw)["position"]["rms"]
     assert dense_err < sparse_err
+
+
+# ---------------------------------------------------------------- per-measurement share
+@pytest.mark.parametrize("domain", ALL_DOMAINS + [MIXES[4]])
+def test_the_shares_sum_to_the_total_error(domain):
+    """Each measurement's contribution decomposes tr((B^T B)^+) exactly."""
+    from rigidity import measurement_sensitivity
+    net, rank_K = rigid_net(domain, n=8)
+    per_edge, per_node = measurement_sensitivity(net, rank_K)
+    a_opt, _, _ = estimation_error_of(net, rank_K)
+
+    assert np.isclose(per_edge.sum(), a_opt, rtol=1e-8)
+    assert np.isclose(per_node.sum(), a_opt, rtol=1e-8)
+    assert len(per_edge) == int(net.edges.sum())
+    assert (per_edge > 0).all()
+
+
+def test_a_node_that_measures_nothing_contributes_nothing():
+    from rigidity import measurement_sensitivity
+    net, rank_K = rigid_net("R^3", n=8)
+    silent = [i for i in range(net.n) if not net.edges[i].any()]
+    _, per_node = measurement_sensitivity(net, rank_K)
+    for i in silent:
+        assert per_node[i] == 0.0
+
+
+@pytest.mark.parametrize("domain", ["R^3", "SE(3)"])
+def test_a_single_edges_share_predicts_perturbing_only_that_edge(domain):
+    """The share is what the measured error becomes when one bearing alone is noisy."""
+    from rigidity import characteristic_length, measurement_sensitivity
+    net, rank_K = rigid_net(domain, n=8)
+    per_edge, _ = measurement_sensitivity(net, rank_K)
+    k = int(np.argmax(per_edge))
+
+    L = characteristic_length(net)
+    Z_K = E.gauge_basis(net, rank_K, L)
+    b0 = E.true_bearings(net)
+    sigma = 1e-3
+
+    sq = []
+    for t in range(200):
+        rng = np.random.default_rng(4000 + t)
+        z = b0.copy()
+        blk = b0[3 * k:3 * k + 3]
+        eps = rng.normal(size=3)
+        tang = eps - (eps @ blk) * blk
+        v = blk + sigma * tang
+        z[3 * k:3 * k + 3] = v / np.linalg.norm(v)
+        est, _ = E.solve_shape(net, z)
+        dp, da = E.shape_error(net, est, rank_K, Z_K=Z_K, length_scale=L)
+        sq.append(dp * dp + da * da)
+
+    measured = np.sqrt(np.mean(sq))
+    predicted = sigma * np.sqrt(per_edge[k] / net.n)
+    assert 0.9 < measured / predicted < 1.15

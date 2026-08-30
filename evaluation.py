@@ -1,28 +1,32 @@
-"""Reference points for a trained policy.
+"""The evaluation run: everything the thesis reports about a policy, in one place.
 
-Every method here is scored with Environment.compute_state_score, i.e. the exact same state
-score phi the agent is trained on, so the numbers are directly comparable:
+Every method is scored with Environment.compute_state_score, i.e. the exact state
+score phi the agent trains on, so the rows are directly comparable:
 
   initial  the graph the sampler produced (what the agent starts from)
   random   uniform random actions through env.step()  -> the floor for this action space
   greedy   hill-climbing on phi, one edge toggle at a time
+  constructive  builds from the empty graph, keeping any edge that raises rank(B)
   learned  a trained policy, sampling actions (--policy-mode greedy for argmax instead)
   optimal  exhaustive search for the fewest-edge rigid graph (small n only)
 
-greedy gets stuck exactly where RL should win: states where no single edit improves phi but a
-swap of two does. That is the interesting comparison.
+greedy gets stuck exactly where RL should win: states where no single edit improves
+phi but a swap of two does.
 
 usage:
-  uv run baselines.py <environment_name> [--episodes N] [--model NAME] [--brute-force] [--steps K] [--tag NAME] [--device cpu|cuda] [--methods a,b,c] [--restarts K] [--policy-mode sample|greedy]
-  [--no-plots] [--plot-episodes N] [--brief] [--out-dir PATH] [--replay-env]
+  uv run evaluation.py <environment_name> [--episodes N] [--model NAME] [--brute-force]
+      [--steps K] [--tag NAME] [--device cpu|cuda] [--methods a,b,c] [--restarts K]
+      [--policy-mode sample|greedy] [--benchmark NAME] [--noise-sweep 0.5,1,5]
+      [--no-plots] [--plot-episodes N] [--brief] [--out-dir PATH] [--replay-env]
 
-Writes one directory per run under runs_baselines/: the table, per-episode results,
-per-step trajectories, provenance, and plots. See report.py.
+Writes one directory per run under runs_evaluation/: the table, per-episode results,
+per-step trajectories, provenance, and every figure. See report.py.
 """
 
 import argparse
 import copy
 import csv
+import glob
 import itertools
 import json
 import math
@@ -34,8 +38,12 @@ import torch
 from tqdm import tqdm
 
 from environment import Environment
-from rigidity import rigidity_eigenvalue, rigidity_decomposition, greedy_rigid_construction
+from rigidity import (rigidity_eigenvalue, rigidity_decomposition, greedy_rigid_construction,
+                      greedy_rigid_repair, repair_edge_count, estimation_error_of,
+                      extended_bearing_rigidity_matrix,
+                      measurement_sensitivity)
 import benchmark
+import estimation
 import manifest
 import report
 
@@ -73,7 +81,7 @@ def score_network(env, need_mbr=None):
 
 
 def result(method, score, is_IBR, is_MBR, m, work=0, best_at=0, min_eig=None,
-           shape_err=None):
+           shape_err=None, edges=None, edges_are="final"):
     """One method's outcome on one instance.
 
     `work` counts graph modifications actually applied and `best_at` is the step the best
@@ -88,10 +96,166 @@ def result(method, score, is_IBR, is_MBR, m, work=0, best_at=0, min_eig=None,
         "work": int(work),
         "best_at": int(best_at),
         "min_eig": None if min_eig is None else float(min_eig),
-        # RMS state error per radian of bearing noise: what the topology costs the
-        # thing the bearings are for. None while flexible, where it is infinite.
+        # RMS state error per radian of bearing noise; None while flexible
         "shape_err": None if shape_err is None else float(shape_err),
+        # the graph this row reports, so --noise-sweep can measure it afterwards,
+        # and whether that is where the method stopped or the best it ever saw
+        "edges": None if edges is None else edges.copy(),
+        "edges_are": edges_are,
     }
+
+
+def measure_noise(env, row, sigmas, trials, rng):
+    """Fill row["noise"][sigma] with the measured RMS shape error of its graph.
+
+    Runs on the graph the row reports, which for a rollout is the best state
+    visited rather than the one the episode stopped on.
+    """
+    if row.get("edges") is None or not row["is_IBR"]:
+        return
+    net = copy.deepcopy(env.network)
+    net.edges = row["edges"].copy()
+
+    pred = estimation.predicted_error(net, env.rank_K)[0]
+    if not np.isfinite(pred):
+        return
+
+    row["noise"], row["noise_failed"] = {}, {}
+    for sigma in sigmas:
+        got = estimation.monte_carlo_error(net, sigma, trials=trials, rng=rng,
+                                           rank_K=env.rank_K)
+        rms = got["position"]["rms"]
+        # a level where every recovery blew up carries no number, only the fact
+        if np.isfinite(rms) and rms > 0:
+            row["noise"][sigma] = float(rms)
+        row["noise_failed"][sigma] = got["position"]["failed"]
+    if not row["noise"]:
+        del row["noise"]
+        return
+    row["pred_err"] = float(pred)
+
+
+MAX_DECISION_ANALYSIS_N = 12
+MAX_REPAIR_FIGURE_N = 8
+
+
+def edit_landscape(env):
+    """Every single-edge toggle from the current graph, scored two ways.
+
+    {(i, j): (dphi, derr, node_share)} -- how much phi rises, how much the shape
+    error falls, and how much of the current error the measuring agent carries.
+    The policy optimises phi, not the error, so the two rankings are reported
+    side by side rather than one standing in for the other.
+    """
+    n = env.network.n
+    base_phi = score_network(env)[0]
+    base_err = shape_error_of(env.network, env.rank_K)
+    _, per_node = measurement_sensitivity(env.network, env.rank_K)
+    total = per_node.sum()
+    share = per_node / total if np.isfinite(total) and total > 0 else np.zeros(n)
+
+    out = {}
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            env.network.edges[i, j] = not env.network.edges[i, j]
+            phi = score_network(env)[0]
+            err = shape_error_of(env.network, env.rank_K)
+            env.network.edges[i, j] = not env.network.edges[i, j]
+            # a move off a finite error into an infinite one is not a ranking, it is
+            # a disqualification, and vice versa
+            d_err = (base_err - err) if (np.isfinite(err) and np.isfinite(base_err)) else None
+            out[(i, j)] = (phi - base_phi, d_err, float(share[i]))
+    return out
+
+
+def _percentile_of(values, chosen):
+    """Where `chosen` sits among `values`, as a percentage. 50 = no better than chance.
+
+    Midrank, so ties count half: several edits are often equally good, and counting
+    only strictly-worse alternatives would score picking one of them well below 100.
+    `_is_best` is what says the choice was actually optimal.
+    """
+    vals = [v for v in values if v is not None]
+    if chosen is None or len(vals) < 2:
+        return None
+    below = sum(v < chosen for v in vals)
+    tied = sum(v == chosen for v in vals)
+    return 100.0 * (below + 0.5 * tied) / len(vals)
+
+
+def _is_best(values, chosen, tol=1e-9):
+    vals = [v for v in values if v is not None]
+    if chosen is None or not vals:
+        return None
+    return bool(chosen >= max(vals) - tol)
+
+
+def decision_record(landscape, applied, kind):
+    """One row per edit the policy applied: where its choice ranked."""
+    if applied not in landscape:
+        return None
+    dphi, derr, share = landscape[applied]
+    phis = [v[0] for v in landscape.values()]
+    errs = [v[1] for v in landscape.values()]
+    shares = [v[2] for v in landscape.values()]
+    return {
+        "kind": kind,
+        "phi_pct": _percentile_of(phis, dphi),
+        "err_pct": _percentile_of(errs, derr),
+        "share_pct": _percentile_of(shares, share),
+        "phi_best": _is_best(phis, dphi),
+        "err_best": _is_best(errs, derr),
+        "dphi": float(dphi),
+        "derr": None if derr is None else float(derr),
+    }
+REPAIR_FIGURE_INSTANCES = 8
+
+
+def shape_error_of(net, rank_K):
+    a_opt, _, _ = estimation_error_of(net, rank_K)
+    return float(np.sqrt(a_opt / net.n)) if np.isfinite(a_opt) else np.inf
+
+
+def repair_spread(net, rank_K, rng, drop=2, cap=20000):
+    """Every minimum-size repair of a broken copy of `net`, scored by shape error.
+
+    {"errors": [...], "greedy": err, "size": k} or None when the instance does not
+    produce a comparison -- already rigid after the break, or fewer than two repairs.
+    """
+    work = copy.deepcopy(net)
+    present = list(zip(*np.nonzero(work.edges)))
+    if len(present) <= drop:
+        return None
+    for idx in rng.choice(len(present), drop, replace=False):
+        work.edges[present[idx]] = False
+    if np.linalg.matrix_rank(extended_bearing_rigidity_matrix(work)) >= rank_K:
+        return None
+
+    size = repair_edge_count(work, rank_K=rank_K)
+    n = work.n
+    absent = [(i, j) for i in range(n) for j in range(n)
+              if i != j and not work.edges[i, j]]
+
+    errors = []
+    for count, sub in enumerate(itertools.combinations(absent, size)):
+        if count >= cap:
+            break
+        cand = copy.deepcopy(work)
+        for i, j in sub:
+            cand.edges[i, j] = True
+        if np.linalg.matrix_rank(extended_bearing_rigidity_matrix(cand)) >= rank_K:
+            errors.append(shape_error_of(cand, rank_K))
+    errors = [e for e in errors if np.isfinite(e) and e > 0]
+    if len(errors) < 2:
+        return None
+
+    picked = copy.deepcopy(work)
+    _, added = greedy_rigid_repair(picked, rank_K, rng=rng)
+    greedy_err = shape_error_of(picked, rank_K) if len(added) == size else None
+
+    return {"errors": errors, "greedy": greedy_err, "size": int(size)}
 
 
 def record(trace, method, episode, step, stats):
@@ -131,7 +295,8 @@ def run_initial(env, trace=None, episode=0):
     st = stats_now(env)
     record(trace, "initial", episode, 0, st)
     return result("initial", st["score"], st["is_IBR"], st["is_MBR"], st["m"],
-                  min_eig=st["min_eig"], shape_err=st.get("shape_err"))
+                  min_eig=st["min_eig"], shape_err=st.get("shape_err"),
+                  edges=env.network.edges)
 
 
 def run_greedy(env, max_steps=200, verbose=True, trace=None, episode=0):
@@ -199,7 +364,7 @@ def run_greedy(env, max_steps=200, verbose=True, trace=None, episode=0):
     # greedy stops at its own best, so work and best@ coincide
     return result("greedy", st["score"], st["is_IBR"], st["is_MBR"], st["m"],
                   work=steps, best_at=steps, min_eig=st["min_eig"],
-                  shape_err=st.get("shape_err"))
+                  shape_err=st.get("shape_err"), edges=env.network.edges)
 
 
 def _construct_once(env, order, rng):
@@ -256,7 +421,7 @@ def run_constructive(env, rng, restarts=20, verbose=True, trace=None, episode=0)
     # monotone construction: it ends on its own best graph
     return result("constructive", st["score"], st["is_IBR"], st["is_MBR"], st["m"],
                   work=len(added), best_at=len(added), min_eig=st["min_eig"],
-                  shape_err=st.get("shape_err"))
+                  shape_err=st.get("shape_err"), edges=env.network.edges)
 
 
 def rollout_result(method, env, work):
@@ -265,7 +430,8 @@ def rollout_result(method, env, work):
                   env.best_stats["is_MBR"], env.best_stats["m"],
                   work=work, best_at=env.best_step,
                   min_eig=env.best_stats.get("min_eig"),
-                  shape_err=env.best_stats.get("shape_err"))
+                  shape_err=env.best_stats.get("shape_err"),
+                  edges=env.best_edges, edges_are="best visited")
 
 
 def run_random(env, steps, trace=None, episode=0):
@@ -299,7 +465,8 @@ def deterministic_action(agent, obs):
     return torch.argmax(scores, dim=-1, keepdim=True)
 
 
-def run_policy(agent, wrapped_env, raw_env, steps, mode="sample", trace=None, episode=0):
+def run_policy(agent, wrapped_env, raw_env, steps, mode="sample", trace=None, episode=0,
+               decisions=None):
     """Roll out a trained policy, scored on the best state visited.
 
     mode="greedy"  the action the policy considers best -- what you would deploy
@@ -314,6 +481,9 @@ def run_policy(agent, wrapped_env, raw_env, steps, mode="sample", trace=None, ep
     before = raw_env.network.edges.tobytes()
 
     for t in range(steps):
+        landscape = edit_landscape(raw_env) if decisions is not None else None
+        edges_before = raw_env.network.edges.copy()
+
         if mode == "greedy":
             action = deterministic_action(agent, obs)
         else:
@@ -325,6 +495,15 @@ def run_policy(agent, wrapped_env, raw_env, steps, mode="sample", trace=None, ep
         if after != before:          # count only steps that actually changed the graph
             work += 1
             before = after
+            if landscape is not None:
+                changed = np.argwhere(raw_env.network.edges != edges_before)
+                if len(changed) == 1:
+                    i, j = (int(x) for x in changed[0])
+                    kind = "add" if raw_env.network.edges[i, j] else "remove"
+                    rec = decision_record(landscape, (i, j), kind)
+                    if rec is not None:
+                        rec.update(episode=episode, step=t)
+                        decisions.append(rec)
         record(trace, "learned", episode, t + 1, step_stats(raw_env, trace is not None))
 
         done = terminated.any().item() if torch.is_tensor(terminated) else terminated
@@ -394,7 +573,8 @@ def run_brute_force(env, verbose=True):
         env.network.set_edges_list(best_subset)
         st = stats_now(env)
         best = result("optimal", st["score"], st["is_IBR"], st["is_MBR"], st["m"],
-                      min_eig=st["min_eig"], shape_err=st.get("shape_err"))
+                      min_eig=st["min_eig"], shape_err=st.get("shape_err"),
+                      edges=env.network.edges)
 
     env.network.set_edges(saved)
     return best
@@ -417,7 +597,7 @@ def main():
     parser.add_argument("--tag", default=None,
                         help="label appended to the run directory name")
     parser.add_argument("--out-dir", default=None,
-                        help="write results here instead of runs_baselines/<generated name>")
+                        help="write results here instead of runs_evaluation/<generated name>")
     parser.add_argument("--no-plots", action="store_true",
                         help="skip plots; also skips per-step tracing, so rollouts are faster")
     parser.add_argument("--plot-episodes", type=int, default=3,
@@ -435,6 +615,12 @@ def main():
                              "finds. greedy: the single action the policy considers best, "
                              "which is reproducible and terminates on a cycle. A DQN q-network "
                              "has nothing to sample from and is argmax either way.")
+    parser.add_argument("--noise-sweep", default=None,
+                        help="comma-separated bearing-noise levels in DEGREES; measures "
+                             "the shape error each method's graph actually produces "
+                             "against the analytic prediction, e.g. 0.5,1,5")
+    parser.add_argument("--noise-trials", type=int, default=30,
+                        help="noise draws per (method, sigma)")
     parser.add_argument("--replay-env", action="store_true",
                         help="score every method against the environment --model was trained "
                              "on (from its manifest) instead of the current code")
@@ -520,6 +706,27 @@ def main():
     # private to the constructive baseline; see the note in _construct_once
     construct_rng = np.random.default_rng(args.seed)
 
+    instances = []
+    # every legal edit is scored at every step, so this is gated on n
+    decisions = [] if (agent is not None and not args.no_plots
+                       and n <= MAX_DECISION_ANALYSIS_N) else None
+    if decisions is None and agent is not None and not args.no_plots:
+        print(f"  decision analysis skipped: n={n} > {MAX_DECISION_ANALYSIS_N}")
+    # the repair figure enumerates every minimum-size repair, so it is small-n only
+    repair_rng = np.random.default_rng(args.seed)
+    repair_records = [] if (not args.no_plots and n <= MAX_REPAIR_FIGURE_N) else None
+    if repair_records is None and not args.no_plots:
+        print(f"  repair-choice figure skipped: n={n} > {MAX_REPAIR_FIGURE_N}")
+
+    # the flag is in degrees because that is what a camera spec is quoted in;
+    # everything downstream of here is radians
+    sweep_degrees = ([float(x) for x in args.noise_sweep.split(",")]
+                     if args.noise_sweep else [])
+    sigmas = [float(np.radians(d)) for d in sweep_degrees]
+    if sigmas:
+        print(f"  noise sweep: {sweep_degrees} degrees of bearing error, "
+              f"{args.noise_trials} draws each")
+
     frozen = None
     if args.benchmark:
         frozen, bench_meta = benchmark.load(args.benchmark)
@@ -541,6 +748,14 @@ def main():
             env.reset()                          # draw a fresh instance
         instance = copy.deepcopy(env.network)
         env.freeze_network = True                # every reset below keeps it
+        if len(instances) < max(args.plot_episodes, 1):
+            instances.append(copy.deepcopy(env.network))
+        if repair_records is not None and len(repair_records) < REPAIR_FIGURE_INSTANCES:
+            rigid = copy.deepcopy(env.network)
+            greedy_rigid_construction(rigid, env.rank_K, repair_rng)
+            rec = repair_spread(rigid, env.rank_K, repair_rng)
+            if rec is not None:
+                repair_records.append(rec)
 
         def restore():
             env.network = copy.deepcopy(instance)
@@ -567,13 +782,19 @@ def main():
         if "learned" in methods and agent is not None:
             restore()
             episode_rows.append(run_policy(agent, wrapped, env, steps,
-                                           mode=args.policy_mode, trace=traces, episode=ep))
+                                           mode=args.policy_mode, trace=traces, episode=ep,
+                                           decisions=decisions))
 
         if args.brute_force:
             restore()
             opt = run_brute_force(env)
             if opt is not None:
                 episode_rows.append(opt)
+
+        if sigmas:
+            for r in episode_rows:
+                measure_noise(env, r, sigmas, args.noise_trials,
+                              np.random.default_rng(args.seed + ep))
 
         for r in episode_rows:
             r["episode"] = ep
@@ -600,11 +821,13 @@ def main():
     table = report.format_table(rows, context, brief=args.brief)
     print("\n" + table)
 
-    run_dir = report.make_run_dir("runs_baselines", args.environment_name,
+    run_dir = report.make_run_dir("runs_evaluation", args.environment_name,
                                   model_name=args.model, tag=args.tag, out_dir=args.out_dir,
                                   with_plots=bool(traces))
     report.write_summary(run_dir, table)
     report.write_csvs(run_dir, rows, traces)
+    if decisions:
+        report.write_decisions(run_dir, decisions)
     report.write_meta(run_dir, {
         "args": vars(args),
         "environment_config": env_config_data,
@@ -616,6 +839,8 @@ def main():
     })
 
     written = ["summary.txt", "results.csv"] + (["trajectories.csv"] if traces else [])
+    if decisions:
+        written.append("decisions.csv")
     if traces:
         # the full names go in the figure titles (wrapped): a plot pulled into a slide
         # has to say which model and which environment produced it
@@ -631,6 +856,13 @@ def main():
         report.plot_trajectories(run_dir, traces, rows, header)
         report.plot_outcomes(run_dir, traces, rows, header)
         report.plot_summary(run_dir, rows, header)
+        report.plot_noise_sweep(run_dir, rows, header)
+        report.plot_prediction_check(run_dir, rows, header)
+        report.plot_uncertainty(run_dir, instances, rows, header)
+        report.plot_softest_mode(run_dir, instances, rows, header)
+        report.plot_sensitivity(run_dir, instances, rows, header)
+        report.plot_repair_choice(run_dir, repair_records, header)
+        report.plot_decisions(run_dir, decisions, header)
         # the table itself, so the numbers travel with the figures. The policy line drops
         # the model name -- the header already carries it in full one line above
         policy = (f"{algorithm}, --policy-mode {args.policy_mode}, {steps}-step budget"
@@ -643,8 +875,10 @@ def main():
             report.plot_trajectories(run_dir, sel, [r for r in rows if r["episode"] == ep],
                                      ep_header, filename=f"episode_{ep:03d}",
                                      aggregate_over_episodes=False)
-        figures = 4 + min(args.plot_episodes, args.episodes)
-        written.append(f"plots/pdf/ and plots/png/ ({figures} figures each)")
+        # counted rather than predicted: several figures skip themselves when the
+        # run does not carry what they draw
+        made = len(glob.glob(os.path.join(run_dir, "plots", "png", "*.png")))
+        written.append(f"plots/pdf/ and plots/png/ ({made} figures each)")
 
     print(f"\nwrote {run_dir}/")
     for w in written:

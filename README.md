@@ -106,7 +106,7 @@ Requires Python 3.12, an NVIDIA GPU, and [`uv`](https://docs.astral.sh/uv/).
 ```bash
 uv run environment.py 8 "R^3"
 uv run train_dqn.py <env_name> <run_name>
-uv run baselines.py <env_name> --model <run_name>
+uv run evaluation.py <env_name> --model <run_name>
 tensorboard --logdir runs
 ```
 
@@ -114,6 +114,7 @@ tensorboard --logdir runs
 
 ```
 rigidity.py         bearing rigidity matrix, rigidity tests, derived quantities
+estimation.py       shape recovery from noisy bearings, and the error it leaves
 network.py          Agent and Network, graph features
 scenario.py         random and file-backed scenario generation
 util.py             geometry helpers
@@ -123,9 +124,9 @@ train_dqn.py        training (train_ppo.py for PPO)
 probe.py            periodic deterministic evaluation during training
 manifest.py         run manifests, archived sources and provenance
 agent_loader.py     rebuilds a trained agent from its manifest
-baselines.py        evaluation and comparison against baselines
+evaluation.py       THE results script: every metric, table and figure, in one run
+report.py           the tables, CSVs and figures an evaluation run writes
 benchmark.py        frozen evaluation instances
-report.py           tables, plots and CSVs for evaluation runs
 ablation.py         which observation channels a policy actually uses
 inference.py        roll out a trained model
 manual.py           interactive GUI for editing a graph by hand
@@ -136,8 +137,15 @@ docs/               notes
 resources/          figures used in this README
 ```
 
+`evaluation.py` is the script to run for results. One invocation scores every method on the same
+instances and writes the table, the per-episode and per-step CSVs, and every figure: trajectories,
+outcomes, the summary, the comparison table, per-episode detail, measured error under bearing
+noise, predicted against measured error, per-agent uncertainty ellipses, the softest deformation
+mode, where the error comes from, how much the choice of repair matters, and -- with `--model` --
+how the policy's own edits rank among the edits it could have made.
+
 Directories produced by runs (`environments/`, `scenarios/`, `models/`, `runs/`, `train/`,
-`runs_baselines/`) are not tracked.
+`runs_evaluation/`) are not tracked.
 
 ## License
 

@@ -67,6 +67,37 @@ ground truth and the third hands us the gap.
 
 ## Done
 
+- **Where the error comes from.** `measurement_sensitivity` decomposes the total shape error
+  into each bearing's share and each agent's share, exactly and without sampling, drawn as the
+  `sensitivity` figure. First thing it shows: sparsifying *concentrates* the error, so a minimal
+  graph can lean half of it on a single measurement -- fragility the edge count does not report.
+- **Whether the policy's edits are good ones.** Every legal edit is scored at every step and the
+  policy's choice ranked among them, by phi *and* by shape error. The gap between the two
+  rankings separates "the policy chooses badly" from "the objective does not ask for this".
+
+- **`evaluation.py` is the results script.** Renamed from `baselines.py`, and now writes every
+  figure the thesis needs from one run: the comparison table, per-episode and per-step CSVs,
+  trajectories, outcomes, the summary, per-episode detail, measured error under bearing noise,
+  predicted against measured error, per-agent uncertainty ellipses, the softest deformation mode,
+  and how much the choice of repair matters.
+- **`rigidity_quality`**, the observation channel saying how good the current state is. Every
+  other channel is local or a difference; this is the only one that says whether the conditioning
+  of the graph in hand is good. Off by default, its own flag so the ablation can price it.
+
+- **Workstream 1 is complete.** Analytic metrics, the Monte-Carlo estimator and its
+  validation, `shape_err` through the evaluation path, the functional bake-off,
+  `evaluation.py --noise-sweep` with its figure, and `WeightedNormalizedSpectral` as a
+  config key carrying the null result. No training runs were spent on the spectral arm,
+  because §18.5 says none of the functionals beats λ as a signal.
+
+- **Repair, and the finding that reframes it.** `repair_edge_count` bounds how few edges
+  could restore rigidity; `greedy_rigid_repair` is the marginal-gain method that achieves it.
+  Then `tools/repair_choice.py` asked whether the count is the hard part, and it is not:
+  among *equally sized* minimum repairs the shape error spans **4x-17x** (up to three decades
+  on single instances), and marginal-gain greedy sits at the **39th-55th percentile** of the
+  repairs available to it, costing 1.7x-3.1x the best. **This is the clearest room for a
+  learned method measured so far** -- the classical algorithm solves the count optimally and
+  then chooses essentially arbitrarily. See `THEORY.md` §19.4.
 - **The repair bound.** `rigidity.repair_edge_count`: fewest edges that could restore
   rigidity to a *broken* graph, by the same subadditivity argument as
   `required_edge_count` but starting from the graph in hand. Returns 0 when rigid,
@@ -81,7 +112,7 @@ ground truth and the third hands us the gap.
   `tests/test_estimation.py` pins the Jacobian convention, the DOF restriction, the gauge and the
   agreement with the bound.
 - **`shape_err` through the evaluation path.** `Environment.shape_error_now`, `last_stats`,
-  `Episode/ {Final,Best,Mean} shape err`, the `baselines.py` result rows, `results.csv`,
+  `Episode/ {Final,Best,Mean} shape err`, the `evaluation.py` result rows, `results.csv`,
   `trajectories.csv`, and a `shape err` column in both the text and figure tables.
 - **Three measurement tools**, one question each: `tools/crlb_validation.py` (does the prediction
   hold, and where does it stop), `tools/spectral_criteria.py` (do A/D/E rank graphs differently),
@@ -118,16 +149,17 @@ events `edge_drop_random`, `edge_drop_worst` (chosen exactly via `removal_costs`
 `bearing_corrupt` (outlier measurements — implementable only now that an estimator exists),
 `node_leave`, `node_join`.
 
-Scored against `repair_edge_count`, so "repaired in `k` edges" can be read as a gap above a
-bound rather than as a bare number. Three baselines, following Karimian and Tron:
+Scored against `repair_edge_count`, so "repaired in `k` edges" reads as a gap above a bound
+rather than as a bare number, and against **best-of-combinatorial repair** at small `n`, which
+§19.4 shows is 1.7x-3.1x better than greedy on shape error. Baselines: `greedy_rigid_repair`
+(the count-optimal one), the spectral repair, and greedy hill-climbing on phi.
 
-- **their greedy rigidifying algorithm** — published, and provably optimal in 2-D, so it is
-  the right opponent rather than one we invent;
-- **best-of-combinatorial repair** at small `n` — enumerate every minimum-size repair and take
-  the best by *shape error*. This is their "first vs best" comparison asked with a criterion
-  they left open, and it is the direct test of whether *which* repair edge you pick matters at
-  all. If it does not, the objective has no room here and that is worth knowing early;
-- **greedy hill-climbing on phi**, which is already there.
+Karimian and Tron's factor-graph algorithm is **not** being implemented. Its contribution is
+the minimum-edge guarantee in homogeneous 2-D, and `greedy_rigid_repair` was measured to attain
+that bound 16/16 in `R^2` and 24/24 in `R^2xS^1` -- which §14.3's matroid argument predicts for
+every `c_max = 1` domain. It would be a 2-D-only subsystem reproducing a number already in
+hand, and it cannot help in `R^3`/`SE(3)`, where greedy misses the bound (15/16, 22/28) but
+their theory does not reach.
 
 `node_join` / `node_leave` change `n`. The models are already `n`-agnostic — both backbones read
 `n` from the tensor, the heads take it as an unused kwarg, and every action decoder recomputes it —

@@ -255,3 +255,65 @@ def test_stiffness_ref_is_the_same_for_the_same_poses(make_env):
         e.reset()
         refs.append(e.stiffness_ref)
     assert len(set(refs)) == 1 and refs[0] > 0
+
+
+# The selectable spectral functional.
+SPECTRAL = ["eigenvalue", "trace", "logdet"]
+
+
+def spectral_env(make_env, functional, domain="R^3", n=6, kappa=2.0):
+    e = make_env(n=n, domains=[domain] * n,
+                 state_score_type="WeightedNormalizedSpectral",
+                 spectral_functional=functional, stiffness_kappa=kappa)
+    e.reset()
+    return e
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+def test_eigenvalue_mode_is_the_weighted_normalized_score(make_env, domain):
+    """The new branch must reproduce the old one exactly at functional=eigenvalue."""
+    n = 6
+    for seed in range(3):
+        old = make_env(n=n, domains=[domain] * n, stiffness_kappa=2.0)
+        new = make_env(n=n, domains=[domain] * n,
+                       state_score_type="WeightedNormalizedSpectral",
+                       spectral_functional="eigenvalue", stiffness_kappa=2.0)
+        np.random.seed(seed)
+        old.reset()
+        edges = old.network.edges.copy()
+
+        new.network = copy.deepcopy(old.network)
+        new.compute_episode_constants()
+        old.network.edges = edges.copy()
+        new.network.edges = edges.copy()
+
+        assert phi_of(old)[0] == phi_of(new)[0]
+
+
+@pytest.mark.parametrize("functional", SPECTRAL)
+def test_kappa_zero_collapses_every_functional_to_the_same_score(make_env, functional):
+    e = spectral_env(make_env, functional, kappa=0.0)
+    phi, rank = phi_of(e)
+    m = int(e.network.edges.sum())
+    assert abs(phi - (W_RANK * rank - W_EDGE * m * e.c_max) / e.rank_K) < 1e-9
+
+
+@pytest.mark.parametrize("functional", SPECTRAL)
+def test_the_spectral_bonus_is_bounded_by_kappa_edges(make_env, functional):
+    """0 < bonus < kappa * one_edge on a rigid graph, for every functional."""
+    kappa = 2.0
+    e = spectral_env(make_env, functional, kappa=kappa)
+    e.network.edges = e.network.fully_connected().edges
+    np.fill_diagonal(e.network.edges, False)
+    e.compute_episode_constants()
+
+    phi, rank = phi_of(e)
+    m = int(e.network.edges.sum())
+    bonus = phi - (W_RANK * rank - W_EDGE * m * e.c_max) / e.rank_K
+    assert 0.0 < bonus < kappa * one_edge(e)
+
+
+def test_an_unknown_functional_is_refused(make_env):
+    with pytest.raises(ValueError):
+        make_env(n=5, domains="R^3", state_score_type="WeightedNormalizedSpectral",
+                 spectral_functional="nonsense")

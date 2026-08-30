@@ -31,9 +31,10 @@ PYTHONPATH=. uv run tools/<name>.py
 | `spectral_criteria.py` | do A-, D- and E-optimality rank graphs differently, or are they the same statistic? |
 | `functional_vs_error.py` | which spectral criterion orders topologies the way the measured error does? |
 | `repair_bound.py` | is the repair bound sound, and is it the true minimum? |
+| `repair_choice.py` | among equally-sized repairs, does it matter which one you pick? |
 
 `constructive_greedy.py` is the standalone version of the `constructive` baseline
-now wired into `baselines.py`, for difficulty sweeps that need no env config. It
+now wired into `evaluation.py`, for difficulty sweeps that need no env config. It
 also shows that the `c_max = 1` domains are a matroid where any greedy is already
 optimal, which is why a "beats greedy" claim only means something in the spatial
 domains.
@@ -57,7 +58,7 @@ anywhere. It builds the environment programmatically rather than reading the
 gitignored `environments/`, so it works on a fresh clone: benchmark digests tie a
 number to an instance set, and `greedy` / `constructive` need no checkpoint. The
 `learned` rows cannot be checked from a clone, because `models/` and `train/` are
-gitignored; it prints the `baselines.py` commands instead of duplicating the
+gitignored; it prints the `evaluation.py` commands instead of duplicating the
 rollout, since a second rollout path would drift and the check would become the
 thing that is wrong.
 

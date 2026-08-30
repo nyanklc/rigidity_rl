@@ -217,11 +217,19 @@ def monte_carlo_error(network, sigma, trials=30, rng=None, rank_K=None,
         att.append(da)
         ok += int(info["converged"])
 
-    # rms, not mean, is what the Cramer-Rao bound predicts: it bounds E[||x||^2]
+    # rms, not mean, is what the Cramer-Rao bound predicts: it bounds E[||x||^2].
+    # A trial whose estimate collapsed has infinite error and cannot enter any of
+    # these, so it is dropped and counted instead -- `failed` is the honest report.
     def summary(v):
         v = np.asarray(v, dtype=float)
-        return {"rms": float(np.sqrt((v ** 2).mean())), "mean": float(v.mean()),
-                "median": float(np.median(v)), "p90": float(np.percentile(v, 90))}
+        good = v[np.isfinite(v)]
+        if not len(good):
+            return {"rms": np.inf, "mean": np.inf, "median": np.inf, "p90": np.inf,
+                    "failed": 1.0}
+        return {"rms": float(np.sqrt((good ** 2).mean())), "mean": float(good.mean()),
+                "median": float(np.median(good)),
+                "p90": float(np.percentile(good, 90)),
+                "failed": float(1.0 - len(good) / len(v))}
 
     return {"position": summary(pos), "attitude": summary(att),
             "converged": ok / max(int(trials), 1)}

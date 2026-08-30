@@ -44,6 +44,7 @@ NODE_BLOCKS = [
     ("eigenvector",   1, "graph_features"),
     ("node_between",  1, "graph_features"),
     ("rigidity_glob", 3, "rigidity_global"),
+    ("quality", 1, "rigidity_quality"),
     ("node_freedom",  1, "rigidity_flex"),
     ("node_slack",    2, "rigidity_stiffness"),
 ]
@@ -76,6 +77,7 @@ def obs_flags(env):
         "edge_exists": preset.get("edge_exists", True),
         "graph_features": getattr(env, "graph_features", True),
         "rigidity_global": rig and getattr(env, "rigidity_global", False),
+        "rigidity_quality": rig and getattr(env, "rigidity_quality", False),
         "rigidity_flex": rig and getattr(env, "rigidity_flex", False),
         "rigidity_edge": rig and getattr(env, "rigidity_edge", False),
         "rigidity_stiffness": rig and getattr(env, "rigidity_stiffness", False),
@@ -377,7 +379,7 @@ def report(rows, ref, args, meta, out=sys.stdout):
 def write_csv(path, rows, ref, args, meta):
     """Data to <path>, the readable report to <path>.txt beside it.
 
-    Same split baselines.py uses (results.csv next to summary.txt), for the same
+    Same split evaluation.py uses (results.csv next to summary.txt), for the same
     reason: a legend commented into the head of the csv means every spreadsheet,
     csv viewer and `column -s,` shows 27 lines of noise before the table. The csv
     is a plain rectangle with the header on line 1; the prose lives next door,

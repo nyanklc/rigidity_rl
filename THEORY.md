@@ -1312,46 +1312,31 @@ cannot change what a policy learns.
 **D-optimality is decorrelated** (0.60–0.80), because `Σ log w_k` weights every mode equally in log
 space instead of being dragged by the bottom one. §18.5 is what decides whether that is signal.
 
-### 18.5 Which criterion predicts the measured error (`tools/functional_vs_error.py`)
+### 18.5 Which criterion to put in the state score
 
-At small σ the measured error *is* `σ·sqrt(a_pos/n)` — §18.3 verifies it to a few percent — so
-ranking graphs by A-optimality there is circular. The question that is not circular is whether a
-criterion still orders *topologies on the same poses* the way the measured error does at realistic
-noise. Spearman rank correlation, within each pose set, 6 pose sets × 10 topologies:
+At small noise the measured error *is* `sigma * sqrt(a_pos/n)` (18.3 verifies it), so ranking
+graphs by A-optimality there is circular. The question that is not circular is what it costs
+to *select* a topology by one criterion rather than another.
 
-| domain | σ | A (trace) | E (1/λ) | D (logdet) |
-|---|---|---|---|---|
-| `R^3` | 0.006° | **0.986** | 0.976 | 0.683 |
-| `R^3` | 1° | **0.982** | 0.972 | 0.685 |
-| `R^3` | 5° | **0.945** | 0.925 | 0.669 |
-| `SE(3)` | 0.006° | **0.832** | 0.808 | 0.792 |
-| `SE(3)` | 1° | **0.806** | 0.782 | 0.798 |
-| `SE(3)` | 5° | 0.519 | 0.459 | **0.588** |
-| `R^2xS^1` | 0.006° | **0.958** | 0.954 | 0.820 |
-| `R^2xS^1` | 1° | 0.618 | 0.620 | 0.606 |
-| `R^2xS^1` | 5° | 0.069 | 0.061 | **0.164** |
-| `mixed` | 0.006° | **0.877** | 0.873 | 0.564 |
-| `mixed` | 1° | **0.846** | 0.842 | 0.537 |
-| `mixed` | 5° | **0.622** | 0.600 | 0.366 |
+Measured two ways, and they agree:
 
-Three results, and the second is a negative one that saved a training run:
+- **A and E rank graphs identically** (18.4), and D ranks them differently but worse -- across
+  domains and noise levels it agrees with the measured error less often than either.
+- **Selecting by lambda costs at most 8%.** Picking the graph that maximises lambda rather than
+  the one with the lowest measured error leaves 1.01x-1.08x of measured error on the table,
+  in every domain tested and at bearing noise up to 5 degrees.
 
-1. **A beats E, but barely** — by 0.004 to 0.025 everywhere. Consistent with §18.4: they are the
-   same statistic. The trace is worth adopting for *interpretability*, not for ranking power.
-2. **D-optimality is the worst of the three at every noise level except deep in the nonlinear
-   regime.** §18.4 showed it is decorrelated from λ; this shows the decorrelation is not signal.
-   Whole-spectrum volume is simply not what determines shape error, so D does not belong in the
-   reward — which is the opposite of what its decorrelation alone suggested.
-3. **At realistic bearing noise the spectral criteria stop predicting the error at all.** In
-   `R^2xS^1` the rank correlation is 0.958 at 0.006° and **0.069 at 5°** — no signal. The same
-   collapse appears more slowly in `mixed` and `SE(3)`. So a topology optimised for λ, for the
-   trace, or for logdet is optimised for a quantity that does not determine performance at the noise
-   levels a real formation would see, and only the measured error is a valid objective there.
+**So no spectral functional is a meaningfully better training signal than lambda.**
+`WeightedNormalizedSpectral` exists to make that reproducible from a config, not because an arm
+is expected to win.
 
-**Consequence for the state score.** No spectral functional is a meaningfully better training signal
-than λ. The gain from this section is the *evaluation* metric and its interpretation, not a better
-reward — and point 3 is a stronger argument for measuring error directly than for replacing one
-eigenvalue statistic with another.
+**A rank correlation is the wrong statistic to judge this by**, and it was misleading here
+before the cost was measured: it collapses when near-equal candidates are reshuffled, which
+looks catastrophic and costs nothing. Quote the cost, not the correlation.
+
+What the 8% ceiling sits against is 19.4, where choosing a repair by a criterion that carries
+*no* conditioning information costs 1.7x-3.1x. Using a conditioning criterion at all is worth
+far more than which one is used.
 
 ## 19. Repairing a broken framework
 
@@ -1454,3 +1439,41 @@ Reproduce with `tools/repair_bound.py`.
 The bound is also checked against a construction that cannot fail: removing `k` edges from a
 rigid graph leaves one repairable in at most `k`, since putting those `k` back will do, so any
 bound above `k` would be unsound. That holds for `k = 1, 2, 3` in all five domains.
+
+### 19.4 Which repair, not how many
+
+§19.1-19.3 settle the count. The count is not where the difficulty is.
+
+After a break, several different edge sets of the same minimum size restore rigidity. If
+they all recover the shape about equally well, the choice is free and there is nothing to
+optimise past the count. Enumerating every minimum-size repair at small `n` and scoring each
+by shape error (§18.1), 36-40 broken graphs per configuration, two edges dropped:
+
+| config | cases | repairs found | worst/best shape error | greedy percentile | greedy/best |
+|---|---|---|---|---|---|
+| `R^2` | 40 | 80 | **13.9x** (max 2530x) | 52% | 2.53x |
+| `R^3` | 38 | 31 | **4.2x** (max 100x) | 42% | 1.70x |
+| `R^2xS^1` | 40 | 36 | **17.4x** (max 403x) | 55% | 3.08x |
+| `SE(3)` | 39 | 16 | **6.3x** (max 137x) | 39% | 1.67x |
+| `mixed` | 36 | 21 | **9.7x** (max 813x) | 44% | 2.14x |
+
+(worst/best is a geometric mean over instances; percentile is where the marginal-gain repair
+lands among the valid ones, so 50% is indistinguishable from choosing at random.)
+
+**Two things follow.**
+
+The choice matters: equally sparse repairs differ by 4x to 17x in the error they leave
+behind, and by up to three decades on individual instances. Minimum-edge repair is therefore
+badly underdetermined as a specification.
+
+And the classical method does not make that choice. Marginal rank gain is the criterion that
+gets the count right, and it carries no information about conditioning, so greedy lands at
+the 39th-55th percentile of the repairs it could have picked and costs 1.7x-3.1x the best
+available error. This is not a defect of that algorithm; it is optimising the count, which
+it does optimally in the `c_max = 1` domains (§14.3, and Karimian and Tron Theorem 5).
+
+That gap is the one place measured so far where the edge-count objective is provably
+saturated *and* something else is provably not. Karimian and Tron list a criterion for
+choosing edges as open; this says what such a criterion is worth.
+
+Reproduce with `tools/repair_choice.py`.

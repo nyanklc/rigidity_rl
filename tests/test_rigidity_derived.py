@@ -6,8 +6,8 @@ import pytest
 
 from conftest import ALL_DOMAINS, C_MAX, RANK_K_FORMULA
 from rigidity import (extended_bearing_rigidity_matrix as B_of, edge_block_ranks,
-                      greedy_rigid_construction, max_edge_rank, repair_edge_count,
-                      required_edge_count, MBR_required_Rd, is_MBR)
+                      greedy_rigid_construction, greedy_rigid_repair, max_edge_rank,
+                      repair_edge_count, required_edge_count, MBR_required_Rd, is_MBR)
 from scenario import random_scenario
 
 
@@ -211,3 +211,41 @@ def test_the_repair_bound_is_sound_against_brute_force(domain):
                     f"{domain}: {k} edges sufficed, bound said {lb}")
         checked += 1
     assert checked > 0
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+def test_greedy_repair_restores_rigidity_and_keeps_what_was_there(domain):
+    """The repair adds edges only, and the result is rigid."""
+    net_, rank_K = rigid_net(domain, n=6)
+    rng = np.random.default_rng(2)
+    present = list(zip(*np.nonzero(net_.edges)))
+    for idx in rng.choice(len(present), 2, replace=False):
+        net_.edges[present[idx]] = False
+    before = net_.edges.copy()
+
+    _, added = greedy_rigid_repair(net_, rank_K, rng=np.random.default_rng(3))
+    assert np.linalg.matrix_rank(B_of(net_)) >= rank_K
+    assert np.all(net_.edges[before])                     # nothing removed
+    assert int(net_.edges.sum()) == int(before.sum()) + len(added)
+
+
+@pytest.mark.parametrize("domain", ["R^2", "R^2xS^1"])
+def test_greedy_repair_is_minimum_where_c_max_is_one(domain):
+    """The independent sets are a matroid there, so greedy attains the bound."""
+    for seed in range(6):
+        net_, rank_K = rigid_net(domain, n=6, seed=seed)
+        rng = np.random.default_rng(seed)
+        present = list(zip(*np.nonzero(net_.edges)))
+        for idx in rng.choice(len(present), 2, replace=False):
+            net_.edges[present[idx]] = False
+        if np.linalg.matrix_rank(B_of(net_)) >= rank_K:
+            continue
+        lb = repair_edge_count(net_, rank_K=rank_K)
+        _, added = greedy_rigid_repair(net_, rank_K, rng=np.random.default_rng(seed))
+        assert len(added) == lb
+
+
+def test_repairing_a_rigid_graph_adds_nothing():
+    net_, rank_K = rigid_net("R^3", n=6)
+    _, added = greedy_rigid_repair(net_, rank_K)
+    assert added == []

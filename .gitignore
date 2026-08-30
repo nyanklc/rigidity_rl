@@ -8,6 +8,7 @@ junk/
 runs/
 runs_old/
 runs_old_old/
+runs_evaluation/
 .idea/
 .spyproject/
 .vscode/

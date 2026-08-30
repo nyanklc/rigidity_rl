@@ -452,6 +452,8 @@ def build_dict_obs(env, define_type, node_set="graph", coords=True, edges=True,
         if env.rigidity_global:
             extra.append(np.tile(
                 [rig["rank_deficit"], rig["m_ratio"], rig["is_IBR"]], (n, 1)))
+        if getattr(env, "rigidity_quality", False):
+            extra.append(np.tile([rig["quality"]], (n, 1)))
         if env.rigidity_flex:
             extra.append(rig["node_freedom"])
         if getattr(env, "rigidity_stiffness", False):
@@ -628,6 +630,7 @@ class Environment(gym.Env):
         include_candidate_bearings=True,
         graph_features=True,
         rigidity_global=False,
+        rigidity_quality=False,
         rigidity_flex=False,
         rigidity_edge=False,
         rigidity_stiffness=False,
@@ -635,6 +638,7 @@ class Environment(gym.Env):
         rotation_augmentation=False,
         stiffness_kappa=0.0,
         stiffness_ref_samples=3,
+        spectral_functional="eigenvalue",
         filepath=None,
     ):
         print("initializing environment")
@@ -660,6 +664,7 @@ class Environment(gym.Env):
 
         self.graph_features = graph_features
         self.rigidity_global = rigidity_global
+        self.rigidity_quality = rigidity_quality
         self.rigidity_flex = rigidity_flex
         self.rigidity_edge = rigidity_edge
         self.rigidity_stiffness = rigidity_stiffness
@@ -669,6 +674,10 @@ class Environment(gym.Env):
         # how many edges the whole stiffness range is worth; 0 disables it.
         self.stiffness_kappa = float(stiffness_kappa)
         self.stiffness_ref_samples = int(stiffness_ref_samples)
+        if spectral_functional not in SPECTRAL_FUNCTIONALS:
+            raise ValueError(f"unknown spectral_functional {spectral_functional!r}")
+        self.spectral_functional = spectral_functional
+        self.spectral_ref = None
         self.stiffness_ref = 0.0
         # private: the global stream is the one instances are drawn from. Reseeded
         # per episode, so stiffness_ref is a function of the poses and phi is a
@@ -806,6 +815,7 @@ class Environment(gym.Env):
         INCLUDE_CANDIDATE_BEARINGS = config.get("include_candidate_bearings", True)
         GRAPH_FEATURES = config.get("graph_features", True)
         RIGIDITY_GLOBAL = config.get("rigidity_global", False)
+        RIGIDITY_QUALITY = config.get("rigidity_quality", False)
         RIGIDITY_FLEX = config.get("rigidity_flex", False)
         RIGIDITY_EDGE = config.get("rigidity_edge", False)
         for old_key, new_key in (("margin_kappa", "stiffness_kappa"),
@@ -820,6 +830,7 @@ class Environment(gym.Env):
         ROTATION_AUGMENTATION = config.get("rotation_augmentation", False)
         STIFFNESS_KAPPA = config.get("stiffness_kappa", 0.0)
         STIFFNESS_REF_SAMPLES = config.get("stiffness_ref_samples", 3)
+        SPECTRAL_FUNCTIONAL = config.get("spectral_functional", "eigenvalue")
         scenario_name = config["scenario"]
         scenario_path = (
             "scenarios/" + scenario_name + ".json"
@@ -847,6 +858,7 @@ class Environment(gym.Env):
             include_candidate_bearings=INCLUDE_CANDIDATE_BEARINGS,
             graph_features=GRAPH_FEATURES,
             rigidity_global=RIGIDITY_GLOBAL,
+            rigidity_quality=RIGIDITY_QUALITY,
             rigidity_flex=RIGIDITY_FLEX,
             rigidity_edge=RIGIDITY_EDGE,
             rigidity_stiffness=RIGIDITY_STIFFNESS,
@@ -854,6 +866,7 @@ class Environment(gym.Env):
             rotation_augmentation=ROTATION_AUGMENTATION,
             stiffness_kappa=STIFFNESS_KAPPA,
             stiffness_ref_samples=STIFFNESS_REF_SAMPLES,
+            spectral_functional=SPECTRAL_FUNCTIONAL,
             filepath=scenario_path,
         )
 
@@ -909,6 +922,14 @@ class Environment(gym.Env):
                                                   self.stiffness_rng,
                                                   samples=self.stiffness_ref_samples)
                               if self.stiffness_kappa > 0 else 0.0)
+        self.spectral_ref = None
+        if (self.rigidity_quality
+                or (self.stiffness_kappa > 0
+                    and self.state_score_type == "WeightedNormalizedSpectral")):
+            self.spectral_ref = reference_spectral(
+                self.network, self.rank_K, np.random.default_rng(self.stiffness_seed),
+                samples=self.stiffness_ref_samples,
+                functional=self.spectral_functional)
 
         # pose-dependent, edge-independent, and needed every step by the rigidity
         # features: the trivial variation space and every pair's own block rank
@@ -938,6 +959,9 @@ class Environment(gym.Env):
             "m_ratio": float(np.sum(self.network.edges)) / max(int(self.m_req), 1),
             "is_IBR": float(is_IBR),
         }
+
+        if self.rigidity_quality:
+            feats["quality"] = self.state_quality(brm, is_IBR, lam)
 
         v, eig_w, eig_V = None, None, None
         if Z is None:
@@ -1002,7 +1026,8 @@ class Environment(gym.Env):
         self.last_rigidity = feats
 
     def rigidity_features_enabled(self):
-        return (self.rigidity_global or self.rigidity_flex or self.rigidity_edge
+        return (self.rigidity_global or self.rigidity_quality
+                or self.rigidity_flex or self.rigidity_edge
                 or self.rigidity_stiffness or self.rigidity_removal)
 
     # -----------------------------------
@@ -1130,6 +1155,21 @@ class Environment(gym.Env):
             return None
         return float(np.sqrt(a_opt / max(self.network.n, 1)))
 
+    # How good this state is on the axis rank and edge count do not cover: where its
+    # conditioning sits against a typical greedy graph on the same poses. 0 while
+    # flexible, 0.5 for a typical answer, and bounded either side.
+    def state_quality(self, brm=None, is_IBR=False, lam=None):
+        if not is_IBR or self.spectral_ref is None:
+            return 0.0
+        a_opt = d_opt = None
+        if self.spectral_functional != "eigenvalue":
+            a_opt, _, d_opt = estimation_error_of(self.network, self.rank_K, brmat=brm)
+        g = spectral_value(self.spectral_functional, lam, a_opt, d_opt)
+        if g is None:
+            return 0.0
+        width = SPECTRAL_SIGMOID_WIDTH[self.spectral_functional]
+        return float(1.0 / (1.0 + np.exp(-(g - self.spectral_ref) / width)))
+
     def update_best_state(self, state_score, is_IBR, is_MBR, rank_brm, min_eig=None,
                           shape_err=None, reset=False):
         if (not reset) and state_score <= self.best_state_score:
@@ -1244,10 +1284,6 @@ class Environment(gym.Env):
             # print(f"\ntotal: {state_score}")
 
         elif self.state_score_type == "WeightedNormalized":
-            # phi = w_rank*rank/rank_K - w_edge*(m*c_max)/rank_K
-            # Dimensionless, so it means the same thing at any n and in any
-            # domain. Normalized by c_max, NOT by m_req -- m_req is only a lower
-            # bound.
             w_rank = 100.0
             w_edge = 25.0
 
@@ -1257,12 +1293,36 @@ class Environment(gym.Env):
 
             state_score += (w_rank * rank_brm - w_edge * m * c_max) / rank_K
 
-            # (15.1) the stiffness term, in units of one edge's cost
             if self.stiffness_kappa > 0 and is_IBR and lam and self.stiffness_ref > 0:
                 one_edge = w_edge * c_max / rank_K
                 q = 1.0 / (1.0 + np.exp(-np.log10(lam / self.stiffness_ref)
                                         / STIFFNESS_SIGMOID_DECADES))
                 state_score += self.stiffness_kappa * one_edge * q
+
+        elif self.state_score_type == "WeightedNormalizedSpectral":
+            # WeightedNormalized with the spectral bonus read off whichever
+            # functional spectral_functional names. At "eigenvalue" the two
+            # branches agree exactly.
+            w_rank = 100.0
+            w_edge = 25.0
+
+            m = np.sum(self.network.edges)
+            rank_K = max(int(self.rank_K), 1)
+            c_max = max(int(self.c_max), 1)
+
+            state_score += (w_rank * rank_brm - w_edge * m * c_max) / rank_K
+
+            if self.stiffness_kappa > 0 and is_IBR and self.spectral_ref is not None:
+                a_opt = d_opt = None
+                if self.spectral_functional != "eigenvalue":
+                    a_opt, _, d_opt = estimation_error_of(
+                        self.network, self.rank_K, brmat=brm)
+                g = spectral_value(self.spectral_functional, lam, a_opt, d_opt)
+                if g is not None:
+                    one_edge = w_edge * c_max / rank_K
+                    width = SPECTRAL_SIGMOID_WIDTH[self.spectral_functional]
+                    q = 1.0 / (1.0 + np.exp(-(g - self.spectral_ref) / width))
+                    state_score += self.stiffness_kappa * one_edge * q
 
         elif self.state_score_type == "None" or None:
             pass
@@ -1568,7 +1628,7 @@ class Environment(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
 
-        # baselines.py sets this to run several methods from the *same* random
+        # evaluation.py sets this to run several methods from the *same* random
         # instance: the episode bookkeeping is redone, the graph is left alone
         if self.freeze_network:
             return self.begin_episode()
@@ -1716,7 +1776,8 @@ if __name__ == "__main__":
     # STATE_SCORE_TYPE = "RigidityMatrixRank"
     # STATE_SCORE_TYPE = "RigidityMatrixRankAndEdges"
     # STATE_SCORE_TYPE = "Weighted"
-    STATE_SCORE_TYPE = "WeightedNormalized"
+    # STATE_SCORE_TYPE = "WeightedNormalized"
+    STATE_SCORE_TYPE = "WeightedNormalizedSpectral"
     # STATE_SCORE_TYPE = "None"
 
     TERMINATION_CONDITION_TYPE = "MaxSteps"
@@ -1739,11 +1800,13 @@ if __name__ == "__main__":
 
     STIFFNESS_KAPPA = 2.0
     STIFFNESS_REF_SAMPLES = 3
+    SPECTRAL_FUNCTIONAL = "trace" # eigenvalue | trace | logdet
 
     INCLUDE_CANDIDATE_BEARINGS = True
 
     GRAPH_FEATURES = False
     RIGIDITY_GLOBAL = True
+    RIGIDITY_QUALITY = True
     RIGIDITY_FLEX = True
     RIGIDITY_EDGE = True
     RIGIDITY_STIFFNESS = True
@@ -1841,6 +1904,7 @@ if __name__ == "__main__":
         "include_candidate_bearings": INCLUDE_CANDIDATE_BEARINGS,
         "graph_features": GRAPH_FEATURES,
         "rigidity_global": RIGIDITY_GLOBAL,
+        "rigidity_quality": RIGIDITY_QUALITY,
         "rigidity_flex": RIGIDITY_FLEX,
         "rigidity_edge": RIGIDITY_EDGE,
         "rigidity_stiffness": RIGIDITY_STIFFNESS,
@@ -1848,6 +1912,7 @@ if __name__ == "__main__":
         "rotation_augmentation": ROTATION_AUGMENTATION,
         "stiffness_kappa": STIFFNESS_KAPPA,
         "stiffness_ref_samples": STIFFNESS_REF_SAMPLES,
+        "spectral_functional": SPECTRAL_FUNCTIONAL,
         "scenario": scenario_name,
     }
     env_filename = f"env_{model_name}.json"
