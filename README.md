@@ -9,43 +9,6 @@ with a graph neural network trained by reinforcement learning.
 
 **Status: work in progress.**
 
-## Main References
-
-**Bearing rigidity theory, and the source of the rigidity matrix formulation used here:**
-
-1. The extended bearing rigidity matrix used here restricts degrees of freedom per node rather than per edge, which only matters once a formation mixes domains. The construction, and why it differs from the one in [2], are written up in [docs/dof_restriction_note.pdf](docs/dof_restriction_note.pdf).
-
-2. G. Michieletto, A. Cenedese, and D. Zelazo, "A Unified Dissertation on Bearing Rigidity Theory," *IEEE Transactions on Control of Network Systems*, vol. 8, no. 4, pp. 1624-1636, Dec. 2021. [doi:10.1109/TCNS.2021.3077712](https://doi.org/10.1109/TCNS.2021.3077712)
-
-3. M. H. Trinh, Q. Van Tran, and H.-S. Ahn, "Minimal and Redundant Bearing Rigidity: Conditions and Applications," *IEEE Transactions on Automatic Control*, vol. 65, no. 10, pp. 4186-4200, Oct. 2020. [doi:10.1109/TAC.2019.2958563](https://doi.org/10.1109/TAC.2019.2958563)
-
-**Rigidity recovery, observability, and bearing-based formation control:**
-
-4. A. Karimian and R. Tron, "Theory and Methods for Bearing Rigidity Recovery," in *Proceedings of the 2017 IEEE 56th Annual Conference on Decision and Control (CDC)*, pp. 2228-2235, Dec. 2017. [doi:10.1109/CDC.2017.8263975](https://doi.org/10.1109/CDC.2017.8263975)
-
-5. F. Schiano and R. Tron, "The Dynamic Bearing Observability Matrix: Nonlinear Observability and Estimation for Multi-Agent Systems," in *Proceedings of the IEEE International Conference on Robotics and Automation (ICRA)*, pp. 3669-3676, May 2018. [doi:10.1109/ICRA.2018.8460792](https://doi.org/10.1109/ICRA.2018.8460792)
-
-6. H. Su, Z. Yang, S. Zhu, C. Chen, X. Guan, and L. Xie, "Bearing-based multi-agent formation control: A survey and taxonomy," *Annual Reviews in Control*, vol. 61, Art. no. 101043, 2026. [doi:10.1016/j.arcontrol.2025.101043](https://doi.org/10.1016/j.arcontrol.2025.101043)
-
-**Combinatorial structure of the objective:**
-
-7. L. A. Wolsey, "An Analysis of the Greedy Algorithm for the Submodular Set Covering Problem," *Combinatorica*, vol. 2, no. 4, pp. 385-393, 1982. [doi:10.1007/BF02579435](https://doi.org/10.1007/BF02579435)
-
-**Reinforcement learning over graph structure:**
-
-8. V.-A. Darvariu, S. Hailes, and M. Musolesi, "Graph Reinforcement Learning for Combinatorial Optimization: A Survey and Unifying Perspective," *Transactions on Machine Learning Research*, Aug. 2024. [arXiv:2404.06492](https://arxiv.org/abs/2404.06492)
-
-9. V.-A. Darvariu, S. Hailes, and M. Musolesi, "Goal-directed graph construction using reinforcement learning," *Proceedings of the Royal Society A*, vol. 477, no. 2254, Art. no. 20210168, 2021. [doi:10.1098/rspa.2021.0168](https://doi.org/10.1098/rspa.2021.0168)
-
-**Architectures:**
-
-10. V. G. Satorras, E. Hoogeboom, and M. Welling, "E(n) Equivariant Graph Neural Networks," in *Proceedings of the 38th International Conference on Machine Learning (ICML)*, PMLR, vol. 139, pp. 9323-9332, 2021. [arXiv:2102.09844](https://arxiv.org/abs/2102.09844)
-
-11. K. Xu, W. Hu, J. Leskovec, and J. Jegelka, "How Powerful are Graph Neural Networks?," in *International Conference on Learning Representations (ICLR)*, 2019. [arXiv:1810.00826](https://arxiv.org/abs/1810.00826)
-
-
-[Status presentations](resources/) are used in meetings with the thesis supervisors.
-
 ## Problem and Methodology
 
 ### Research questions
@@ -167,6 +130,43 @@ how the policy's own edits rank among the edits it could have made.
 
 Directories produced by runs (`environments/`, `scenarios/`, `models/`, `runs/`, `train/`,
 `runs_evaluation/`) are not tracked.
+
+## Main References
+
+**Bearing rigidity theory, and the source of the rigidity matrix formulation used here:**
+
+1. The extended bearing rigidity matrix used here restricts degrees of freedom per node rather than per edge, which only matters once a formation mixes domains. The construction, and why it differs from the one in [2], are written up in [docs/dof_restriction_note.pdf](docs/dof_restriction_note.pdf).
+
+2. G. Michieletto, A. Cenedese, and D. Zelazo, "A Unified Dissertation on Bearing Rigidity Theory," *IEEE Transactions on Control of Network Systems*, vol. 8, no. 4, pp. 1624-1636, Dec. 2021. [doi:10.1109/TCNS.2021.3077712](https://doi.org/10.1109/TCNS.2021.3077712)
+
+3. M. H. Trinh, Q. Van Tran, and H.-S. Ahn, "Minimal and Redundant Bearing Rigidity: Conditions and Applications," *IEEE Transactions on Automatic Control*, vol. 65, no. 10, pp. 4186-4200, Oct. 2020. [doi:10.1109/TAC.2019.2958563](https://doi.org/10.1109/TAC.2019.2958563)
+
+**Rigidity recovery, observability, and bearing-based formation control:**
+
+4. A. Karimian and R. Tron, "Theory and Methods for Bearing Rigidity Recovery," in *Proceedings of the 2017 IEEE 56th Annual Conference on Decision and Control (CDC)*, pp. 2228-2235, Dec. 2017. [doi:10.1109/CDC.2017.8263975](https://doi.org/10.1109/CDC.2017.8263975)
+
+5. F. Schiano and R. Tron, "The Dynamic Bearing Observability Matrix: Nonlinear Observability and Estimation for Multi-Agent Systems," in *Proceedings of the IEEE International Conference on Robotics and Automation (ICRA)*, pp. 3669-3676, May 2018. [doi:10.1109/ICRA.2018.8460792](https://doi.org/10.1109/ICRA.2018.8460792)
+
+6. H. Su, Z. Yang, S. Zhu, C. Chen, X. Guan, and L. Xie, "Bearing-based multi-agent formation control: A survey and taxonomy," *Annual Reviews in Control*, vol. 61, Art. no. 101043, 2026. [doi:10.1016/j.arcontrol.2025.101043](https://doi.org/10.1016/j.arcontrol.2025.101043)
+
+**Combinatorial structure of the objective:**
+
+7. L. A. Wolsey, "An Analysis of the Greedy Algorithm for the Submodular Set Covering Problem," *Combinatorica*, vol. 2, no. 4, pp. 385-393, 1982. [doi:10.1007/BF02579435](https://doi.org/10.1007/BF02579435)
+
+**Reinforcement learning over graph structure:**
+
+8. V.-A. Darvariu, S. Hailes, and M. Musolesi, "Graph Reinforcement Learning for Combinatorial Optimization: A Survey and Unifying Perspective," *Transactions on Machine Learning Research*, Aug. 2024. [arXiv:2404.06492](https://arxiv.org/abs/2404.06492)
+
+9. V.-A. Darvariu, S. Hailes, and M. Musolesi, "Goal-directed graph construction using reinforcement learning," *Proceedings of the Royal Society A*, vol. 477, no. 2254, Art. no. 20210168, 2021. [doi:10.1098/rspa.2021.0168](https://doi.org/10.1098/rspa.2021.0168)
+
+**Architectures:**
+
+10. V. G. Satorras, E. Hoogeboom, and M. Welling, "E(n) Equivariant Graph Neural Networks," in *Proceedings of the 38th International Conference on Machine Learning (ICML)*, PMLR, vol. 139, pp. 9323-9332, 2021. [arXiv:2102.09844](https://arxiv.org/abs/2102.09844)
+
+11. K. Xu, W. Hu, J. Leskovec, and J. Jegelka, "How Powerful are Graph Neural Networks?," in *International Conference on Learning Representations (ICLR)*, 2019. [arXiv:1810.00826](https://arxiv.org/abs/1810.00826)
+
+
+[Status presentations](resources/) are used in meetings with the thesis supervisors.
 
 ## License
 
