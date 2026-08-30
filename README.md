@@ -82,10 +82,33 @@ the network into node embeddings, and an action head turns those into Q-values (
 
 ## Example evaluation outputs
 
-![Baseline comparison table](resources/baselines-table.png)
-![Run trajectories](resources/baselines-trajectories.png)
-![Outcome across networks](resources/baselines-summary.png)
-![Final, best and mean outcome per method](resources/baselines-outcomes.png)
+**How methods compare**
+
+![Comparison table](resources/evaluation-table.png)
+
+**What happens during an episode**
+
+![Run trajectories](resources/evaluation-trajectories.png)
+
+**Where the noise puts each agent.**
+
+![Per-agent uncertainty](resources/evaluation-uncertainty.png)
+
+**Where the error comes from.**
+
+![Per-measurement sensitivity](resources/evaluation-sensitivity.png)
+
+**The deformation the bearings barely see**
+
+![The softest mode](resources/evaluation-softest-mode.png)
+
+**What the topology costs under real noise.**
+
+![Shape error under bearing noise](resources/evaluation-noise.png)
+
+**Were the policy's edits good ones?**
+
+![Edit quality](resources/evaluation-decisions.png)
 
 ## Documentation
 

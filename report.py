@@ -925,12 +925,14 @@ def plot_noise_sweep(run_dir, rows, header, filename="noise"):
 # formation is a spatial object and a flat projection hides the axis it is worst
 # determined along. Marker shape carries the agent's domain, which is the other thing
 # a plain scatter throws away on a mixed formation.
+# (matplotlib code, what the shape is called, what the domain means). The shape has
+# to be named in words: the matplotlib code means nothing to someone reading the card.
 DOMAIN_MARKER = {
-    "R^2":     ("s", "planar, no heading"),
-    "R^2xS^1": ("^", "planar with heading"),
-    "R^3":     ("o", "spatial, no heading"),
-    "R^3xS^1": ("D", "spatial, one rotation axis"),
-    "SE(3)":   ("P", "full pose"),
+    "R^2":     ("s", "square",   "moves in a plane, no heading"),
+    "R^2xS^1": ("^", "triangle", "moves in a plane, and has a heading"),
+    "R^3":     ("o", "circle",   "moves in 3-D, no heading"),
+    "R^3xS^1": ("D", "diamond",  "moves in 3-D, turns about one axis"),
+    "SE(3)":   ("P", "cross",    "moves and turns freely"),
 }
 DOMAIN_ORDER = ["R^2", "R^2xS^1", "R^3", "R^3xS^1", "SE(3)"]
 
@@ -945,8 +947,8 @@ def _domain_note(net):
     present = _domains_present(net)
     if len(present) < 2:
         return None
-    return "Marker shape is the agent's domain: " + ", ".join(
-        f"{DOMAIN_MARKER[d][0]} {d} ({DOMAIN_MARKER[d][1]})" for d in present) + "."
+    return "Marker shape is what the agent can do: " + "; ".join(
+        f"{DOMAIN_MARKER[d][1]} = {d}, {DOMAIN_MARKER[d][2]}" for d in present) + "."
 
 
 def _formation_cell(nrows, ncols, index, band):
@@ -1020,10 +1022,22 @@ def _ellipsoid(ax, cov3, centre, scale, color, res=18):
     unit = np.stack([np.outer(np.cos(u), np.sin(v)),
                      np.outer(np.sin(u), np.sin(v)),
                      np.outer(np.ones_like(u), np.cos(v))])
+    axes_len = np.sqrt(w) * scale
     pts = (V @ (np.sqrt(w)[:, None] * unit.reshape(3, -1))) * scale
     x, y, z = (pts.reshape(3, *unit.shape[1:]) + centre[:, None, None])
-    ax.plot_surface(x, y, z, color=color, alpha=0.38, linewidth=0, shade=False,
+    ax.plot_surface(x, y, z, color=color, alpha=0.34, linewidth=0, shade=False,
                     zorder=8)
+
+    # a small shell is a faint smudge without an outline, and the small ones are
+    # exactly the panels worth being able to read
+    t = np.linspace(0, 2 * np.pi, 3 * res)
+    circle = np.stack([np.cos(t), np.sin(t)])
+    for a, b in ((0, 1), (0, 2), (1, 2)):
+        ring = np.zeros((3, len(t)))
+        ring[a] = axes_len[a] * circle[0]
+        ring[b] = axes_len[b] * circle[1]
+        rx, ry, rz = (V @ ring) + centre[:, None]
+        ax.plot(rx, ry, rz, color=color, linewidth=0.9, alpha=0.9, zorder=9)
 
 
 def _nice_factor(x):
