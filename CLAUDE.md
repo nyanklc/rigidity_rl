@@ -68,6 +68,20 @@ apply to every task in this repository.
   what the code used to do, no ticket or work-item names. Derivations, measurements and rationale
   belong in `THEORY.md` / `DESIGN_NOTES.md`; a reader who wants them will search for the symbol.
   The same goes for test docstrings: state what the test pins down, not why.
+- **Figures: plain titles, plain wording, and always two variants.** A figure or panel title names
+  the quantity plotted and nothing else. No slogans, no rhetorical questions, no invented names,
+  no puns. Any text on a figure states what the reader is looking at and how it was computed.
+  Do not put the conclusion on the figure. Report findings in the conversation and let the user
+  decide what they mean.
+  Write the way a person writes. No em-dashes. No colon-led reveals, meaning a short lead-in that
+  sets up a payoff after a colon or dash, of the kind `Here's the thing: ...`, `The catch: ...`,
+  `Bottom line: ...`, `And the result? ...`. State the thing directly in one sentence instead.
+  No summary flourishes and no marketing tone. A plain glossary that maps a column name to what
+  it measures is not this and is fine to keep, since a table is unreadable without one.
+  Every figure is written out twice under the same name, with `-plain` appended to the second.
+  One carries whatever annotation is useful and one is the plot alone. Plain does not mean raw.
+  Reference lines, legends, axis labels, units and the markers that identify a series stay in
+  both, because without them the plot cannot be read.
 
 ## Project
 
@@ -530,6 +544,15 @@ noise in every spreadsheet, csv viewer and `column -s,`. Both outputs render fro
 perturbed gets **empty** cells rather than zeros -- a 0.0 there would be averaged and plotted as
 evidence of independence, which is the one thing it is not -- and `status` / `feeds_action_mask`
 carry the two caveats above as columns.
+
+**Measured on the two `estimation_*` runs** (both arms, all three modes, 20 episodes on `mixed`):
+`add_rank` dominates -- destroying it costs 4.7-7.4 phi under `shuffle` and 40-75 points of
+minimality, so the policy is close to learned greedy on the exact rank oracle. **`remove_stiffness`
+is the first geometric channel to cost anything in every mode** (0.5-1.6 phi), which is the pruning
+signal §17 predicted was missing. `rigidity_quality` reads as a **null** -- nonzero under `zero`
+only, exactly 0.00 under `noise`, unablatable under `shuffle` -- so the policy ignores it. And
+`bearings` / `coord_features` still cost nothing, so the spectral reward term did **not** make raw
+geometry matter.
 
 What it found, and why it is not the failure it looks like: **destroying any geometric channel costs
 the policy nothing.** That holds in all three modes and is the robust result. It is the *correct*

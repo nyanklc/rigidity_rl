@@ -2,6 +2,9 @@
 
 Master's thesis, University of Padova. Noyan Erdin Kilic.
 
+[Presentation](resources/rigidity_rl_260831.pdf)\
+[Figures](#outputs)
+
 A team of robots that can only measure *directions* to one another (bearings) can recover its own shape only if the graph of who-measures-whom is rich
 enough. Adding every possible measurement makes that trivial and is wasteful, each link costs
 sensing, tracking and communication. This thesis asks which links to keep, and learns the answer
@@ -41,35 +44,45 @@ objective `phi` that rewards rigidity and charges for each edge. A graph neural 
 the network into node embeddings, and an action head turns those into Q-values (DQN) or logits
 (PPO). Invalid actions are masked inside the model.
 
-## Example evaluation outputs
+## Outputs
 
-**How methods compare**
+![DQN training](resources/rl-01-learning.png)
+
+![DQN update diagnostics](resources/rl-04-dqn-diagnostics.png)
+
+![PPO and DQN on the same task](resources/rl-02-ppo-vs-dqn.png)
+
+![PPO return collapse](resources/rl-05-ppo-collapse.png)
+
+![Per-episode quantities during training](resources/rl-06-per-episode.png)
+
+![Evaluation against the classical baselines](resources/rl-03-evaluation.png)
+
+![Evaluation of DQN, PPO and the baselines](resources/rl-07-evaluation-all.png)
+
+![Estimation quality on the benchmark](resources/rl-08-estimation.png)
+
+![The graph each method built](resources/rl-09-topology.png)
+
+![One policy across thirteen networks](resources/rl-10-generalisation.png)
+
+![Estimation quality across thirteen networks](resources/rl-12-estimation-generalisation.png)
+
+![Observation channel ablation](resources/rl-11-ablation.png)
 
 ![Comparison table](resources/evaluation-table.png)
 
-**What happens during an episode**
-
 ![Run trajectories](resources/evaluation-trajectories.png)
 
-**Where the noise puts each agent.**
+![Position uncertainty per agent](resources/evaluation-uncertainty.png)
 
-![Per-agent uncertainty](resources/evaluation-uncertainty.png)
+![Share of the total error per measurement](resources/evaluation-sensitivity.png)
 
-**Where the error comes from.**
-
-![Per-measurement sensitivity](resources/evaluation-sensitivity.png)
-
-**The deformation the bearings barely see**
-
-![The softest mode](resources/evaluation-softest-mode.png)
-
-**What the topology costs under real noise.**
+![Softest mode of each method](resources/evaluation-softest-mode.png)
 
 ![Shape error under bearing noise](resources/evaluation-noise.png)
 
-**Were the policy's edits good ones?**
-
-![Edit quality](resources/evaluation-decisions.png)
+![Rank of the edits the policy applied](resources/evaluation-decisions.png)
 
 ## Documentation
 
@@ -165,8 +178,6 @@ Directories produced by runs (`environments/`, `scenarios/`, `models/`, `runs/`,
 
 11. K. Xu, W. Hu, J. Leskovec, and J. Jegelka, "How Powerful are Graph Neural Networks?," in *International Conference on Learning Representations (ICLR)*, 2019. [arXiv:1810.00826](https://arxiv.org/abs/1810.00826)
 
-
-[Status presentations](resources/) are used in meetings with the thesis supervisors.
 
 ## License
 

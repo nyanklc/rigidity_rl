@@ -1330,6 +1330,13 @@ Measured two ways, and they agree:
 `WeightedNormalizedSpectral` exists to make that reproducible from a config, not because an arm
 is expected to win.
 
+**Confirmed end to end.** Two 250k-step DQN/GINE runs on `mixed`, identical but for
+`spectral_functional` (`eigenvalue` against `trace`), are indistinguishable: 17.013 against
+17.008 best edges and 0.994 against 0.994 minimal in training; 17.10 / 90% against 17.20 / 80%
+on `bench_mixed`; and the same channels at the same magnitudes under ablation. The differences
+are smaller than the seed spread `DESIGN_NOTES.md#horizon` measured, and on measured error the
+two arms disagree in *sign* against greedy. Three independent readings, one conclusion.
+
 **A rank correlation is the wrong statistic to judge this by**, and it was misleading here
 before the cost was measured: it collapses when near-equal candidates are reshuffled, which
 looks catastrophic and costs nothing. Quote the cost, not the correlation.

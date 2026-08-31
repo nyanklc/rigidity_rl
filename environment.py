@@ -1800,7 +1800,7 @@ if __name__ == "__main__":
 
     STIFFNESS_KAPPA = 2.0
     STIFFNESS_REF_SAMPLES = 3
-    SPECTRAL_FUNCTIONAL = "trace" # eigenvalue | trace | logdet
+    SPECTRAL_FUNCTIONAL = "eigenvalue" # eigenvalue | trace | logdet
 
     INCLUDE_CANDIDATE_BEARINGS = True
 

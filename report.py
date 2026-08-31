@@ -40,7 +40,7 @@ METHOD_ORDER = ["initial", "random", "greedy", "constructive", "learned", "optim
 
 METHOD_BLURB = {
     "initial": "the random graph each method starts from",
-    "random":  "uniform random actions - the floor any method should beat",
+    "random":  "uniform random actions, the floor any method should beat",
     "greedy":  "repeatedly applies the single best edge change until none helps",
     "constructive": "builds from the empty graph, keeping any edge that raises rank(B)",
     "learned": "the trained policy",
@@ -276,56 +276,58 @@ def format_table(rows, context, brief=False):
         lines.append(f"  {m:<9} {METHOD_BLURB.get(m, '')}")
     lines.append("")
     lines.append("WHAT THE COLUMNS MEAN")
-    lines.append("  edges     how many directed bearing measurements the final network needs.")
-    lines.append("            Each edge is a sensor/communication link, so fewer is better.")
-    lines.append("  score     the objective every method is scored with (phi). Higher is better;")
-    lines.append("            it rewards rigidity and penalises each extra edge.")
-    lines.append("  rigid     % of networks whose shape is fully determined by its bearing")
-    lines.append("            measurements. This is the property being solved for.")
-    lines.append("  minimal   % that are rigid AND use the fewest possible edges.")
-    lines.append("            (heuristic on mixed-domain networks - may under-report)")
+    lines.append("  edges     how many directed bearing measurements the final network")
+    lines.append("            needs. Each edge is a sensor or communication link, so")
+    lines.append("            fewer is better.")
+    lines.append("  score     the objective every method is scored with (phi). It rewards")
+    lines.append("            rigidity and charges for each extra edge. Higher is better.")
+    lines.append("  rigid     percent of networks whose shape is fully determined by their")
+    lines.append("            bearing measurements.")
+    lines.append("  minimal   percent that are rigid and use the fewest possible edges. On")
+    lines.append("            mixed-domain networks this is a heuristic and can under-report.")
     lines.append("  stiffness how strongly the bearings react to a change in shape, as a")
     lines.append("            geometric mean and spread since it ranges over orders of")
-    lines.append("            magnitude: 'a x/b' means the typical network sits between a/b")
-    lines.append("            and a*b. Higher is better. Its absolute size depends on how far")
-    lines.append("            apart the agents are, so compare rows, not the number.")
+    lines.append("            magnitude, where 'a x/b' means the typical network sits")
+    lines.append("            between a/b and a*b. Higher is better. Its absolute size")
+    lines.append("            depends on how far apart the agents are, so compare rows")
+    lines.append("            rather than the number itself.")
     lines.append("  shape err how far the recovered formation is from the true one, per")
     lines.append("            radian of error in the bearing measurements. Position is")
-    lines.append("            counted in formation radii and attitude in radians, so the")
-    lines.append("            number is a fraction: 8.0 means one degree of bearing error")
-    lines.append("            (0.017 rad) displaces the shape by about 14% of its own size.")
-    lines.append("            LOWER is better, and unlike stiffness it is comparable across")
-    lines.append("            network sizes, domains and pose ranges.")
-    lines.append("            A '*' on either column marks rows where non-rigid networks had")
-    lines.append("            to be left out -- their stiffness is 0 and their shape error is")
-    lines.append("            infinite, and neither can enter a geometric mean, so those rows")
-    lines.append("            describe only the networks that came out rigid.")
-    lines.append("  work      how many changes to the network the method actually made.")
-    lines.append("  best@     the step at which its best network was found. Lower means it")
-    lines.append("            converged faster; the rest of the budget added nothing.")
+    lines.append("            counted in formation radii and attitude in radians, so 8.0")
+    lines.append("            means one degree of bearing error (0.017 rad) displaces the")
+    lines.append("            shape by about 14 percent of its own size. Lower is better,")
+    lines.append("            and unlike stiffness it is comparable across network sizes,")
+    lines.append("            domains and pose ranges. A '*' on either column marks rows")
+    lines.append("            where non-rigid networks had to be left out, since their")
+    lines.append("            stiffness is 0 and their shape error infinite and neither")
+    lines.append("            can enter a geometric mean.")
+    lines.append("  work      how many changes to the network the method applied.")
+    lines.append("  best@     the step at which its best network was found. A lower number")
+    lines.append("            means the rest of the budget added nothing.")
     if has_opt:
-        lines.append("  =best     % of networks where the method tied the exhaustive optimum.")
+        lines.append("  =best     percent of networks where the method tied the exhaustive")
+        lines.append("            optimum.")
     lines.append("")
     if sweep:
-        lines.append("  The noise block is what actually happens when every bearing is")
-        lines.append("  perturbed by that many degrees and the formation is recovered from")
-        lines.append("  the noisy measurements: RMS position error in formation radii. The")
-        lines.append("  bracketed number is what the rigidity matrix predicts. They agree")
-        lines.append("  while the error stays small; a measured value far below the")
-        lines.append("  prediction means the noise is too large for the prediction to hold.")
+        lines.append("  The noise block perturbs every bearing by that many degrees,")
+        lines.append("  recovers the formation from the noisy measurements and reports the")
+        lines.append("  RMS position error in formation radii. The bracketed number is what")
+        lines.append("  the rigidity matrix predicts. The two agree while the error stays")
+        lines.append("  small and separate once the noise is past the range the prediction")
+        lines.append("  covers.")
         lines.append("")
     lines.append("HOW TO READ IT")
-    lines.append("  Every value is a mean over the networks; '+-' is the standard deviation")
-    lines.append("  across them, i.e. how much the method varies from one network to the next.")
-    lines.append("  The percentage columns carry no '+-': they already are means of a yes/no")
-    lines.append("  outcome, whose spread is fixed by the percentage itself.")
-    lines.append("  'initial' and 'optimal' are reference points, not competing methods:")
-    lines.append("  every method starts from 'initial', and 'optimal' is the best achievable.")
-    lines.append("  A method is doing well when it approaches 'optimal' with low 'work'.")
+    lines.append("  Every value is a mean over the networks and '+-' is the standard")
+    lines.append("  deviation across them, which is how much the method varies from one")
+    lines.append("  network to the next. The percentage columns carry no '+-' because they")
+    lines.append("  are already means of a yes/no outcome, whose spread is fixed by the")
+    lines.append("  percentage itself.")
+    lines.append("  initial and optimal are reference rows rather than competing methods.")
+    lines.append("  Every method starts from initial and optimal is the best achievable.")
     lines.append("  All methods are run on the same networks, so rows compare directly.")
     if any(r["method"] == "constructive" for r in rows):
-        lines.append("  'constructive' is the one exception: it throws the initial edges away")
-        lines.append("  and builds from nothing, because it is a construction, not an edit.")
+        lines.append("  constructive is the exception. It discards the initial edges and")
+        lines.append("  builds from nothing, being a construction rather than an edit.")
     lines.append("=" * w)
     return "\n".join(lines)
 
@@ -458,7 +460,7 @@ def _card_rows(methods, notes, width_in):
 
     blocks = [_wrap(note, width_in * 0.42, 7.5) for note in notes]
     n_notes = sum(len(b) for b in blocks)
-    heading = ("HOW IS THIS FIGURE BUILT?", True)
+    heading = ("WHAT THE COLUMNS MEAN", True)
 
     if 1 + n_notes <= len(left) + 2:
         right = [heading] + [(line, False) for b in blocks for line in b]
@@ -475,7 +477,7 @@ def _card_rows(methods, notes, width_in):
             used += len(block)
         else:
             second += block
-    left = left + [("", None, None), ("HOW IS THIS FIGURE BUILT?", None, None)]
+    left = left + [("", None, None), ("WHAT THE COLUMNS MEAN", None, None)]
     left += [(line, None, "note") for line in first]
     return left, [(line, False) for line in second], max(len(left), len(second))
 
@@ -721,15 +723,14 @@ def plot_trajectories(run_dir, traces, rows, header, filename="trajectories",
         ref["edges"] = [("optimal", float(np.mean([r["m"] for r in opt])))]
 
     notes = [
-        "x axis: one step of the run. greedy has no step budget - it contributes one "
-        "point per edge change it applies, and stops when no single change helps.",
+        "The x axis is one step of the run. greedy has no step budget. It contributes "
+        "one point per edge change it applies and stops when no single change helps.",
         ("Each line is the mean over the networks; the shaded band is the middle 50% of them "
          "(25th-75th percentile)." if aggregate_over_episodes else
-         "Each line is a single network - this is one episode, not an average."),
+         "Each line is a single network. This is one episode, not an average."),
         "A method that finishes early is held at its last network for the rest of the axis, "
         "so the curves stay comparable.",
-        "Every method is run on the same networks from the same starting graph, so the "
-        "curves can be read against each other directly.",
+        "Every method is run on the same networks from the same starting graph.",
     ]
     if ref:
         notes.append("Dashed reference lines mark full rigidity and, where exhaustive "
@@ -801,14 +802,14 @@ def plot_outcomes(run_dir, traces, rows, header, filename="outcomes"):
     if not methods:
         return None
 
-    notes = [f"{s}: {STAT_BLURB[s]}" for s in STAT_ORDER]
+    notes = [f"{s} is {STAT_BLURB[s]}" for s in STAT_ORDER]
     notes += [
         "Bars are the mean over the networks; the whisker is ±1 standard deviation "
         "across them.",
         "For a method that never moves (initial) or only improves (greedy), final and "
-        "best are the same bar by construction.",
-        "Stiffness is plotted on a log axis; a non-rigid network has stiffness 0 "
-        "and cannot be drawn there.",
+        "best are the same bar.",
+        "Stiffness is plotted on a log axis. A non-rigid network has stiffness 0 and "
+        "cannot be drawn there.",
     ]
 
     fig, axes, card, top, width = _figure(header, "Final / best / mean outcome",
@@ -883,15 +884,14 @@ def plot_noise_sweep(run_dir, rows, header, filename="noise"):
 
     methods = list(sweep)
     notes = [
-        "Each line is one method: the formation it produced, with every bearing "
-        "perturbed by the noise on the x axis, recovered from those noisy "
-        "measurements and compared against the truth.",
-        "y is RMS position error in formation radii, so 0.1 means the recovered "
-        "shape is off by a tenth of the formation's own size. Lower is better.",
-        "The dashed line is what the rigidity matrix predicts for the same "
-        "topology. Measurement following prediction means the topology's "
-        "conditioning explains the error; measurement falling below it means the "
-        "noise is past the point where the prediction applies.",
+        "Each line is one method. Its formation is taken with every bearing perturbed "
+        "by the noise on the x axis, recovered from those noisy measurements and "
+        "compared against the truth.",
+        "The y axis is RMS position error in formation radii, so 0.1 means the "
+        "recovered shape is off by a tenth of the formation's own size. Lower is better.",
+        "The dashed line is what the rigidity matrix predicts for the same topology. "
+        "The two agree while the error stays small and separate once the noise is past "
+        "the range the linear prediction covers.",
     ]
     fig, axes, card, top, width = _figure(
         header, "Shape error under bearing noise", methods, notes,
@@ -914,7 +914,7 @@ def plot_noise_sweep(run_dir, rows, header, filename="noise"):
     ax.set_ylabel("RMS position error (formation radii)")
     _style_axes(ax, log=True)
     _panel_title(ax, "Measured against predicted",
-                 "solid: measured   dashed: predicted from the rigidity matrix")
+                 "solid is measured, dashed is predicted from the rigidity matrix")
     ax.legend(frameon=False, fontsize=8)
 
     return _finish(fig, card, methods, notes, width, top, run_dir, filename)
@@ -1102,11 +1102,11 @@ def plot_uncertainty(run_dir, instances, rows, header, sigma=0.0175,
 
     methods = [r["method"] for r in ep_rows]
     notes = [
-        f"One formation, one panel per method: identical agents and poses, only the "
-        f"measured bearings differ. Drawn on the first evaluated network.",
+        f"One formation with one panel per method. The agents and poses are identical "
+        f"and only the measured bearings differ. Drawn on the first evaluated network.",
         f"Each shell is where that agent ends up when every bearing carries "
         f"{np.degrees(sigma):.1f} degrees of error. Bigger means the topology pins that "
-        f"agent down less well; the percentage above each panel is the worst agent, at "
+        f"agent down less well. The percentage above each panel is the worst agent, at "
         f"true scale.",
         f"Shells are drawn {exaggeration}x larger than life so they are visible at all, "
         f"and the same factor is used in every panel so the panels compare.",
@@ -1118,7 +1118,7 @@ def plot_uncertainty(run_dir, instances, rows, header, sigma=0.0175,
 
     nrows, ncols = _grid_for(len(ep_rows))
     fig, _, card, top, width = _figure(
-        header, "Where the noise puts each agent", methods, notes,
+        header, "Position uncertainty per agent", methods, notes,
         panel_h=5.4, width=6.8 * ncols, panels=(nrows, ncols), axes3d=True)
     band = (top, card[1])
 
@@ -1167,15 +1167,13 @@ def plot_softest_mode(run_dir, instances, rows, header, filename="softest_mode")
 
     methods = [r["method"] for r in ep_rows]
     notes = [
-        "The softest mode: the way of deforming the formation that changes the bearings "
-        "least, and so the direction an estimator confuses most easily. Drawn on the "
-        "first evaluated network.",
+        "The softest mode is the way of deforming the formation that changes the "
+        "bearings least. Drawn on the first evaluated network.",
         "The mode is normalised and each panel is scaled to its own largest arrow, so "
-        "the arrows show the SHAPE of that deformation - which agents move, together or "
-        "against each other. Arrow lengths do not compare between panels.",
-        "How soft it is, is the rigidity eigenvalue above each panel: smaller means the "
-        "bearings resist that deformation less and the shape is pinned down worse. "
-        "Larger is better.",
+        "the arrows show which agents move and in which direction. Arrow lengths do not "
+        "compare between panels.",
+        "The rigidity eigenvalue above each panel says how soft that mode is. Smaller "
+        "means the bearings resist the deformation less. Larger is better.",
     ]
     dom = _domain_note(net)
     if dom:
@@ -1183,7 +1181,7 @@ def plot_softest_mode(run_dir, instances, rows, header, filename="softest_mode")
 
     nrows, ncols = _grid_for(len(ep_rows))
     fig, _, card, top, width = _figure(
-        header, "The deformation the bearings barely see", methods, notes,
+        header, "Softest mode of each method", methods, notes,
         panel_h=5.4, width=6.8 * ncols, panels=(nrows, ncols), axes3d=True)
     band = (top, card[1])
 
@@ -1221,10 +1219,8 @@ def plot_sensitivity(run_dir, instances, rows, header, filename="sensitivity"):
         "share of the error and the shares sum to 100%. Drawn on the first evaluated "
         "network.",
         "Arrow thickness is that single bearing's share. Marker size is the share "
-        "contributed by every bearing that agent takes - a large marker is an agent "
-        "whose own sensing the formation leans on.",
-        "A formation that leans hard on one measurement is fragile in a way the edge "
-        "count does not show.",
+        "contributed by every bearing that agent takes, so a large marker is an agent "
+        "whose own sensing carries much of the total.",
     ]
     dom = _domain_note(net)
     if dom:
@@ -1232,7 +1228,7 @@ def plot_sensitivity(run_dir, instances, rows, header, filename="sensitivity"):
 
     nrows, ncols = _grid_for(len(ep_rows))
     fig, _, card, top, width = _figure(
-        header, "Where the error comes from", methods, notes,
+        header, "Share of the total error per measurement", methods, notes,
         panel_h=5.4, width=6.8 * ncols, panels=(nrows, ncols), axes3d=True)
     band = (top, card[1])
 
@@ -1277,12 +1273,12 @@ def plot_prediction_check(run_dir, rows, header, filename="prediction"):
 
     methods = [m for m in METHOD_ORDER if any(p[0] == m for p in pts)]
     notes = [
-        "x is the error the rigidity matrix predicts for that network at that noise "
-        "level; y is the error measured by actually perturbing every bearing and "
+        "The x axis is the error the rigidity matrix predicts for that network at that "
+        "noise level. The y axis is the error measured by perturbing every bearing and "
         "recovering the formation.",
-        "On the dashed diagonal, the prediction is right and the analytic metric can "
-        "be trusted. Points falling below it are where the noise is large enough "
-        "that the linear theory stops applying.",
+        "Points on the dashed diagonal are where prediction and measurement agree. "
+        "Points below it are where the noise is past the range the linear prediction "
+        "covers.",
         "Both axes are RMS position error in formation radii. One point per method, "
         "network and noise level.",
     ]
@@ -1311,7 +1307,7 @@ def plot_prediction_check(run_dir, rows, header, filename="prediction"):
     ax.set_ylabel("measured RMS position error")
     _style_axes(ax, log=True)
     _panel_title(ax, "Prediction against measurement",
-                 "on the diagonal: the rigidity matrix explains the error")
+                 "points on the diagonal are where prediction and measurement agree")
     ax.legend(frameon=False, fontsize=8, loc="upper left")
 
     return _finish(fig, card, methods, notes, width, top, run_dir, filename)
@@ -1330,15 +1326,14 @@ def plot_repair_choice(run_dir, spread, header, filename="repair_choice"):
         "After a formation breaks, several different edge sets of the same minimum "
         "size restore rigidity. Each grey dot is one of them, on one broken network.",
         "Height is the shape error that repair leaves behind, relative to the best "
-        "repair available on that network - so 1 is the best possible and 10 is ten "
+        "repair available on that network. One is the best available and ten is ten "
         "times worse, for the same number of edges.",
-        "The marked point is what marginal-gain greedy picked. A wide column means "
-        "the choice matters; greedy sitting high in it means the count-optimal "
-        "criterion does not make that choice well.",
+        "The marked point is what marginal-gain greedy picked. The height of the column "
+        "is the spread across repairs of equal size.",
     ]
     methods = ["greedy"]
     fig, axes, card, top, width = _figure(
-        header, "Does it matter which repair you pick?", methods, notes,
+        header, "Shape error of each minimum-size repair", methods, notes,
         panel_h=4.6, width=11.0, panels=(1, 1))
     ax = axes[0]
 
@@ -1407,20 +1402,19 @@ def plot_decisions(run_dir, decisions, header, filename="decisions"):
     ]
     kinds = ["add", "remove"]
     notes = [
-        "At every step, every legal single-edge change is scored, and the one the "
-        "policy actually made is ranked among them. 100% would be the best available "
-        "edit; the dashed line at 50% is what picking at random scores.",
-        "The policy is trained on phi, which rewards rank and charges for edges - not "
-        "on shape error. A high phi panel with a middling error panel therefore says "
-        "the objective is what leaves error behind, not the policy.",
-        "The third panel asks whether the edit touches an agent already carrying much "
-        "of the error. Adds and removes are separated because they mean opposite "
-        "things: acting on a loaded agent is what you want when adding, and what you "
-        "want to avoid when removing.",
+        "At every step, every legal single-edge change is scored and the one the "
+        "policy made is ranked among them. 100% is the best available edit and the "
+        "dashed line at 50% is what picking at random scores.",
+        "The policy is trained on phi, which rewards rank and charges for edges. It is "
+        "not trained on shape error, so the two panels are ranked against different "
+        "criteria.",
+        "The third panel is whether the edit touches an agent already carrying much of "
+        "the error. Adds and removes are separated because acting on a loaded agent "
+        "means the opposite thing in each case.",
     ]
     methods = ["learned"]
     fig, axes, card, top, width = _figure(
-        header, "Were the policy's edits good ones?", methods, notes,
+        header, "Rank of the edits the policy applied", methods, notes,
         panel_h=4.0, width=13.0, panels=(1, 3))
 
     for ax, (key, title, sub) in zip(axes, panels):
@@ -1463,11 +1457,11 @@ def plot_summary(run_dir, rows, header):
     notes = [
         "One value per network per method. The line is the median, the box the middle "
         "50%, the whiskers reach 1.5x that range and the dots are networks outside it.",
-        "Scored on the best network each run visited - that is what the comparison table "
-        "reports, and it separates 'found a good topology' from 'stopped on it'.",
-        "'rigid' means the network's shape is fully determined by its bearing measurements; "
-        "'also minimal' means it does that with the fewest possible edges.",
-        "'steps to best' counts steps for the rollout methods and applied edge changes for "
+        "Scored on the best network each run visited, which is what the comparison "
+        "table reports.",
+        "A rigid network has its shape fully determined by its bearing measurements. "
+        "Also minimal means it does that with the fewest possible edges.",
+        "Steps to best counts steps for the rollout methods and applied edge changes for "
         "greedy, so compare it within a method rather than across them.",
     ]
 
@@ -1539,9 +1533,9 @@ TABLE_COLUMNS = [
     dict(key="score",   title="score  φ", unit="higher is better", w=1.20, align="right"),
     dict(key="rigid",   title="rigid",    unit="% of networks",    w=0.85, align="right"),
     dict(key="minimal", title="minimal",  unit="% of networks",    w=0.85, align="right"),
-    dict(key="margin_geo", title="stiffness", unit="gmean ×/÷ gsd, higher is better",
+    dict(key="margin_geo", title="stiffness", unit="gmean, higher is better",
          w=1.30, align="right"),
-    dict(key="shape_err", title="shape error", unit="gmean ×/÷ gsd, lower is better",
+    dict(key="shape_err", title="shape error", unit="gmean, lower is better",
          w=1.35, align="right"),
     dict(key="work",    title="work",     unit="edits applied",    w=1.05, align="right"),
     dict(key="best_at", title="best at",  unit="step reached",     w=1.10, align="right"),
@@ -1549,35 +1543,36 @@ TABLE_COLUMNS = [
 ]
 
 TABLE_NOTES = [
-    "edges: directed bearing measurements the network needs - each one is a sensing or "
-    "communication link, so fewer is better.",
-    "score φ: the objective every method is scored with. It rewards rigidity and charges "
-    "for each extra edge.",
-    "rigid: the network's shape is fully determined by its bearing measurements - the "
-    "property being solved for. minimal: rigid with the fewest possible edges "
-    "(a heuristic on mixed-domain networks, so it can under-report).",
-    "stiffness: how strongly the bearings react to a change in shape, higher is better. "
-    "Shown as a geometric mean and spread because it ranges over orders of magnitude - "
-    "'a ×/÷ b' means the typical network sits between a/b and a·b. Its absolute size "
-    "depends on how far apart the agents are, so compare rows rather than the number.",
-    "shape error: how far the recovered formation lands from the true one, per radian of "
-    "error in the bearing measurements - position counted in formation radii, attitude in "
-    "radians. LOWER is better. 8.0 means one degree of bearing error (0.017 rad) displaces "
-    "the shape by about 14% of its own size. Unlike stiffness it is comparable across "
-    "network sizes, domains and pose ranges. A '*' on either column marks rows where "
-    "non-rigid networks had to be left out: their stiffness is exactly 0 and their shape "
-    "error infinite, and neither can enter a geometric mean.",
-    "work: changes to the network the method actually applied. best at: the step its best "
-    "network was reached - lower means it converged sooner and the rest of the budget "
-    "added nothing.",
-    "= best: share of networks where the method tied the exhaustive optimum.",
-    "initial and optimal are reference rows, not competing methods: every method starts "
-    "from initial, and optimal is the best achievable. All methods see the same networks. "
-    "constructive is the exception: it discards the initial edges and builds from empty, "
-    "because it is a construction algorithm rather than an edit one.",
-    "Every value is a mean over the networks and ± is the standard deviation across them. "
-    "The percentage columns carry no ±: they are already means of a yes/no outcome, whose "
-    "spread is fixed by the percentage itself.",
+    "edges is how many directed bearing measurements the network needs. Each one is a "
+    "sensing or communication link, so fewer is better.",
+    "score φ is the objective every method is scored with. It rewards rigidity and "
+    "charges for each extra edge. Higher is better.",
+    "rigid means the network's shape is fully determined by its bearing measurements. "
+    "minimal means rigid with the fewest possible edges. On mixed-domain networks "
+    "minimal is a heuristic and can under-report.",
+    "stiffness is how strongly the bearings react to a change in shape. Higher is "
+    "better. It is shown as a geometric mean and spread because it ranges over orders of "
+    "magnitude, where 'a ×/÷ b' means the typical network sits between a/b and a·b. Its "
+    "absolute size depends on how far apart the agents are, so compare rows rather than "
+    "the number itself.",
+    "shape error is how far the recovered formation lands from the true one, per radian "
+    "of error in the bearing measurements, with position counted in formation radii and "
+    "attitude in radians. Lower is better. 8.0 means one degree of bearing error "
+    "(0.017 rad) displaces the shape by about 14% of its own size. Unlike stiffness it is "
+    "comparable across network sizes, domains and pose ranges. A '*' on either column "
+    "marks rows where non-rigid networks had to be left out, since their stiffness is "
+    "exactly 0 and their shape error infinite and neither can enter a geometric mean.",
+    "work is how many changes to the network the method applied. best at is the step its "
+    "best network was reached, so a lower number means the rest of the budget added "
+    "nothing.",
+    "= best is the share of networks where the method tied the exhaustive optimum.",
+    "initial and optimal are reference rows rather than competing methods. Every method "
+    "starts from initial and optimal is the best achievable. All methods see the same "
+    "networks. constructive is the exception, since it discards the initial edges and "
+    "builds from empty, being a construction algorithm rather than an edit one.",
+    "Every value is a mean over the networks and ± is the standard deviation across "
+    "them. The percentage columns carry no ± because they are already means of a yes/no "
+    "outcome, whose spread is fixed by the percentage itself.",
 ]
 
 

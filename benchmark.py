@@ -10,6 +10,7 @@ sees literally the same graphs.
     uv run benchmark.py list
     uv run evaluation.py <environment_name> --benchmark <benchmark_name>
 """
+import contextlib
 import copy
 import hashlib
 import json
@@ -26,18 +27,40 @@ def path(name):
     return os.path.join(DIR, f"{name}.npz")
 
 
+@contextlib.contextmanager
+def without_spectral_references():
+    """Stub out the two references reset() builds and this module never reads.
+
+    Each runs `stiffness_ref_samples` greedy constructions, and one construction
+    rebuilds the rigidity matrix once per candidate edge, which is 19 s at n=50.
+    Only poses, domains and edges are stored here, and both references draw from
+    their own generators rather than the global stream, so the instances are
+    unchanged. It has to wrap load() too, since initialize() resets once itself.
+    """
+    import environment as env_mod
+    saved = (env_mod.reference_stiffness, env_mod.reference_spectral)
+    env_mod.reference_stiffness = lambda *a, **k: 0.0
+    env_mod.reference_spectral = lambda *a, **k: None
+    try:
+        yield
+    finally:
+        env_mod.reference_stiffness, env_mod.reference_spectral = saved
+
+
 def save(env, name, instances=20, seed=0):
     """Draw `instances` fresh instances from `env` and store them."""
     np.random.seed(seed)
     env.freeze_network = False
 
     pos, quats, edges = [], [], []
-    for _ in range(instances):
-        env.reset()
-        net = env.network
-        pos.append([a.pose.position for a in net.agents])
-        quats.append([quaternion.as_float_array(a.pose.orientation) for a in net.agents])
-        edges.append(net.edges.copy())
+    with without_spectral_references():
+        for _ in range(instances):
+            env.reset()
+            net = env.network
+            pos.append([a.pose.position for a in net.agents])
+            quats.append([quaternion.as_float_array(a.pose.orientation)
+                          for a in net.agents])
+            edges.append(net.edges.copy())
 
     net = env.network
     axes = np.array([[np.nan] * 3 if a.rotation_axis is None else a.rotation_axis
@@ -167,6 +190,7 @@ if __name__ == "__main__":
     args = ap.parse_args()
 
     env = Environment()
-    env.load(f"./environments/{args.environment_name}.json")
+    with without_spectral_references():
+        env.load(f"./environments/{args.environment_name}.json")
     out = save(env, args.benchmark_name, instances=args.instances, seed=args.seed)
     print(f"wrote {out}  ({args.instances} instances, seed {args.seed}, {digest(args.benchmark_name)})")
