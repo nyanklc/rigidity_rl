@@ -1805,12 +1805,13 @@ if __name__ == "__main__":
     INCLUDE_CANDIDATE_BEARINGS = True
 
     GRAPH_FEATURES = False
-    RIGIDITY_GLOBAL = True
-    RIGIDITY_QUALITY = True
-    RIGIDITY_FLEX = True
-    RIGIDITY_EDGE = True
-    RIGIDITY_STIFFNESS = True
-    RIGIDITY_REMOVAL = True
+    # which observation channels each flag adds (node = per node, pair = per ordered pair)
+    RIGIDITY_GLOBAL = True     # node: rank_deficit, m_ratio, is_IBR (tiled, identical on every node)
+    RIGIDITY_QUALITY = True    # node: quality (tiled, identical on every node)
+    RIGIDITY_FLEX = True       # node: node_freedom | pair: add_independence
+    RIGIDITY_EDGE = True       # pair: pair_max_rank, add_rank
+    RIGIDITY_STIFFNESS = True  # node: node_slack (position, attitude) | pair: add_stiffness
+    RIGIDITY_REMOVAL = True    # pair: remove_rank, remove_stiffness (zero on non-edges)
     #############################################
 
     if len(sys.argv) < 3:

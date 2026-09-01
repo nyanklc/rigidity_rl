@@ -32,6 +32,10 @@ PYTHONPATH=. uv run tools/<name>.py
 | `functional_vs_error.py` | which spectral criterion orders topologies the way the measured error does? |
 | `repair_bound.py` | is the repair bound sound, and is it the true minimum? |
 | `repair_choice.py` | among equally-sized repairs, does it matter which one you pick? |
+| `greedy_landscape.py` | is greedy's phi landscape the same thing the observation already computes? |
+| `flag_cost.py` | what does each observation flag cost per step and per episode? |
+| `rigidity_cost.py` | which rigidity primitive costs what, and which one blocks a larger n? |
+| `policy_cost.py` | what do the flags cost on the policy side: observation width, forward time, parameters? |
 
 `constructive_greedy.py` is the standalone version of the `constructive` baseline
 now wired into `evaluation.py`, for difficulty sweeps that need no env config. It
@@ -73,6 +77,21 @@ understate any arm with short episodes.
 `submodularity.py` reproduces `THEORY.md` §14. It is slow (a few minutes) because
 every triple costs three rank or eigenvalue computations; the conclusion is not
 close to the noise floor, so the default trial count is enough.
+
+`greedy_landscape.py` is the source of `DESIGN_NOTES.md#greedy-vs-policy`. Read
+the caveat on its `stiffness_proxy_deltas`: that column scales `add_stiffness`
+into phi units by hand, so a miss there is not evidence the information is
+absent. It is the one number in the script that is not exact.
+
+The three cost scripts are the source of every number in
+`DESIGN_NOTES.md#observation-cost`. Run all three pinned to one BLAS thread
+(`OMP_NUM_THREADS=1`, and `policy_cost.py` sets `torch.set_num_threads(1)`
+itself): unpinned and on a loaded machine, the same `eigh` timed between 0.2 and
+16 ms and a batch-1 forward read 160 ms against a true 1 ms, which is enough to
+invert the ranking. `flag_cost.py` needs its default 120 steps per measurement;
+at 40 the flag rows cross the baseline and the table says nothing.
+`rigidity_cost.py` measures `removal_costs` at three densities on purpose, since
+its cost is a function of how many edges are redundant rather than of `n`.
 
 The three estimation scripts answer one question each and are meant to be read in
 that order. `spectral_criteria.py` says the trace is a monotone restatement of the

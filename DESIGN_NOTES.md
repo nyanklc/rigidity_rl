@@ -585,13 +585,20 @@ an assumption. Correlational evidence is not proof that a GNN cannot use them no
 Tier-3 information ([distributed-feasibility](#distributed-feasibility)): quantities derived from
 the rigidity matrix, which no local
 decision maker could compute. Off by default - this is an **ablation arm**, and the gap between arms
-is the result. Three graded flags, so several information levels can be compared:
+is the result. Six graded flags, so several information levels can be compared:
 
 | flag | node channels | edge channels |
 |---|---|---|
 | `rigidity_global` | `(rank_K-rank)/rank_K`, `m/m_req`, `is_IBR` | - |
+| `rigidity_quality` | `quality` | - |
 | `rigidity_flex` | `node_freedom` | `add_independence` |
-| `rigidity_edge` | - | `c_k / c_max`, `add_rank` |
+| `rigidity_edge` | - | `c_k / c_max` (`pair_max_rank`), `add_rank` |
+| `rigidity_stiffness` | `node_slack` (position, attitude) | `add_stiffness` |
+| `rigidity_removal` | - | `remove_rank`, `remove_stiffness` |
+
+The two global channels (`rigidity_global`, `rigidity_quality`) are tiled identically across nodes,
+which is why `ablation.py` cannot shuffle them and needs `--mode noise` there. What each flag costs
+is [observation-cost](#observation-cost).
 
 **`c_k` is nearly useless on its own, and that is why the flags are graded.** Per-edge block rank is
 *constant* in every homogeneous configuration - measured 2 for every edge in R^3 and 1 in R^2, at
@@ -693,6 +700,175 @@ Most of the cost is `{global}`, which is `is_IBR` and `m/m_req`; the null-space 
 it are nearly free, because `rigidity_decomposition` and `nullspace` run for the state score
 anyway. `rigidity_edge` measures at or below `rigidity_flex` here - `add_rank` comes out of the same
 Gram matrix `add_independence` already formed, so the marginal cost is within noise.
+
+### observation-cost
+
+What every observation flag costs, where the cost is paid, and which parts of the environment set
+the ceiling on `n`. Reproduced by `tools/flag_cost.py`, `tools/rigidity_cost.py` and
+`tools/policy_cost.py`. All of it single-threaded BLAS on `R^3`; absolute milliseconds are machine
+and load dependent, the ratios are not.
+
+#### The six flags are not independent arms
+
+`compute_rigidity_features()` computes the null space and `candidate_gain` **before** it branches on
+which flag is set, so the first flag turned on pays for both and the rest are comparatively cheap.
+`rigidity_global` is three tiled scalars that `step()` already has in hand, and it still costs
+1.5x a step, because it drags an `eigh(6n)` and a full all-pairs candidate scan behind it.
+
+The consequence for an ablation is that a one-flag-at-a-time sweep pays the shared cost once per
+arm and gives six baselines that are each ~1.5x the true zero-information floor. Leave-one-out from
+the full arm is the cheaper design and the fairer comparison, since every arm then differs from the
+reference only by its own marginal work.
+
+ms per `env.step()`, and the same as a multiple of the all-off baseline:
+
+| flags | n=8 | n=16 | x base n=8 | x base n=16 |
+|---|---|---|---|---|
+| baseline (all off) | 1.80 | 4.56 | 1.00 | 1.00 |
+| `graph_features` | 2.64 | 8.85 | 1.46 | 1.94 |
+| `rigidity_global` | 2.67 | 7.04 | 1.48 | 1.54 |
+| `rigidity_quality` | 2.67 | 7.22 | 1.48 | 1.58 |
+| `rigidity_flex` | 2.88 | 9.73 | 1.59 | 2.13 |
+| `rigidity_edge` | 2.04 | 8.50 | 1.13 | 1.86 |
+| `rigidity_stiffness` | 2.63 | 6.59 | 1.46 | 1.45 |
+| `rigidity_removal` | 3.81 | 14.22 | 2.11 | 3.12 |
+| all six | 5.01 | 23.83 | 2.78 | 5.23 |
+| all six + `graph_features` | 4.73 | 26.09 | 2.62 | 5.72 |
+
+#### Two flags are paid somewhere other than the step
+
+ms per `env.reset()`. Every flag not listed sits between 4.8 and 6.9 at n=8 and 17 and 47 at n=16:
+
+| flags | n=8 | n=16 |
+|---|---|---|
+| baseline (all off) | 4.24 | 21.15 |
+| `rigidity_quality` | 61.53 | **771.81** |
+| all six | 90.65 | 1076.63 |
+
+`rigidity_quality` makes `compute_episode_constants` call `reference_spectral`, which runs
+`stiffness_ref_samples` (default 3) full greedy rigid constructions, each `O(n^2)` rank evaluations
+of a growing `B`. At n=16 that is 0.77 s per episode, which over a `4*m_req + 10` horizon amortizes
+to roughly 8 ms per step and more than doubles the step budget on its own. It is the same machinery
+`stiffness_kappa > 0` already pays for, so with the stiffness reward on the channel is free and
+standalone it is the most expensive flag by a wide margin.
+
+`rigidity_edge` is the other one: `pair_max_rank` is an episode constant, but computing it forces
+`edge_block_ranks(brmat_K)`, `n(n-1)` rank computations on `(3, 6n)` blocks in a Python loop (2.0 /
+2.8 / 14.4 ms at n = 8 / 16 / 32). Per step it is the cheapest informative pair channel, since
+`add_rank` is the second return value of the `cand` already computed.
+
+#### `candidate_gain` does not do an SVD per candidate edge
+
+Worth stating because the name of the reference implementation suggests otherwise.
+`candidate_gain` forms `b_ij Z` for all pairs at once with einsums over `(n, n, 3, k)` and reads
+both norm and rank off the **3x3 Gram matrix** per pair, one batched `eigvalsh`, no Python loop and
+no `b_ij` ever built. Cost is `O(n^2 k)` with `k = 6n - rank`, so `O(n^3)`.
+`candidate_gain_reference` is the per-pair-SVD form and exists only as the test oracle.
+
+#### Per-primitive, on a near-minimal graph
+
+ms, from `tools/rigidity_cost.py`:
+
+| primitive | n=8 (m=12) | n=16 (m=26) | n=32 (m=52) |
+|---|---|---|---|
+| build `B` `(3m, 6n)` | 0.73 | 1.31 | 2.13 |
+| `rigidity_decomposition` `svd(B)` | 0.10 | 0.32 | 1.60 |
+| `is_MBR`, `m` x `rank(3, 6n)` | 0.44 | 0.91 | 1.23 |
+| `nullspace` `eigh(6n)` | 0.20 | 0.76 | 2.45 |
+| `candidate_gain` | 0.54 | 1.43 | 4.50 |
+| `flex_space` + magnitude | 0.16 | 0.62 | 1.11 |
+| `removal_costs` | 0.58 | 3.83 | 22.15 |
+| `[reset]` build `B_K` | 2.78 | 7.94 | 131.48 |
+| `[reset]` `edge_block_ranks(B_K)` | 1.98 | 2.81 | 14.39 |
+| `closeness` (`graph_features`) | 0.30 | 0.96 | 15.19 |
+| `_brandes_betweenness` (`graph_features`) | 0.11 | 0.29 | 1.33 |
+| `get_all_pairs_bearings` | 0.62 | 0.74 | 5.91 |
+
+The first four rows and `get_all_pairs_bearings` are paid on every step with every flag off. Two
+incidental things the table exposes. `get_node_betweenness_features` and
+`get_edge_betweenness_features` each call `_brandes_betweenness()` separately, so it runs twice per
+step under `graph_features`. And `get_all_pairs_bearings` is a Python double loop costing more at
+n=32 than the whole of `candidate_gain`, while `get_all_pairs_bearings_world` directly above it is
+already vectorized.
+
+#### `removal_costs` scales with density, not with `n`
+
+`removal_costs` does one `eigvalsh(G - b^T b)`, a full `6n x 6n` eigendecomposition, per **redundant**
+edge, so its cost is `O(#redundant * n^3)` and a near-minimal test graph hides it. Measured against
+`m / m_req`:
+
+| n | `m/m_req` | m | redundant | ms |
+|---|---|---|---|---|
+| 8 | 1.0 | 11 | 0 | 0.12 |
+| 8 | 2.0 | 22 | 22 | 1.18 |
+| 16 | 1.0 | 24 | 2 | 1.09 |
+| 16 | 2.0 | 48 | 48 | 12.55 |
+| 24 | 2.0 | 80 | 78 | 91.33 |
+| 32 | 1.0 | 51 | 29 | 28.51 |
+| 32 | 2.0 | 102 | 100 | 137.49 |
+
+This is the worst scaling in the repository, and it peaks exactly mid-episode, when the policy has
+surplus edges to prune and the channel is at its most useful. A rank-3 downdate does not need a full
+eigendecomposition, since only the eigenvalue at index `6n - rank_K` moves, so it is fixable, but
+that is an algorithmic change rather than a tweak.
+
+#### The ceiling on `n` is not a flag
+
+`extended_bearing_rigidity_matrix` allocates `Dp` and `Da` as dense `(3m, 3m)`. On the **complete**
+graph `m = n^2`, so `reset()` makes a `Theta(n^4)` allocation with every flag off:
+
+| n | `m = n^2` | `Dp` shape | `Dp + Da` MB | ms |
+|---|---|---|---|---|
+| 8 | 56 | (168, 168) | 0 | 1.6 |
+| 16 | 240 | (720, 720) | 8 | 21.6 |
+| 32 | 992 | (2976, 2976) | 142 | 128.1 |
+| 64 | 4032 | (12096, 12096) | **2341** | **3665.5** |
+
+2.3 GB and 3.7 s per episode at n=64. `Dp` is block diagonal, one 3x3 block per edge, so applying it
+blockwise instead of materializing it is worth more than every flag decision combined if n=64 is
+wanted. This is the allocation behind `CLAUDE.md`'s "0.1-6 s at n=64".
+
+#### Policy side
+
+The flags widen the per-pair edge tensor, 6 to 12 channels for all six, and that tensor is both what
+the backbones spend their time on and what the replay buffer stores. Observation width at n=8:
+baseline 7 node / 6 edge / 536 floats, all six 14 / 12 / 976. At `MEM_SIZE = 10000` with `obs` and
+`next_obs` in float32, that is 43 MB against 78 MB at n=8, ~290 MB at n=16 and ~1 GB at n=32.
+
+Both backbones do dense all-pairs message passing, so a forward is `O(B n^2 (H^2 + E H))` per layer.
+ms at `hidden=128`, 3 layers, one thread:
+
+| model | batch | n=8 | n=16 | n=32 |
+|---|---|---|---|---|
+| GINE | 1 | 1.0 | 1.1 | 2.1 |
+| GINE | 256 | 37.6 | 102.4 | 540.5 |
+| EGNN | 1 | 2.0 | 5.8 | 31.1 |
+| EGNN | 256 | 531.8 | 1897.5 | 8240.2 |
+
+EGNN is 14-15x GINE at every batch and `n`. That is a constant factor, not a worse exponent: at
+batch 256 both are cleanly quadratic in `n`, and the batch-1 rows only look like a scaling
+difference because GINE is overhead-dominated there. At n=32 and the training batch of 256 a single
+EGNN forward is 8.2 s single-threaded, an order of magnitude above the environment step.
+
+Doubling the edge width costs 1.8% of GINE's parameters (85,155 to 86,721) and 2.6% of EGNN's
+(932,304 to 956,100), so the flags change what the network reads rather than how much capacity it
+has, and an arm comparison is not confounded by capacity.
+
+#### What scales with what
+
+| quantity | scaling | paid | flag |
+|---|---|---|---|
+| build `B_K` | `Theta(n^4)` memory | reset | none, always |
+| `reference_spectral` / `reference_stiffness` | `O(samples * n^2)` rank evaluations | reset | `rigidity_quality`, `stiffness_kappa > 0` |
+| `edge_block_ranks(B_K)` | `n^2` small SVDs, Python loop | reset | `rigidity_edge`, or any mixed-domain scenario |
+| `removal_costs` | `O(#redundant * n^3)` | step | `rigidity_removal` |
+| `nullspace`, `candidate_gain` | `O(n^3)` | step | any rigidity flag |
+| `flex_space` | `O(n^3)` | step | `rigidity_flex` |
+| build `B`, `svd(B)`, `is_MBR` | `O(n^3)` at `m ~ m_req` | step | none, always |
+| `closeness`, `_brandes_betweenness` | `O(n^3)` / `O(nm)` pure Python | step | `graph_features` |
+| `get_all_pairs_bearings` | `O(n^2)` pure Python | step | none, always |
+| backbone forward | `O(B n^2 H^2)` | step and update | edge width doubles with flags |
+| replay buffer | `O(MEM_SIZE * n^2 * E)` | memory | edge width doubles with flags |
 
 ### all-pairs-bearings
 
@@ -917,6 +1093,122 @@ describes, which is why the agreement lands at 1.00 rather than merely near it.
 ---
 
 ## train_ppo.py
+
+### greedy-vs-policy
+
+Whether the learned policy is worth having rests on what greedy is actually doing, and greedy turns
+out to be computing something the observation already holds. Reproduced by
+`tools/greedy_landscape.py`.
+
+#### What greedy costs
+
+`run_greedy` scores all `n(n-1)` single-edge toggles per improvement step, and each score is a
+`score_network` call that **rebuilds `B` and takes a fresh SVD**. One improvement step is therefore
+`O(n^2)` evaluations of an `O(n^3)` quantity, and a run takes `O(n)` improvement steps:
+
+| n | phi evals / step | ms / step | improvement steps / episode | phi evals / episode |
+|---|---|---|---|---|
+| 6 | 30 | 6.0 | 3.6 +- 2.1 | 108 |
+| 8 | 56 | 14.4 | 4.8 +- 1.2 | 269 |
+| 12 | 132 | 53.5 | 7.6 +- 2.7 | 1,003 |
+| 16 | 240 | 152.2 | 11.4 +- 3.3 | 2,736 |
+
+`O(n^5)` per improvement step, `O(n^6)` per episode. Measured growth is nearer `n^3.5`, because at
+these sizes the fixed per-call overhead across `n^2` calls still outweighs the matrix work; it
+steepens as `n` grows.
+
+#### The kappa = 0 case, which is not the thesis case
+
+With `stiffness_kappa = 0`, phi is affine in rank, so a toggle moves it by exactly the rank it adds
+or costs - which is what `add_rank` and `remove_rank` already are:
+
+```
+dphi(add i->j)    = ( 100*rk_ij - 25*c_max) / rank_K
+dphi(remove i->j) = (-100*rl_ij + 25*c_max) / rank_K
+```
+
+Verified against greedy's own landscape to machine precision (max `4.9e-15` over 24 states per
+configuration, `R^3` / `SE(3)` / `R^3xS^1` at n=6 and 8), with the top move agreeing 24/24
+everywhere. So at kappa = 0 the observation contains greedy's decision outright, a policy reading
+it can at best learn the argmax, and a channel-based greedy would be `O(n^3)` per improvement step
+rather than `O(n^5)`, measured 9x to 38x faster over n=6 to 16 and widening. Recorded because it
+explains the ablation result that `add_rank` dominates every other channel, not because kappa = 0
+is a configuration the thesis argues about.
+
+Two artifacts of that regime worth knowing if a kappa = 0 run is ever read: any rank-adding edge
+improves phi, since `100*rk > 25*c_max` for `rk >= 1` in every domain, so greedy is barely
+selective about *which* rank it adds; and in `R^3` adding a rank-1 edge and removing a redundant
+edge are an exact tie at `50/rank_K`, broken by row-major enumeration order, so an implementation
+detail decides between growing and pruning.
+
+#### What changes at kappa > 0
+
+The stiffness term needs `lambda` of the **updated** matrix, and no channel holds that for an
+addition. `remove_stiffness` is exact, so deletions stay covered; additions have only
+`add_stiffness`, a ranking prior. The rank-only closed form stops being greedy's landscape, and how
+far it stops depends on the domain:
+
+| domain | n | kappa | rank-only picks greedy's move | mean phi lost | worst | one edge |
+|---|---|---|---|---|---|---|
+| `R^3` | 6 | 0.9 | 14/24 | 0.091 | 0.298 | 3.57 |
+| `R^3` | 6 | 2.0 | 14/24 | 0.203 | 0.662 | 3.57 |
+| `R^3` | 8 | 0.9 | 9/24 | 0.158 | 0.971 | 2.50 |
+| `R^3` | 8 | 2.0 | 9/24 | 0.352 | 2.157 | 2.50 |
+| `SE(3)` | 6 | 0.9 | 0/24 | 0.465 | 1.329 | 1.72 |
+| `SE(3)` | 6 | 2.0 | 0/24 | 1.033 | 2.954 | 1.72 |
+| `SE(3)` | 8 | 0.9 | 0/24 | 0.177 | 0.738 | 1.22 |
+| `SE(3)` | 8 | 2.0 | 0/24 | 0.394 | 1.640 | 1.22 |
+| `R^3xS^1` | 6 | 0.9 | 4/24 | 0.371 | 1.237 | 2.63 |
+| `R^3xS^1` | 8 | 0.9 | 2/24 | 0.083 | 0.607 | 1.85 |
+
+`one edge` is `25*c_max/rank_K`, phi's own price of an edge, so the losses read as fractions of one.
+Following the rank channels costs between 3% and 60% of an edge on average and up to 1.7 edges at
+worst. **The oriented domains are where it breaks hardest**: `SE(3)` never agrees, at either kappa.
+
+Two things fall out of the table. Agreement is identical at kappa 0.9 and 2.0 in every row while
+the phi lost scales by about 2.2, which is `2.0/0.9`: kappa multiplies the whole stiffness bonus, so
+within a state it rescales rather than reorders, and greedy's top move was the same at both in all
+144 states here. And a hand-scaled combination of `add_stiffness` and `remove_stiffness` recovers
+greedy's move 15-24 of 24 at kappa = 0.9 but 0-2 of 24 at kappa = 2.0. **That collapse is not
+evidence the information is missing**, it is evidence the hand scaling is wrong at the larger kappa
+- `add_stiffness` is normalised per channel and carries no phi units, so something has to supply
+them. Fitting that scaling from data is what a policy is for.
+
+#### So is the policy worth it
+
+This analysis does not answer that, and it is worth being exact about which half it does settle.
+
+Settled: **at kappa > 0 the policy is not a trivially-learnable oracle reader.** At kappa = 0 it is
+one, and the honest reading there is that a correctly implemented greedy is both as good and
+cheaper, since it stops after ~`m_req` edits while the policy runs a `4*m_req + 10` horizon. That
+argument does not carry over, because the closed form it rests on does not.
+
+Also settled, the cost side, per episode:
+
+| | per improvement step or action | per episode |
+|---|---|---|
+| greedy, as implemented | `O(n^5)` | `O(n^6)` |
+| greedy, from the rank channels (kappa = 0 only) | `O(n^3)` | `O(n^4)` |
+| policy + observation, rigidity flags on | `O(n^3)` | `O(n^4)` |
+| policy + observation, rigidity flags off | `O(n^2)` | `O(n^3)` |
+
+The policy is an order cheaper than greedy only in the arm where it has no rigidity channels, which
+is also the arm where `ablation.py` says the geometric channels currently cost it nothing. With the
+channels on it is the same order as a well-implemented greedy, so cost is not the argument.
+
+Not settled, and this is the measurement that decides it: whether greedy's local optima at kappa > 0
+are worse than what the policy reaches. The structural reason to expect a gap is already recorded -
+the stiffness is **not** submodular ([THEORY.md](THEORY.md) 14, 59% of tested triples violating
+diminishing returns), so greedy carries no guarantee there, unlike the rank objective where it sits
+0-5% above `m_req`. Expecting a gap is not measuring one. `evaluation.py` at `stiffness_kappa > 0`
+with `greedy` and `learned` on the same instances is the experiment, read on `shape err` and
+stiffness rather than on edge count, and no such comparison is recorded anywhere in this repository
+yet.
+
+One thing that makes it a fair fight and is easy to miss: `score_network` takes `rank` and `lam`
+from the same decomposition, so `greedy` is stiffness-aware at kappa > 0 for free. It is hill
+climbing the same phi the policy is trained on, not a rank-only opponent handicapped by its
+objective.
 
 ### constructive-baseline
 
