@@ -2,6 +2,8 @@ from util import *
 import numpy as np
 import copy
 
+from cost import counted
+
 
 # (S_i, P_i): the translational and rotational coordinates agent i can vary.
 # Per node, not per edge.
@@ -129,6 +131,7 @@ def bearing_DOFs(agent_i, agent_j):
 # B = [ Dp E_bar^T S_bar | Da Eo_bar^T P_bar ], (3m, 6n). The DOF restriction is
 # applied per node on the column side, so an infeasible coordinate is a zero
 # column.
+@counted
 def extended_bearing_rigidity_matrix(network):
     p = [agent.pose.position for agent in network.agents]
     R = [agent.pose.rotation_mat() for agent in network.agents]
@@ -179,6 +182,7 @@ def extended_bearing_rigidity_matrix(network):
 
     return B
 
+@counted
 def is_IBR_explicit(brmat, rank_K=None):
     if rank_K is None:
         raise Exception("HEY WHAT")
@@ -263,6 +267,7 @@ def MBR_required_Rd(n ,d):
 # Most rank one edge could contribute at these poses. EXACT -- makes no claim
 # about what is jointly achievable, which is why the state score normalizes with
 # it rather than with an edge count.
+@counted
 def max_edge_rank(network, brmat_K=None):
     n = len(network.agents)
     if n < 2:
@@ -287,6 +292,7 @@ def max_edge_rank(network, brmat_K=None):
 # Fewest edges that could make these poses rigid.
 # LOWER BOUND, not a ground truth: keep it out of the reward, use it for
 # reporting and the MBR metric only. Costs n(n-1) rank computations -- cache it.
+@counted
 def required_edge_count(network, rank_K=None, brmat_K=None, block_ranks=None):
     n = len(network.agents)
     if n < 2:
@@ -346,6 +352,7 @@ def required_edge_count(network, rank_K=None, brmat_K=None, block_ranks=None):
 # starts from the empty graph and ignores what the survivors still have.
 # Karimian and Tron Theorem 4 is the c_max = 1 case of this, exact in homogeneous
 # R^2; the 3-D and heterogeneous extension is what makes this a bound instead.
+@counted
 def repair_edge_count(network, rank_K=None, brmat=None, rank_brm=None,
                       length_scale=None):
     """Lower bound on the edges needed to restore rigidity. 0 if already rigid.
@@ -391,6 +398,7 @@ def repair_edge_count(network, rank_K=None, brmat=None, rank_brm=None,
     return len(available)
 
 
+@counted
 def edge_block_ranks(brmat):
     return [np.linalg.matrix_rank(brmat[3*k:3*(k+1), :]) for k in range(brmat.shape[0] // 3)]
 
@@ -479,6 +487,7 @@ def flex_constraint_power(Pi, bearings):
 
 # Rank and margin from one thin SVD. The null space costs extra and is only
 # needed by the rigidity features, so it is a separate call.
+@counted
 def rigidity_decomposition(brmat, rank_K):
     """(rank, singular values, lam). lam is 0 unless the framework is rigid.
 
@@ -527,6 +536,7 @@ def scaled_rigidity_matrix(network, brmat=None, length_scale=None):
     return out
 
 
+@counted
 def estimation_error_blocks(brmat, rank_K, n):
     """(a_pos, a_att): tr((B^T B)^+) over the position and attitude blocks.
 
@@ -551,6 +561,7 @@ def estimation_error_blocks(brmat, rank_K, n):
             float((inv * (V[3 * n:] ** 2).sum(axis=0)).sum()))
 
 
+@counted
 def error_covariance(brmat, rank_K):
     """(B^T B)^+, the shape-error covariance per unit bearing-noise variance.
 
@@ -605,6 +616,7 @@ def estimation_error_of(network, rank_K, brmat=None, length_scale=None):
     return estimation_error(s, rank_K, rank=rank)
 
 
+@counted
 def greedy_rigid_construction(network, rank_K, rng):
     """From the empty graph, keep any edge that raises rank(B). (edges, added, rank).
 
@@ -638,6 +650,7 @@ def greedy_rigid_construction(network, rank_K, rng):
 # Repair by marginal gain: add the absent pair that raises rank(B) most, until
 # rigid. In the c_max = 1 domains the independent sets are a matroid, so this is
 # minimum-edge there by the same argument that makes greedy optimal in 1.4.
+@counted
 def greedy_rigid_repair(network, rank_K, rng=None, brmat=None, length_scale=None):
     """Restore rigidity by adding edges. (edges, added), mutating network.edges.
 
@@ -728,6 +741,7 @@ def reference_stiffness(network, rank_K, rng, samples=3):
     return float(10.0 ** np.median(np.log10(lams))) if lams else 0.0
 
 
+@counted
 def nullspace(brmat, rank):
     """Orthonormal basis of ker(B), (6n, 6n - rank), given the rank.
 
@@ -745,6 +759,7 @@ def nullspace(brmat, rank):
     return V[:, :cols - rank]
 
 
+@counted
 def nullspace_and_softest(brmat, rank):
     """(ker(B), softest non-trivial mode, eigenvalues, eigenvectors) from one eigh.
 
@@ -765,11 +780,17 @@ def nullspace_and_softest(brmat, rank):
 # What an existing edge costs to delete. Both are exact: the leverage block
 # H = b (B^T B)^+ b^T has eigenvalues in [0, 1] and one per rank the edge alone
 # carries, and dropping its rows is the downdate B^T B - b^T b.
-def removal_costs(brmat, network, rank_K, lam=0.0, w=None, V=None, c_max=1):
+@counted
+def removal_costs(brmat, network, rank_K, lam=0.0, w=None, V=None, c_max=1,
+                  need_stiffness=True):
     """(rank_lost, stiffness_lost) over all pairs, nonzero only on existing edges.
 
     rank_lost is in units of c_max, stiffness_lost the fraction of lambda given up,
     1 when removal breaks rigidity. Pass w, V from nullspace_and_softest.
+
+    need_stiffness=False skips the downdate, which is one eigvalsh(6n) per redundant
+    edge and the whole cost of this function; stiffness_lost then holds only the
+    1 that marks a removal breaking rigidity.
     """
     n = network.n
     rank_lost = np.zeros((n, n))
@@ -796,7 +817,7 @@ def removal_costs(brmat, network, rank_K, lam=0.0, w=None, V=None, c_max=1):
         rank_lost[i, j] = c / cm
         if c > 0:
             stiffness_lost[i, j] = 1.0          # removal breaks rigidity
-        elif lam > 0:
+        elif lam > 0 and need_stiffness:
             w2 = np.linalg.eigvalsh(G - b.T @ b)
             stiffness_lost[i, j] = min(max(1.0 - w2[cols - rank_K] / lam, 0.0), 1.0)
     return rank_lost, stiffness_lost
@@ -824,6 +845,7 @@ def characteristic_length(network):
 # dimensionless, so ker(B) moves under a uniform scaling of the formation. Fixing
 # the length unit to the formation's own size makes it invariant, which is the
 # same normalisation coord_features already applies.
+@counted
 def nullspace_in_scaled_units(Z, n, length_scale):
     if Z.shape[1] == 0:
         return Z
@@ -876,6 +898,7 @@ def candidate_gain_reference(network, Z, length_scale=1.0):
     return gain, rank
 
 
+@counted
 def candidate_gain(network, Z, length_scale=1.0):
     """(gain, rank) over all ordered pairs, for the edge each pair would add.
 
@@ -960,6 +983,7 @@ def candidate_gain(network, Z, length_scale=1.0):
 # The non-trivial flex: ker(B_G) with ker(B_K) removed. By Michieletto Theorem 1
 # the latter IS the trivial variation set, exactly, in every domain and mix, so
 # nothing has to be enumerated by hand.
+@counted
 def flex_space(Z, Z_K, tol=1e-7):
     if Z.shape[1] == 0 or Z_K.shape[1] == 0:
         return Z
@@ -978,6 +1002,7 @@ def node_flex_magnitude(F, n):
     return mag[:, None]
 
 
+@counted
 def is_MBR(network, rank_K=None, brmat=None, block_ranks=None, rank_brm=None):
     if int(network.edges.sum()) == 0:
         return False, False, 0

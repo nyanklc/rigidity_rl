@@ -12,6 +12,7 @@ from rigidity import (characteristic_length, extended_bearing_rigidity_matrix,
                       node_dof_projectors, nullspace, rigidity_decomposition,
                       scaled_rigidity_matrix)
 from util import skew_symmetric
+from cost import counted
 
 
 # ---------------------------------------------------------------- the bearing map
@@ -102,6 +103,7 @@ def apply_variation(network, delta, step=1.0):
 
 
 # ---------------------------------------------------------------- the solver
+@counted
 def solve_shape(network, z, init=None, iters=30, tol=1e-12, backtracks=6):
     """Gauss-Newton on sum ||b_ij(chi) - z_ij||^2. Returns (estimate, info).
 

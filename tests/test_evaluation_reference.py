@@ -4,9 +4,11 @@ import copy
 import numpy as np
 import pytest
 
+import cost
 import report
 from evaluation import (_is_best, _percentile_of, decision_record, edit_landscape,
-                        measure_noise, run_greedy, run_initial, score_network, run_random)
+                        measure_noise, phi_landscape, run_anneal, run_degree, run_greedy,
+                        run_initial, run_spectral, score_network, run_random)
 
 
 def test_greedy_reaches_the_exact_optimum_at_n4_R2(make_env):
@@ -62,6 +64,104 @@ def test_greedy_is_at_least_as_good_as_random_and_far_cheaper(make_env):
     assert np.mean(gw) < np.mean(rw)
 
 
+DOMAINS = ["R^2", "R^3", "R^2xS^1", "R^3xS^1", "SE(3)"]
+
+
+@pytest.mark.parametrize("domain", DOMAINS)
+def test_spectral_is_greedy_at_kappa_zero(make_env, domain):
+    """phi is affine in rank there, so the closed-form landscape IS greedy's landscape.
+
+    The tie break matters: an addition and a redundant removal are an exact tie in the
+    c_max = 2 domains, and greedy keeps the first in row-major order.
+    """
+    e = make_env(n=6, domains=domain, max_steps=80,
+                 termination_condition_type="MaxSteps")
+    for _ in range(3):
+        e.reset()
+        instance = copy.deepcopy(e.network)
+        e.freeze_network = True
+
+        g = run_greedy(e, max_steps=80, verbose=False)
+        e.network = copy.deepcopy(instance)
+        e.reset()
+        s = run_spectral(e, max_steps=80, verbose=False)
+        e.freeze_network = False
+
+        assert abs(g["score"] - s["score"]) < 1e-9, (domain, g["score"], s["score"])
+        assert g["m"] == s["m"] and g["work"] == s["work"]
+
+
+def test_spectral_costs_less_than_greedy_for_the_same_answer(make_env):
+    e = make_env(n=8, domains="R^3", max_steps=80,
+                 termination_condition_type="MaxSteps")
+    e.reset()
+    instance = copy.deepcopy(e.network)
+    e.freeze_network = True
+    with cost.Meter() as mg:
+        run_greedy(e, max_steps=80, verbose=False)
+    e.network = copy.deepcopy(instance)
+    e.reset()
+    with cost.Meter() as ms:
+        run_spectral(e, max_steps=80, verbose=False)
+    e.freeze_network = False
+    assert ms.total() < mg.total()
+    assert ms.counts["score_network"] < mg.counts["score_network"]
+
+
+def test_the_closed_form_landscape_refuses_a_score_it_cannot_express(make_env):
+    e = make_env(n=5, domains="R^3", state_score_type="Weighted")
+    e.reset()
+    with pytest.raises(ValueError, match="closed-form"):
+        phi_landscape(e)
+
+
+@pytest.mark.parametrize("runner", ["degree", "anneal", "spectral"])
+def test_the_new_baselines_end_rigid_and_report_their_graph(make_env, runner):
+    """A row without `edges` silently vanishes from the formation figures."""
+    e = make_env(n=6, domains="R^3", max_steps=80,
+                 termination_condition_type="MaxSteps")
+    rng = np.random.default_rng(0)
+    for _ in range(3):
+        e.reset()
+        if runner == "degree":
+            res = run_degree(e, rng, verbose=False)
+        elif runner == "anneal":
+            res = run_anneal(e, rng, budget=300, verbose=False)
+        else:
+            res = run_spectral(e, max_steps=80, verbose=False)
+        assert res["is_IBR"], res
+        assert res["edges"] is not None and res["edges"].sum() == res["m"]
+
+
+def test_anneal_spends_exactly_its_budget_and_repeats_under_a_fixed_rng(make_env):
+    e = make_env(n=6, domains="R^3", max_steps=80,
+                 termination_condition_type="MaxSteps")
+    e.reset()
+    instance = copy.deepcopy(e.network)
+    e.freeze_network = True
+    with cost.Meter() as m:
+        a = run_anneal(e, np.random.default_rng(7), budget=200, verbose=False)
+    e.network = copy.deepcopy(instance)
+    e.reset()
+    b = run_anneal(e, np.random.default_rng(7), budget=200, verbose=False)
+    e.freeze_network = False
+    # one baseline score, then one per proposal
+    assert m.counts["score_network"] == 201
+    assert a["score"] == b["score"] and a["m"] == b["m"]
+
+
+def test_degree_reads_nothing_but_degrees_and_the_rigidity_test(make_env):
+    """No marginal ranks, no spectrum: that is what makes it the tier-1 reference."""
+    e = make_env(n=6, domains="R^3", max_steps=80,
+                 termination_condition_type="MaxSteps")
+    e.reset()
+    with cost.Meter() as m:
+        run_degree(e, np.random.default_rng(0), verbose=False)
+    for forbidden in ("candidate_gain", "removal_costs", "nullspace_and_softest",
+                      "score_network"):
+        assert m.counts.get(forbidden, 0) == 0, forbidden
+
+
 def test_score_network_agrees_with_the_environment(make_env):
     e = make_env(n=6, domains="R^3")
     e.reset()
@@ -70,6 +170,58 @@ def test_score_network_agrees_with_the_environment(make_env):
     brm = e.network.extended_bearing_rigidity_matrix()
     mbr2, ibr2, rank2 = e.network.is_MBR(rank_K=e.rank_K, brm=brm)
     assert (ibr, mbr, rank) == (ibr2, mbr2, rank2)
+
+
+def _panel_row(method, episode=0, is_IBR=True):
+    return {"episode": episode, "method": method, "is_IBR": is_IBR,
+            "edges": np.zeros((3, 3), dtype=bool), "m": 5}
+
+
+def test_the_formation_figures_never_drop_the_policy():
+    """The panel cap picks by FORMATION_PRIORITY, not by the table's order.
+
+    `learned` sits second to last in METHOD_ORDER, so a cap applied in display order
+    drops the one method the figures exist to show.
+    """
+    rows = [_panel_row(m) for m in report.METHOD_ORDER]
+    drawn = [r["method"] for r in report._panel_rows(rows)]
+    assert "learned" in drawn, drawn
+
+
+def test_the_panel_cap_keeps_the_policy_even_when_it_bites():
+    rows = [_panel_row(m) for m in report.METHOD_ORDER]
+    assert len(rows) > 3
+    saved = report.MAX_FORMATION_PANELS
+    try:
+        report.MAX_FORMATION_PANELS = 3
+        drawn = [r["method"] for r in report._panel_rows(rows)]
+        assert len(drawn) == 3
+        assert "learned" in drawn, drawn
+        # and the reader is told what went missing
+        note = report._panel_cap_note(rows)
+        assert note and "not drawn here" in note
+    finally:
+        report.MAX_FORMATION_PANELS = saved
+
+
+def test_panels_are_drawn_in_the_table_order_they_were_not_chosen_in():
+    """Selection is by priority; display stays METHOD_ORDER so the panels read as the table."""
+    rows = [_panel_row(m) for m in ("learned", "greedy", "random")]
+    drawn = [r["method"] for r in report._panel_rows(rows)]
+    assert drawn == ["random", "greedy", "learned"]
+
+
+def test_a_flexible_network_has_no_panel():
+    """No rigidity, no error ellipsoid and no softest mode -- there is nothing to draw."""
+    rows = [_panel_row("greedy"), _panel_row("initial", is_IBR=False)]
+    assert [r["method"] for r in report._panel_rows(rows)] == ["greedy"]
+
+
+def test_the_panel_grid_leaves_at_most_one_empty_cell_past_four():
+    for count in range(5, 10):
+        nrows, ncols = report._grid_for(count)
+        assert nrows * ncols >= count
+        assert nrows * ncols - count <= 1, (count, nrows, ncols)
 
 
 def test_gmean_and_gsd_on_known_values():

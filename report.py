@@ -5,6 +5,7 @@ direction is better, jargon is spelled out in a legend, and the two different me
 old `steps` column carried are split into `work` and `best@`.
 """
 
+import contextlib
 import copy
 import csv
 import json
@@ -14,6 +15,8 @@ import textwrap
 from datetime import datetime
 
 import numpy as np
+
+import cost
 
 # ── palette ───────────────────────────────────────────────────────────────────────────
 # Data-viz reference palette, unchanged.
@@ -30,18 +33,38 @@ METHOD_STYLE = {
     "learned": {"color": "#eb6834", "ls": "-",  "z": 4},   # slot 2
     "random":  {"color": "#1baf7a", "ls": "-",  "z": 2},   # slot 3
     "constructive": {"color": "#7d4bb5", "ls": "-", "z": 3},   # slot 4
+    "degree":  {"color": "#eda100", "ls": "-",  "z": 2},   # slot 5
+    "spectral": {"color": "#008300", "ls": "-", "z": 3},   # slot 6
+    "anneal":  {"color": "#e87ba4", "ls": "-",  "z": 2},   # slot 7
     "initial": {"color": MUTED,     "ls": ":",  "z": 1},   # reference
     "optimal": {"color": INK_2,     "ls": "--", "z": 5},   # reference
 }
-# slot 3 (aqua) sits below 3:1 on the light surface, so the relief rule applies: every
-# series carries a direct label at its line end, and the table view always ships.
+# Ordered as METHOD_ORDER draws them, the seven hues clear the adjacent-pair gates:
+# worst CVD dE 9.1, worst normal-vision dE 22.9. Aqua, yellow and magenta sit below 3:1
+# on the light surface, so the relief rule applies: every series carries a direct label
+# at its line end, and the table view always ships.
 
-METHOD_ORDER = ["initial", "random", "greedy", "constructive", "learned", "optimal"]
+METHOD_ORDER = ["initial", "random", "degree", "greedy", "spectral", "anneal",
+                "constructive", "learned", "optimal"]
+
+# The formation figures draw one 3-D panel per method. Every panel is a fixed width, so
+# `_grid_for` widens the figure rather than shrinking them and this cap bounds height.
+MAX_FORMATION_PANELS = 9
+
+# Which panels survive that cap, which is NOT the table's order. These figures exist to
+# compare the policy against its opponents, so `learned` is never the one dropped, and
+# `initial` is the reference the rest are read against. Selection uses this; drawing
+# order stays METHOD_ORDER so the panels read the way the table does.
+FORMATION_PRIORITY = ["learned", "initial", "greedy", "optimal", "constructive",
+                      "spectral", "anneal", "degree", "random"]
 
 METHOD_BLURB = {
     "initial": "the random graph each method starts from",
     "random":  "uniform random actions, the floor any method should beat",
+    "degree":  "connects the least-connected pair until rigid, then prunes",
     "greedy":  "repeatedly applies the single best edge change until none helps",
+    "spectral": "greedy's hill climb, read off the rigidity algebra directly",
+    "anneal":  "random changes, accepting worse ones ever less often",
     "constructive": "builds from the empty graph, keeping any edge that raises rank(B)",
     "learned": "the trained policy",
     "optimal": "exhaustive search over every graph (small networks only)",
@@ -49,6 +72,22 @@ METHOD_BLURB = {
 
 # both formats, one directory each under plots/
 PLOT_FORMATS = ("pdf", "png")
+
+# Every figure is written twice under the same name, the second with `-plain` appended:
+# one carries the title block and the notes card, one is the panels alone. Plain is not
+# raw -- everything inside the axes stays, since without it the plot cannot be read.
+_PLAIN = False
+
+
+@contextlib.contextmanager
+def plain():
+    """Draw the panels only, and file them under `<name>-plain`."""
+    global _PLAIN
+    was, _PLAIN = _PLAIN, True
+    try:
+        yield
+    finally:
+        _PLAIN = was
 
 ACTION_SHORT = {
     "SelectNodesSequentially": "selectseq",
@@ -150,6 +189,88 @@ def _noise_summary(sel):
     return out
 
 
+def _cost_summary(sel):
+    """Mean calls per primitive, and the wall time, over the episodes carrying them.
+
+    None when the rows predate the counters or came from an archived environment,
+    which is not the same as a method that cost nothing.
+    """
+    metered = [r for r in sel if r.get("cost") is not None]
+    if not metered:
+        return None
+    keys = sorted({k for r in metered for k in r["cost"]})
+    out = {"episodes": len(metered),
+           "calls": {k: float(np.mean([r["cost"].get(k, 0) for r in metered])) for k in keys}}
+    out["total"] = sum(out["calls"].get(k, 0.0) for k in cost.LEAVES)
+    ms = [r["ms"] for r in metered if r.get("ms")]
+    out["ms_gmean"], out["ms_gsd"] = _gmean(ms), _gsd(ms)
+    return out
+
+
+# The columns of the cost block, in the order a method reaches them. `score_network` and
+# the forward pass are what a method decides with; the rest is what those decisions cost.
+COST_COLUMNS = [
+    ("score_network", "phi"),
+    ("deterministic_action", "fwd"),
+    ("forward", "fwd*"),
+    ("extended_bearing_rigidity_matrix", "build B"),
+    ("rigidity_decomposition", "svd"),
+    ("nullspace", "null"),
+    ("nullspace_and_softest", "null+v"),
+    ("candidate_gain", "cand"),
+    ("removal_costs", "remove"),
+    ("edge_block_ranks", "blocks"),
+    ("is_IBR_explicit", "rigid?"),
+    ("eigenvalues", "eig"),
+]
+
+
+def _cost_block(agg):
+    """What each method spent, as counted calls and wall time. [] when nothing was metered."""
+    metered = {m: v["cost"] for m, v in agg.items() if v.get("cost")}
+    if not metered:
+        return []
+    used = [(k, h) for k, h in COST_COLUMNS
+            if any(c["calls"].get(k, 0) for c in metered.values())]
+    other = sorted({k for c in metered.values() for k in c["calls"]}
+                   - {k for k, _ in COST_COLUMNS} - {"_reporting"})
+
+    lines = ["COMPUTATIONAL COST PER NETWORK",
+             "  " + "method".ljust(13) + "".join(h.rjust(10) for _, h in used)
+             + "total".rjust(10) + "ms".rjust(14)]
+    for m, c in metered.items():
+        cells = "".join(f"{c['calls'].get(k, 0):.0f}".rjust(10) for k, _ in used)
+        ms = "-" if c["ms_gmean"] is None else f"{c['ms_gmean']:.1f} x/{c['ms_gsd']:.1f}"
+        lines.append(f"  {m:<13}{cells}{c['total']:>10.0f}{ms:>14}")
+    if other:
+        lines.append(f"  not shown: {', '.join(other)}")
+    # --replay-env execs an archived rigidity.py, which carries no counters. A method
+    # that evaluated phi without any matrix work did not do it for free, it was not seen.
+    blind = [m for m, c in metered.items()
+             if c["calls"].get("score_network", 0) > 0 and c["total"] == 0]
+    if blind:
+        lines.append(f"  UNMEASURED for {', '.join(blind)}: the rigidity primitives were "
+                     f"not counted, which an archived environment does not carry")
+    lines.append("")
+    return lines
+
+
+def cost_legend():
+    """What one call of each counted primitive actually does."""
+    out = ["  These are counts of CALLS, not of work. One `null` is an eigendecomposition",
+           "  of a 6n x 6n matrix and one `blocks` is m rank computations on 3 x 6n slices,",
+           "  and both count as one, which is what the ms column is there to weigh. ms is a",
+           "  geometric mean and spread over the networks, and it depends on the machine and",
+           "  its load in a way the counts do not; measure it with BLAS pinned to one thread.",
+           "  total sums only the primitives that call no other, so nothing is counted twice.",
+           ""]
+    for key, head in COST_COLUMNS:
+        op = cost.OPERATION.get(key)
+        if op:
+            out.append(f"  {head:<9} {key} - {op}")
+    return out
+
+
 def aggregate(rows):
     """{method: {...}} means/sds over episodes, in a stable display order."""
     methods = [m for m in METHOD_ORDER if any(r["method"] == m for r in rows)]
@@ -194,6 +315,7 @@ def aggregate(rows):
             "work_sd": float(np.std([r.get("work", 0) for r in sel])),
             "best_at_mean": float(np.mean([r.get("best_at", 0) for r in sel])),
             "best_at_sd": float(np.std([r.get("best_at", 0) for r in sel])),
+            "cost": _cost_summary(sel),
             "matches_opt_pct": (100.0 * sum(1 for r in matched
                                             if r["score"] >= opt[r["episode"]] - 1e-9)
                                 / len(matched)) if matched else None,
@@ -207,10 +329,10 @@ def format_table(rows, context, brief=False):
     has_opt = any(v["matches_opt_pct"] is not None for v in agg.values())
     lines = []
 
-    head1 = (f"  {'method':<9}{'edges':>12}{'score':>14}{'rigid':>8}{'minimal':>9}"
-             f"{'stiffness(geo)':>17}{'shape err':>16}{'work':>11}{'best@':>12}")
-    head2 = (f"  {'':<9}{'(fewer)':>12}{'(higher)':>14}{'%':>8}{'%':>9}"
-             f"{'gmean x/gsd':>17}{'gmean x/gsd':>16}{'edits':>11}{'step':>12}")
+    head1 = (f"  {'method':<13}{'edges':>12}{'score':>14}{'rigid':>8}{'minimal':>9}"
+             f"{'stiffness(geo)':>17}{'shape err':>16}{'work':>13}{'best@':>12}")
+    head2 = (f"  {'':<13}{'(fewer)':>12}{'(higher)':>14}{'%':>8}{'%':>9}"
+             f"{'gmean x/gsd':>17}{'gmean x/gsd':>16}{'edits':>13}{'step':>12}")
     if has_opt:
         head1 += f"{'=best':>7}"
         head2 += f"{'%':>7}"
@@ -232,12 +354,12 @@ def format_table(rows, context, brief=False):
         ref = m in ("initial", "optimal")
         work = "-" if ref else _fmt(v["work_mean"], v["work_sd"], ".1f")
         best = "-" if ref else _fmt(v["best_at_mean"], v["best_at_sd"], ".1f")
-        row = (f"  {m:<9}"
+        row = (f"  {m:<13}"
                f"{_fmt(v['edges_mean'], v['edges_sd']):>12}"
                f"{_fmt(v['score_mean'], v['score_sd']):>14}"
                f"{v['rigid_pct']:>8.0f}{v['minimal_pct']:>9.0f}"
                f"{_fmt_geo(v):>17}{_fmt_geo(v, key='shape_err'):>16}"
-               f"{work:>11}{best:>12}")
+               f"{work:>13}{best:>12}")
         if has_opt:
             row += ("-" if v["matches_opt_pct"] is None
                     else f"{v['matches_opt_pct']:.0f}").rjust(7)
@@ -267,13 +389,15 @@ def format_table(rows, context, brief=False):
                          "in the average")
         lines.append("")
 
+    lines.extend(_cost_block(agg))
+
     if brief:
         return "\n".join(lines)
 
     lines.append("-" * w)
     lines.append("WHAT THE METHODS ARE")
     for m in agg:
-        lines.append(f"  {m:<9} {METHOD_BLURB.get(m, '')}")
+        lines.append(f"  {m:<13} {METHOD_BLURB.get(m, '')}")
     lines.append("")
     lines.append("WHAT THE COLUMNS MEAN")
     lines.append("  edges     how many directed bearing measurements the final network")
@@ -308,6 +432,9 @@ def format_table(rows, context, brief=False):
         lines.append("  =best     percent of networks where the method tied the exhaustive")
         lines.append("            optimum.")
     lines.append("")
+    if any(v.get("cost") for v in agg.values()):
+        lines.append("WHAT THE COST BLOCK MEANS")
+        lines.extend(cost_legend())
     if sweep:
         lines.append("  The noise block perturbs every bearing by that many degrees,")
         lines.append("  recovers the formation from the noisy measurements and reports the")
@@ -353,6 +480,26 @@ def write_csvs(run_dir, rows, traces):
                 wr.writerow(t)
 
 
+def write_costs(run_dir, rows):
+    """One row per (episode, method) with every counter. The legend goes beside it."""
+    metered = [r for r in rows if r.get("cost") is not None]
+    if not metered:
+        return False
+    keys = sorted({k for r in metered for k in r["cost"]})
+    with open(os.path.join(run_dir, "cost.csv"), "w", newline="") as f:
+        wr = csv.DictWriter(f, fieldnames=["episode", "method", "ms", "total"] + keys)
+        wr.writeheader()
+        for r in metered:
+            row = {"episode": r.get("episode"), "method": r["method"],
+                   "ms": round(r.get("ms", 0.0), 3),
+                   "total": sum(r["cost"].get(k, 0) for k in cost.LEAVES)}
+            row.update({k: r["cost"].get(k, 0) for k in keys})
+            wr.writerow(row)
+    with open(os.path.join(run_dir, "cost.txt"), "w") as f:
+        f.write("\n".join(cost_legend()) + "\n")
+    return True
+
+
 def write_meta(run_dir, meta):
     with open(os.path.join(run_dir, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2, default=str)
@@ -387,6 +534,17 @@ STAT_BLURB = {
 
 
 # ── headers and cards ─────────────────────────────────────────────────────────────────
+def _clip(text, width_in, fontsize):
+    """Trim to a physical width. The card's two columns must not run into each other.
+
+    0.50 em per character where _wrap uses 0.60: wrapping has to over-estimate or the
+    card is sized for fewer lines than it draws, and clipping has to under-estimate or
+    it eats the end of a line that would have fitted.
+    """
+    chars = max(16, int(width_in * 72.0 / (fontsize * 0.50)))
+    return text if len(text) <= chars else text[:chars - 1].rstrip() + "\u2026"
+
+
 def _wrap(text, width_in, fontsize):
     """Wrap to a physical width, since the strings here are long generated identifiers.
 
@@ -520,7 +678,8 @@ def _draw_card(fig, methods, notes, width_in, card_h):
                                  style["color"], style["ls"]))
         fig.text(col_l + 0.040, y, name, color=INK, fontsize=7.8, va="center")
         if blurb:
-            fig.text(col_l + 0.108, y, blurb, color=INK_2, fontsize=7.5, va="center")
+            fig.text(col_l + 0.108, y, _clip(blurb, width_in * (col_r - col_l - 0.12), 7.5),
+                     color=INK_2, fontsize=7.5, va="center")
 
     for i, (line, heading) in enumerate(right):
         y = top - i * step
@@ -532,6 +691,19 @@ def _fig_line(fig, xs, ys, color, ls):
     from matplotlib.lines import Line2D
     return Line2D(xs, ys, transform=fig.transFigure, color=color, linestyle=ls,
                   linewidth=2.4, solid_capstyle="round", zorder=3)
+
+
+def _method_ticklabels(ax, methods, fontsize=8.5):
+    """Method names under an axis, tilted once there are too many to sit flat.
+
+    `constructive` is twelve characters and eight of them do not fit across a half-width
+    panel, so past six the labels tilt rather than run into each other.
+    """
+    if len(methods) > 6:
+        ax.set_xticklabels(methods, fontsize=fontsize, rotation=30, ha="right",
+                           rotation_mode="anchor")
+    else:
+        ax.set_xticklabels(methods, fontsize=fontsize)
 
 
 def _panel_title(ax, title, note):
@@ -560,7 +732,7 @@ def _panel_title_3d(ax, title, note):
              ha="left", va="top")
 
 
-def _style_axes(ax, log=False):
+def _style_axes(ax, log=False, logx=False):
     ax.set_facecolor(SURFACE)
     ax.grid(True, color=GRID, linewidth=0.8, zorder=0)
     ax.set_axisbelow(True)
@@ -577,6 +749,10 @@ def _style_axes(ax, log=False):
         ax.set_yscale("log")
         # decade labels only; the default adds 2x/3x/4x minor labels on a short range
         ax.yaxis.set_minor_formatter(NullFormatter())
+    if logx:
+        from matplotlib.ticker import NullFormatter
+        ax.set_xscale("log")
+        ax.xaxis.set_minor_formatter(NullFormatter())
 
 
 def _series(traces, method, field):
@@ -683,15 +859,15 @@ def _figure(header, kind, methods, notes, panel_h=3.6, width=11.0, panels=(2, 2)
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    head_h = _header_height(header, width)
-    card_h = _card_height(methods, notes, width)
+    head_h = 0.0 if _PLAIN else _header_height(header, width)
+    card_h = 0.0 if _PLAIN else _card_height(methods, notes, width)
     nrows, ncols = panels
     fig_h = nrows * panel_h + head_h + card_h
     fig = plt.figure(figsize=(width, fig_h), facecolor=SURFACE)
     # a 3-D caller adds its own projection="3d" panels
     axes = ([] if axes3d
             else [fig.add_subplot(nrows, ncols, i + 1) for i in range(nrows * ncols)])
-    top = _draw_header(fig, header, kind)
+    top = 1.0 if _PLAIN else _draw_header(fig, header, kind)
     return fig, axes, (card_h, card_h / fig_h), top, width
 
 
@@ -700,7 +876,8 @@ def _finish(fig, card, methods, notes, width, top, run_dir, name, tight=True):
     # a figure that placed its own panels (the 3-D ones) must not be re-laid out
     if tight:
         fig.tight_layout(rect=(0, bottom, 1, top), h_pad=1.6, w_pad=2.0)
-    _draw_card(fig, methods, notes, width, card_h)
+    if not _PLAIN:
+        _draw_card(fig, methods, notes, width, card_h)
     return _save(fig, run_dir, name)
 
 
@@ -865,7 +1042,7 @@ def plot_outcomes(run_dir, traces, rows, header, filename="outcomes"):
                             va="bottom", zorder=6)
 
         ax.set_xticks(x)
-        ax.set_xticklabels(methods, fontsize=8.5)
+        _method_ticklabels(ax, methods)
         # which bar is which -- one line under the axis beats a legend or a rotated
         # label per bar, and the shading order is the same in every panel
         ax.set_xlabel("bars in each group, left to right:   final  ·  best  ·  mean",
@@ -1049,20 +1226,51 @@ def _nice_factor(x):
 
 
 def _grid_for(count):
-    """Panel grid that does not leave a hole: 1x1, 1x2, 2x2, then rows of three."""
+    """Panel grid leaving as few empty cells as possible: 1x1, 1x2, 2x2, then 3 or 4 wide.
+
+    Every panel is a fixed width, so more columns is a wider figure rather than smaller
+    panels. Ties go to the narrower grid. Seven panels are 4x2 with one hole rather than
+    3x3 with two, which is a third of the figure left blank.
+    """
     if count <= 2:
         return 1, count
     if count <= 4:
         return 2, 2
-    return int(np.ceil(count / 3)), 3
+    ncols = min((3, 4), key=lambda c: (c * int(np.ceil(count / c)) - count, c))
+    return int(np.ceil(count / ncols)), ncols
+
+
+def _panel_cap_note(rows, episode=0):
+    """Say which methods the panel cap left out, rather than letting them vanish."""
+    shown = {r["method"] for r in _panel_rows(rows, episode)}
+    dropped = [m for m in METHOD_ORDER
+               if m not in shown and any(r["method"] == m and r.get("edges") is not None
+                                         and r.get("is_IBR") for r in rows
+                                         if r.get("episode") == episode)]
+    if not dropped:
+        return None
+    return (f"One panel per method does not fit more than {MAX_FORMATION_PANELS}, so "
+            f"{', '.join(dropped)} {'is' if len(dropped) == 1 else 'are'} not drawn here. "
+            f"The policy and the reference are kept first. The comparison table carries "
+            f"every method.")
+
+
+def _rank_in(order, method):
+    return order.index(method) if method in order else len(order)
 
 
 def _panel_rows(rows, episode=0):
-    """The rows one formation figure draws, in display order."""
+    """The rows one formation figure draws, in display order.
+
+    A flexible network has no error ellipsoid and no softest mode, so it cannot have a
+    panel at all -- that filter is why `initial` is often absent. What survives past it
+    is chosen by FORMATION_PRIORITY and then drawn in METHOD_ORDER.
+    """
     sel = [r for r in rows if r.get("episode") == episode
            and r.get("edges") is not None and r.get("is_IBR")]
-    return sorted(sel, key=lambda r: METHOD_ORDER.index(r["method"])
-                  if r["method"] in METHOD_ORDER else 99)
+    keep = sorted(sel, key=lambda r: _rank_in(FORMATION_PRIORITY, r["method"]))
+    keep = keep[:MAX_FORMATION_PANELS]
+    return sorted(keep, key=lambda r: _rank_in(METHOD_ORDER, r["method"]))
 
 
 def _which_graph(row):
@@ -1079,6 +1287,7 @@ def plot_uncertainty(run_dir, instances, rows, header, sigma=0.0175,
     ep_rows = _panel_rows(rows)
     if not ep_rows:
         return None
+    cap_note = _panel_cap_note(rows)
 
     P = np.array([a.pose.position for a in net.agents], dtype=float)
     radius = float(np.sqrt(np.mean(((P - P.mean(axis=0)) ** 2).sum(axis=1)))) or 1.0
@@ -1112,6 +1321,8 @@ def plot_uncertainty(run_dir, instances, rows, header, sigma=0.0175,
         f"and the same factor is used in every panel so the panels compare.",
         "Arrows run from the measuring agent to the one it measures.",
     ]
+    if cap_note:
+        notes.append(cap_note)
     dom = _domain_note(net)
     if dom:
         notes.append(dom)
@@ -1148,6 +1359,7 @@ def plot_softest_mode(run_dir, instances, rows, header, filename="softest_mode")
     ep_rows = _panel_rows(rows)
     if not ep_rows:
         return None
+    cap_note = _panel_cap_note(rows)
 
     P = np.array([a.pose.position for a in net.agents], dtype=float)
     span = float(np.abs(P - P.mean(axis=0)).max()) or 1.0
@@ -1175,6 +1387,8 @@ def plot_softest_mode(run_dir, instances, rows, header, filename="softest_mode")
         "The rigidity eigenvalue above each panel says how soft that mode is. Smaller "
         "means the bearings resist the deformation less. Larger is better.",
     ]
+    if cap_note:
+        notes.append(cap_note)
     dom = _domain_note(net)
     if dom:
         notes.append(dom)
@@ -1210,6 +1424,7 @@ def plot_sensitivity(run_dir, instances, rows, header, filename="sensitivity"):
     ep_rows = _panel_rows(rows)
     if not ep_rows:
         return None
+    cap_note = _panel_cap_note(rows)
 
     P = np.array([a.pose.position for a in net.agents], dtype=float)
     methods = [r["method"] for r in ep_rows]
@@ -1222,6 +1437,8 @@ def plot_sensitivity(run_dir, instances, rows, header, filename="sensitivity"):
         "contributed by every bearing that agent takes, so a large marker is an agent "
         "whose own sensing carries much of the total.",
     ]
+    if cap_note:
+        notes.append(cap_note)
     dom = _domain_note(net)
     if dom:
         notes.append(dom)
@@ -1480,7 +1697,7 @@ def plot_summary(run_dir, rows, header):
             for artist in bp[part]:
                 artist.set_color(AXIS)
         ax.set_xticks(range(1, len(labels) + 1))
-        ax.set_xticklabels(labels, fontsize=8.5)
+        _method_ticklabels(ax, labels)
         _style_axes(ax)
         _panel_title(ax, title, note)
 
@@ -1503,7 +1720,7 @@ def plot_summary(run_dir, rows, header):
         ax.annotate(f"{b:.0f}", xy=(xi + 0.19, b), xytext=(0, 3),
                     textcoords="offset points", ha="center", fontsize=7.5, color=INK_2)
     ax.set_xticks(x)
-    ax.set_xticklabels(methods, fontsize=8.5)
+    _method_ticklabels(ax, methods)
     ax.set_ylim(0, 112)
     _style_axes(ax)
     _panel_title(ax, "Networks solved",
@@ -1521,6 +1738,75 @@ def plot_summary(run_dir, rows, header):
         _panel_title(ax, "Steps to the best network", "no rollout method was run")
 
     return _finish(fig, card, methods, notes, width, top, run_dir, "summary")
+
+
+def plot_cost(run_dir, rows, header, filename="cost"):
+    """What each method spent to get its answer, and what that bought.
+
+    Counts are machine independent; the milliseconds are not, and are shown beside them
+    because a call count alone weighs an eigendecomposition of a 6n x 6n matrix the same
+    as a rank of a 3 x 6n slice.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+
+    agg = aggregate(rows)
+    metered = {m: v for m, v in agg.items() if v.get("cost") and v["cost"]["total"] > 0}
+    if not metered:
+        return None
+    methods = list(metered)
+    colors = [METHOD_STYLE.get(m, {}).get("color", INK_2) for m in methods]
+    totals = [metered[m]["cost"]["total"] for m in methods]
+    times = [metered[m]["cost"]["ms_gmean"] or 0.0 for m in methods]
+    edges = [metered[m]["edges_mean"] for m in methods]
+    work = [max(metered[m]["work_mean"], 1.0) for m in methods]
+
+    notes = [
+        "Counts are calls to the rigidity primitives, summed over the ones that call no "
+        "other so nothing is counted twice. They are the same on any machine.",
+        "Milliseconds are a geometric mean over the networks. They depend on the machine "
+        "and its load, which is why the counts are shown beside them.",
+        "A method whose whole cost is reporting rather than searching is left out of "
+        "these panels: initial computes nothing, and optimal is exhaustive search.",
+        "Cost per change divides the total by the number of edge changes the method "
+        "applied, separating an expensive decision from many cheap ones.",
+    ]
+    fig, axes, cardspec, top, width = _figure(header, "What each method costs",
+                                              methods, notes)
+
+    def hbar(ax, values, title, note, fmt="{:.0f}"):
+        y = np.arange(len(methods))
+        ax.barh(y, values, color=colors, alpha=0.9, zorder=3, height=0.62)
+        ax.set_yticks(y)
+        ax.set_yticklabels(methods, fontsize=8.5)
+        ax.invert_yaxis()
+        for yi, v in zip(y, values):
+            ax.annotate(fmt.format(v), xy=(v, yi), xytext=(4, 0),
+                        textcoords="offset points", va="center", fontsize=7.5, color=INK_2)
+        _style_axes(ax, logx=True)
+        ax.set_xlim(right=max(values) * 3.0)
+        _panel_title(ax, title, note)
+
+    hbar(axes[0], totals, "Rigidity computations per network",
+         "calls to the primitives - lower is cheaper")
+    hbar(axes[1], times, "Time per network",
+         "milliseconds, geometric mean - lower is cheaper", fmt="{:.1f}")
+
+    ax = axes[2]
+    ax.scatter(totals, edges, s=64, c=colors, zorder=3, edgecolors=SURFACE, linewidths=1.5)
+    for m, x, y in zip(methods, totals, edges):
+        ax.annotate(m, xy=(x, y), xytext=(6, 4), textcoords="offset points",
+                    fontsize=8, color=INK_2)
+    ax.set_xlabel("rigidity computations per network", color=INK_2, fontsize=8.5)
+    ax.set_ylabel("edges", color=INK_2, fontsize=8.5)
+    _style_axes(ax, logx=True)
+    _panel_title(ax, "What the computation buys",
+                 "edges against cost - down and to the left is better")
+
+    hbar(axes[3], [t / w for t, w in zip(totals, work)], "Cost per edge change",
+         "computations per change applied - lower decides more cheaply", fmt="{:.1f}")
+
+    return _finish(fig, cardspec, methods, notes, width, top, run_dir, filename)
 
 
 # ── the table, as a figure ────────────────────────────────────────────────────────────
@@ -1591,13 +1877,13 @@ def plot_table(run_dir, rows, header, filename="table", width=12.0):
     cols = [c for c in TABLE_COLUMNS if c["key"] != "opt" or has_opt]
     notes = [n for n in TABLE_NOTES if has_opt or not n.startswith("= best")]
 
-    head_h = _header_height(header, width)
-    card_h = _card_height(methods, notes, width)
+    head_h = 0.0 if _PLAIN else _header_height(header, width)
+    card_h = 0.0 if _PLAIN else _card_height(methods, notes, width)
     row_h, head_row_h = 0.30, 0.52
     table_h = head_row_h + row_h * len(methods) + 0.30
     fig_h = head_h + table_h + card_h
     fig = plt.figure(figsize=(width, fig_h), facecolor=SURFACE)
-    top = _draw_header(fig, header, "Baseline comparison")
+    top = 1.0 if _PLAIN else _draw_header(fig, header, "Baseline comparison")
 
     def cell(method, key, v):
         ref = method in ("initial", "optimal")
@@ -1662,7 +1948,8 @@ def plot_table(run_dir, rows, header, filename="table", width=12.0):
             fig.text(cx1 - 0.006, yc, cell(m, c["key"], v), color=INK_2 if ref else INK,
                      fontsize=9, ha="right", va="center", family="monospace")
 
-    _draw_card(fig, methods, notes, width, card_h)
+    if not _PLAIN:
+        _draw_card(fig, methods, notes, width, card_h)
     return _save(fig, run_dir, filename)
 
 
@@ -1671,6 +1958,7 @@ def _save(fig, run_dir, name):
     PDF is what goes in the thesis, PNG is what you actually look at, and mixing them in
     one directory meant scrolling past each figure twice."""
     import matplotlib.pyplot as plt
+    name = f"{name}-plain" if _PLAIN else name
     out = []
     for ext in PLOT_FORMATS:
         directory = os.path.join(run_dir, "plots", ext)

@@ -43,8 +43,11 @@ def load_rows(run_dir):
                 "is_MBR": r["is_MBR"] == "True",
                 "min_eig": _num(r["min_eig"]),
                 "shape_err": _num(r["shape_err"]),
-                "work": int(float(r["work"])),
-                "best_at": int(float(r["best_at"])),
+                "work": int(float(r.get("work") or 0)),
+                "best_at": int(float(r.get("best_at") or 0)),
+                # results.csv does not carry the counters, and a zero here would read
+                # as "free" rather than as "not measured". cost.csv holds them.
+                "cost": None,
             })
     return out
 
@@ -118,7 +121,10 @@ def rerender(run_dir):
     block = noise_block(run_dir)
     if block and "MEASURED SHAPE ERROR" not in table:
         # format_table drops it because the rebuilt rows carry no per-row noise
-        table = table.replace("\n" + "-" * 100, "\n" + block + "\n\n" + "-" * 100, 1)
+        rule = re.search(r"\n-{20,}\n", table)
+        if rule:
+            table = table.replace(rule.group(0),
+                                  "\n" + block + "\n" + rule.group(0), 1)
     report.write_summary(run_dir, table)
 
     made = ["summary.txt"]
@@ -132,20 +138,26 @@ def rerender(run_dir):
             "seed": args["seed"],
             "benchmark": args.get("benchmark"),
         }
-        report.plot_trajectories(run_dir, traces, rows, header)
-        report.plot_outcomes(run_dir, traces, rows, header)
-        report.plot_summary(run_dir, rows, header)
-        report.plot_table(run_dir, rows, dict(header, objective=ctx["objective"],
-                                              policy=ctx.get("policy")))
-        for ep in range(min(args.get("plot_episodes", 3), args["episodes"])):
-            sel = [t for t in traces if t["episode"] == ep]
-            if not sel:
-                continue
-            report.plot_trajectories(
-                run_dir, sel, [r for r in rows if r["episode"] == ep],
-                dict(header, episodes=None, subtitle=f"episode {ep}"),
-                filename=f"episode_{ep:03d}", aggregate_over_episodes=False)
-        made.append(f"plots for {', '.join(REGENERABLE)} and episode_NNN")
+        def draw_all():
+            report.plot_trajectories(run_dir, traces, rows, header)
+            report.plot_outcomes(run_dir, traces, rows, header)
+            report.plot_summary(run_dir, rows, header)
+            report.plot_table(run_dir, rows, dict(header, objective=ctx["objective"],
+                                                  policy=ctx.get("policy")))
+            for ep in range(min(args.get("plot_episodes", 3), args["episodes"])):
+                sel = [t for t in traces if t["episode"] == ep]
+                if not sel:
+                    continue
+                report.plot_trajectories(
+                    run_dir, sel, [r for r in rows if r["episode"] == ep],
+                    dict(header, episodes=None, subtitle=f"episode {ep}"),
+                    filename=f"episode_{ep:03d}", aggregate_over_episodes=False)
+
+        draw_all()
+        with report.plain():
+            draw_all()
+        made.append(f"plots for {', '.join(REGENERABLE)} and episode_NNN, "
+                    f"each with its -plain twin")
     return made
 
 

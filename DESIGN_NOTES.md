@@ -1245,6 +1245,145 @@ since `WeightedNormalized` is monotone decreasing in `m` at fixed rank, and phi 
 consistent with the column the table reports. Per-step statistics are computed only for the winning
 restart, by replaying its additions from empty.
 
+### spectral-baseline
+
+`evaluation.py --methods spectral`. Greedy rescores all `n(n-1)` toggles per improvement step. This
+computes the same landscape in closed form from the rigidity algebra, ranks the toggles by it, and
+rescores only the `--spectral-shortlist` best (default 5) before applying one.
+
+**Why the closed form is exact at `stiffness_kappa = 0`.** phi is affine in rank there, so a toggle
+moves it by exactly the rank it adds or costs, and `candidate_gain` / `removal_costs` return that
+for every pair at once. `greedy-vs-policy` above already measured the two landscapes agreeing to
+`4.9e-15`; this turns that measurement into a method. Measured, `spectral` reproduces `greedy` edge
+for edge on 60/60 instances across all five domains at n = 6 and 8, at **3.7x to 6.9x** fewer
+rigidity computations. Over n = 6, 8, 12 the counts grow as `n^0.81` against greedy's `n^2.95`, so
+the gap widens. Both tables come from
+
+```bash
+OMP_NUM_THREADS=1 PYTHONPATH=. uv run tools/cost_scaling.py --episodes 6
+```
+
+**Why it verifies rather than trusting the ranking.** At `stiffness_kappa > 0` the removal side is
+still exact (`remove_stiffness` is a rank-3 downdate) but the addition side is not: an addition's
+true lambda is not available from the current matrix, so the term is `add_stiffness`, a ranking
+prior normalised by its own maximum. Normalised that way it always shows *some* candidate as
+positive, so a hill climb that trusted it never reached a local optimum and ran to its step cap -
+23.5 edges against greedy's 14.3 on the first version of this. Rescoring the shortlist with the
+real phi fixes that at 5 phi evaluations per edit against greedy's `n(n-1)`, and costs nothing at
+`kappa = 0` where the ranking is already exact.
+
+**Two things that are load bearing.** The tie break must be stable in row-major order, because
+greedy's `delta > best_delta` keeps the *first* of a tie and in the `c_max = 2` domains adding a
+rank-1 edge and dropping a redundant one are an exact tie - `np.argsort(...)[::-1]` reverses that
+order and cost 1 instance in 6 in `R^3` and `R^3xS^1`. And `phi_landscape` **raises** on a state
+score outside `WeightedNormalized` / `WeightedNormalizedSpectral`: it hardcodes their `w_rank = 100`
+and `w_edge = 25`, and returning those deltas for `Weighted` would be silently wrong rather than
+loudly wrong.
+
+`removal_costs` grew a `need_stiffness` flag for this. Its rank half is `m` 3x3 `eigvalsh`; its
+stiffness half is one `eigvalsh(6n)` **per redundant edge**, the worst scaling in the repository
+(`#observation-cost`). At `kappa = 0` nothing reads it, and computing it anyway would throw away
+the cost advantage the method exists to demonstrate.
+
+`tools/greedy_landscape.py` imports `phi_landscape` rather than keeping its own copy. That script
+exists to check the closed form against brute force, so a second implementation of the formula
+there would make the check meaningless.
+
+### anneal-baseline
+
+`evaluation.py --methods anneal`. Simulated annealing over single-edge toggles on the configured
+phi: accept an improvement, accept a worsening with probability `exp(dphi/T)`, cool geometrically.
+Scored on best-state-visited, since the last state of an annealer is not its best.
+
+**Why it is here.** Greedy's guarantee comes from submodularity, and the stiffness is not
+submodular - 59% of tested triples violate diminishing returns ([THEORY.md](THEORY.md) 14.4). Above
+`stiffness_kappa = 0` greedy is hill climbing an objective it has no claim on, and a method that
+assumes nothing is the right thing to hold it to.
+
+**What it has actually shown so far is nothing conclusive, in either direction.** Two six-instance
+runs disagree: at `kappa = 2` on `random8` it beat greedy (14.00 edges and 100% minimal against
+14.33 and 67%), at `kappa = 10` on `mixed` it lost (17.50 and 67% against 17.17 and 100%). Six
+instances and one seed cannot separate those, and the controlled experiment - both arms on a frozen
+50-instance benchmark, three seeds, read on `shape err` rather than on edges - has not been run.
+Treat the rows as a working implementation rather than a result.
+
+**Temperature is denominated in phi's own units.** `one_edge = w_edge*c_max/rank_K` is what phi
+charges for an edge, so `T0 = one_edge` accepts a one-edge worsening at `e^-1` and `T1 = T0/100`
+essentially refuses it. Stated that way the schedule transfers across `n` and domain the way phi
+does; stated in absolute phi it would not.
+
+**The budget is greedy's, measured rather than guessed.** `--anneal-budget` counts phi evaluations,
+and the default is exactly what `greedy` spent on *that instance*, read off the `cost.py` counters
+in the same episode loop. Falls back to `4n(n-1)` when greedy is not in `--methods`. "Budget
+matched" is a claim that has to be shown, so the realised count is in the cost block. Own RNG, for
+the reason in `#constructive-baseline`.
+
+### degree-baseline
+
+`evaluation.py --methods degree`. Add the absent pair minimising `outdeg(i) + indeg(j)` until the
+network is rigid, then repeatedly drop the highest-degree edge whose removal keeps it rigid.
+
+It exists to price the tier-1 row of `#distributed-feasibility`: everything it reads is locally
+available except the rigidity test itself, which is global and unavoidable. No marginal ranks, no
+spectrum, no phi. `tests/test_evaluation_reference.py` pins that by asserting it never calls
+`candidate_gain`, `removal_costs`, `nullspace_and_softest` or `score_network` - a test that fails
+the moment someone "improves" it with information a distributed agent could not have.
+
+Measured on `mixed` (n=10, 6 instances, `stiffness_kappa = 10`): 17.67 edges and 50% minimal at
+**79** rigidity computations, against greedy's 17.17 / 100% at **2252**. Within half an edge for 3%
+of the compute. Two caveats before that means anything: six instances is far too few, and its
+*conditioning* is bad - shape error `2.4e+02` against greedy's `1.2e+01`, which is what an algorithm
+that never looks at geometry should be expected to produce. Reproduce with the command under
+`#cost-counters`.
+
+### cost-counters
+
+`cost.py`. The compute comparison had to be measured rather than argued, and the counting had to
+be non-invasive enough that `rigidity.py` still reads as the mathematics it implements.
+
+**Decorators, not wrapped call sites.** `@counted` on ~18 primitives, one line each, and no call
+site anywhere changes. The alternative considered and rejected was monkey-patching `np.linalg`
+inside the meter: it needs no source change at all, but it is action at a distance in the one
+module where a reader most needs to see what is happening, and it would catch every unrelated
+`np.linalg` call in the process. `functools.wraps` is not optional - `manifest.py` archives sources
+and `agent_loader.build_class_from_source` replays them by name.
+
+**Counting calls to named primitives, not decompositions.** A raw decomposition count would weigh
+`nullspace` (one `eigh` of `6n x 6n`) the same as `edge_block_ranks` (`m` ranks of a `3 x 6n`
+slice), and `candidate_gain` does `n(n-1)` 3x3 eigendecompositions in *one* batched call. Naming
+the primitive and publishing `cost.OPERATION` beside the number says what one call is; the wall
+time is what weighs them. This is also the shape `#observation-cost`'s tables are already in, so
+the two read together.
+
+**`LEAVES` is checked, not asserted.** The headline total sums only primitives that call no other
+counted one, and membership is not obvious from a function's name. `Network.eigenvalues` builds `B`
+itself, and `estimation.solve_shape` builds one per Gauss-Newton iteration, so counting either as a
+leaf would count those builds twice. `tests/test_cost.py` calls every leaf and asserts it tallies
+only itself, which is the only version of this list that survives someone adding a primitive.
+
+**Measurement work is not the method's cost.** Per-step tracing costs an eigendecomposition per
+step and `stats_now` adds a `rigidity_eigenvalue` and a `shape_error_now` to every recorded point.
+Without a split, the same method measured with `--no-plots` and with plots differs by more than the
+methods differ from each other. `@cost.measurement` puts `stats_now`, `edit_landscape`,
+`measure_noise` and `repair_spread` in a separate bucket, so a cost number means the same thing in
+both modes and the instrumentation's own cost is visible as its own row.
+
+**The meter wraps the method, never the restore.** `restore()` deep-copies the instance and calls
+`env.reset()`, which recomputes `rank_K`, `c_max`, `m_req` and the spectral references. That is
+shared setup every method gets for free, so it sits outside the `Meter`.
+
+**What it says, and it is not flattering to the policy.** greedy 2252 rigidity computations,
+`learned` **1424**. Same order, not a different one - the policy's observation does the algebra its
+reward never asks it to use. `#greedy-vs-policy` predicted exactly this ("cost is not the argument")
+from the scaling; this is the measurement. `spectral` is 190. From the cost block of
+
+```bash
+uv run evaluation.py <mixed-config> --episodes 6 --methods all \
+    --model estimation_k10_dqn_gine --no-plots
+```
+
+Six instances and one seed, so the ordering is the finding and the digits are not.
+
 ### ppo-rollout-size
 
 One constant feeds both the memory size and `cfg.rollouts`, and they must stay equal. skrl's
@@ -1538,6 +1677,69 @@ Colours come from the data-viz reference palette, used unchanged and in its docu
 case (overlapping lines) in both modes. `initial` and `optimal` are *reference points* rather than
 methods under comparison, so they take neutral inks and dashed strokes instead of a categorical
 hue - which also keeps the categorical count at 3.
+
+Three baselines took the count to seven, which the all-pairs certification does not cover. Ordered
+as `METHOD_ORDER` draws them - `random, degree, greedy, spectral, anneal, constructive, learned` -
+the set clears the **adjacent**-pair gates, which is the right pairlist for lines, bars and boxes:
+worst CVD Delta E 9.1, worst normal-vision Delta E 22.9, both against the light surface. That 9.1
+is the reference palette's own worst adjacent pair, so it is a documented-acceptable level rather
+than a new concession. Aqua, yellow and magenta sit below 3:1 contrast, so the relief rule applies,
+which the figures already satisfy: every series carries a direct label at its line end or its tick,
+and the table view always ships.
+
+The one real trade was `spectral`. Giving it magenta maximises adjacent CVD separation at 15.2 but
+puts the headline new baseline at 2.11 contrast; green drops separation to 9.1 and buys 4.82.
+Separation was already clear of its gate, so green won. Red was available and deliberately not
+used: a red series reads as a verdict, and a figure is not where the conclusion goes.
+
+**Validate, do not eyeball.** The skill ships `scripts/validate_palette.js` and this machine has no
+node, so the six checks were ported to Python and checked against the reference palette's published
+numbers (9.1 / 19.6) before being trusted. Reproduce that before changing a hue rather than
+reasoning about Delta E.
+
+### formation-panels
+
+The three formation figures (`uncertainty`, `softest_mode`, `sensitivity`) draw one 3-D panel per
+method, and two rules decide which methods get one.
+
+**A flexible network has no panel at all.** There is no error ellipsoid and no softest mode without
+rigidity, so `_panel_rows` filters on `is_IBR`. This is why `initial` is usually absent: on `mixed`
+it is rigid on 15% of instances.
+
+**What survives the panel cap is chosen by `FORMATION_PRIORITY`, not by `METHOD_ORDER`.** Those are
+different questions. The table wants the classical methods first and the policy last, which is a
+reading order; the figure wants whatever makes the comparison legible, which puts `learned` first
+because the figure exists to show it. Using display order as figure priority silently dropped the
+policy from all three figures the moment the method count passed the cap, since `learned` sits
+second to last in `METHOD_ORDER`. Selection is by priority and *drawing* is still by `METHOD_ORDER`,
+so the panels read in the same order as the table's rows.
+`tests/test_evaluation_reference.py` asserts `learned` survives a cap tight enough to bite.
+
+**The cap bounds height, not width.** Every panel is a fixed 6.8 inches, so `_grid_for` choosing
+more columns widens the figure rather than shrinking the panels. It picks the column count in
+{3, 4} leaving the fewest empty cells, ties going to the narrower grid, which puts seven panels at
+4x2 with one hole instead of 3x3 with two - a third of the figure left blank. At nine the cap and
+the grid coincide.
+
+### plain-figures
+
+Every figure is written twice, the second under `<name>-plain`: one carries the title block and the
+notes card, one is the panels alone, for a document that supplies its own caption.
+
+**Plain does not mean raw.** Panel titles, axis labels, units, reference lines, legends and the
+direct labels that identify a series stay in both, because without them the plot cannot be read.
+What comes off is the header block (which repeats the environment and model names a caption would
+carry) and the notes card. Nothing inside an axes changes, so the two variants cannot disagree.
+
+**One flag, consulted in four places.** `report.plain()` is a context manager over a module-level
+`_PLAIN`; `_figure` zeroes the header and card bands and sets `top = 1.0`, `_finish` skips
+`_draw_card`, `_save` appends the suffix, and `plot_table` does the same three because it builds
+its own figure rather than going through `_figure`. A plot function needs no argument and no
+knowledge of the mechanism, which is why this reaches all twelve figures rather than the one it
+was first hand-rolled for. Callers draw their whole set, then draw it again inside `plain()`.
+
+The 3-D formation figures fall out for free: they place panels inside the band `(top, bottom)` left
+by header and card, and with both zero the panels fill the figure.
 
 ### panel-titles
 

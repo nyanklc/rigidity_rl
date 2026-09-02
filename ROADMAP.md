@@ -37,21 +37,29 @@ cost anything across all three modes -- it is the pruning signal. Raw `bearings`
 
 ## Now
 
-**Baselines from the survey** (Darvariu et al. 2024 §3.2). Beating greedy on a near-solved
-objective means little; these make a claim mean something. All enter `evaluation.py` on the
-existing `run_*(env, ...) -> result(...)` contract.
+**The survey's baselines and a compute axis are in** (`spectral`, `anneal`, `degree`, `cost.py`;
+see `DESIGN_NOTES.md#spectral-baseline` and `#cost-counters`). What they said, and what is left:
 
-- `spectral` -- first-order spectral hill-climb, using `candidate_gain` and `removal_costs`.
-  One eigendecomposition per edit against greedy's `n(n-1)` phi-evaluations.
-- `anneal` -- simulated annealing on the configured phi, **budget-matched to greedy's
-  phi-evaluation count** and reported as such. Assumes no submodularity, which is the right
-  property on a non-submodular objective. Own RNG, like `constructive`.
-- `degree` -- lowest-degree-product addition, highest-degree redundant pruning. No rigidity
-  algebra beyond the rigidity test, so it doubles as the tier-1 distributed-plausible
-  reference from `DESIGN_NOTES.md#distributed-feasibility`.
-- **A compute column.** Greedy spends ~900 phi-evaluations per instance at n=10; the policy
-  spends ~10 forward passes. Nothing reports this, and amortised training against per-instance
-  search is the survey's central argument for RL.
+- **Compute is no longer an argument for the policy.** On `mixed` at n=10 the policy costs 1424
+  rigidity computations against greedy's 2252 -- same order, because its observation does the
+  algebra its reward never asks it to use. `#greedy-vs-policy` predicted this; it is now measured.
+  The honest framing for the thesis is that the policy competes on the *answer*, not on the cost.
+- **`spectral` is greedy at a fraction of the price.** Identical output at `stiffness_kappa = 0`
+  (60/60 instances, five domains) for 3.7-6.9x fewer computations, growing as `n^0.81` against
+  `n^2.95` (`tools/cost_scaling.py`). It replaces `greedy` as the cost-fair opponent at large `n`,
+  where greedy's `O(n^6)` per network is the reason evaluations are capped where they are.
+- **`degree` is the surprise and needs more instances.** 17.67 edges / 50% minimal at 79
+  computations against greedy's 17.17 / 100% at 2252, on six instances. If that survives 50
+  frozen instances it is a result worth stating -- a rule reading nothing but degrees lands within
+  half an edge for 3% of the compute -- and it sharpens the question of what the policy is for.
+  Its shape error is 20x greedy's, which is the obvious place to look for where it pays.
+
+Immediate follow-ups, in order:
+
+- Re-run the above on `--benchmark` sets of 50 rather than 6, with three seeds. Nothing in this
+  section is currently more than suggestive.
+- `anneal` vs `greedy` at `stiffness_kappa > 0` specifically, read on `shape err` rather than on
+  edges. That is the experiment §14.4 argues for and it now has both arms.
 
 ## Next
 

@@ -36,6 +36,7 @@ PYTHONPATH=. uv run tools/<name>.py
 | `flag_cost.py` | what does each observation flag cost per step and per episode? |
 | `rigidity_cost.py` | which rigidity primitive costs what, and which one blocks a larger n? |
 | `policy_cost.py` | what do the flags cost on the policy side: observation width, forward time, parameters? |
+| `cost_scaling.py` | how does each baseline's cost grow with n, and does the cheaper one give up anything? |
 
 `constructive_greedy.py` is the standalone version of the `constructive` baseline
 now wired into `evaluation.py`, for difficulty sweeps that need no env config. It
@@ -56,6 +57,15 @@ the backbones" is not a complete statement. Run it for whatever `node_feat_dim`
 and `gnn_hidden_dim` an experiment actually uses, and report which control it
 ran. Widths are measured by forwarding rather than assumed, since assuming them
 is what hid the original 11-vs-128 mismatch.
+
+`cost_scaling.py` is the multi-`n` companion to `evaluation.py`'s cost block: one
+evaluation run measures cost at one size, which cannot show a scaling exponent.
+Its first table is the check that matters before the rest means anything -- at
+`stiffness_kappa = 0` the closed form `spectral` uses is exact, so it must reach
+greedy's answer edge for edge in every domain, and the cost ratio beside it is
+what that agreement costs. It uses the same `cost.py` counters, so its numbers and
+the ones in a run's `cost.csv` are the same quantity. Pin BLAS to one thread for
+the ms columns; the call counts are machine independent.
 
 `verify_results.py` is the reproducibility check to run before quoting a number
 anywhere. It builds the environment programmatically rather than reading the

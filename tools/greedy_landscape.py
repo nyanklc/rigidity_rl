@@ -23,7 +23,7 @@ import numpy as np
 
 import rigidity as R
 from environment import Environment
-from evaluation import run_greedy, score_network
+from evaluation import phi_landscape, run_greedy, score_network
 
 
 def make(n, domain, seed, **kw):
@@ -65,28 +65,12 @@ def brute_deltas(env):
 
 
 def rank_deltas(env):
-    """The same landscape in closed form. Exact iff phi is affine in rank.
+    """The same landscape in closed form, as evaluation.py's spectral baseline reads it.
 
-    phi = (w_rank*rank - w_edge*m*c_max)/rank_K, so a toggle moves it by the rank
-    it adds or costs, which is what candidate_gain and removal_costs return.
+    Kept as a one-liner on purpose: this script exists to check that function, so a
+    second copy of the formula here would make the check meaningless.
     """
-    n = env.network.n
-    B = env.network.extended_bearing_rigidity_matrix()
-    rank, _, lam = R.rigidity_decomposition(B, env.rank_K)
-    L = R.characteristic_length(env.network)
-    Z, _, w, V = R.nullspace_and_softest(B, int(rank))
-    Zs = R.nullspace_in_scaled_units(Z, n, L)
-    _, add_rk = R.candidate_gain(env.network, Zs, length_scale=L)
-    rem_rk, _ = R.removal_costs(B, env.network, int(env.rank_K), lam=lam, w=w, V=V,
-                                c_max=env.c_max)
-    c = max(int(env.c_max), 1)
-    rank_K = max(int(env.rank_K), 1)
-    E = env.network.edges.astype(bool)
-    D = np.where(E,
-                 (-100.0 * (rem_rk * c) + 25.0 * c) / rank_K,
-                 (100.0 * add_rk - 25.0 * c) / rank_K)
-    np.fill_diagonal(D, np.nan)
-    return D
+    return phi_landscape(env, stiffness=False)
 
 
 def stiffness_proxy_deltas(env, rank_only):

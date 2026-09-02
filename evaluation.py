@@ -41,8 +41,11 @@ from environment import Environment
 from rigidity import (rigidity_eigenvalue, rigidity_decomposition, greedy_rigid_construction,
                       greedy_rigid_repair, repair_edge_count, estimation_error_of,
                       extended_bearing_rigidity_matrix,
-                      measurement_sensitivity)
+                      measurement_sensitivity, candidate_gain, characteristic_length,
+                      is_IBR_explicit,
+                      nullspace_and_softest, nullspace_in_scaled_units, removal_costs)
 import benchmark
+import cost
 import estimation
 import manifest
 import report
@@ -54,6 +57,7 @@ MAX_BRUTE_FORCE_N = 5
 MBR_DEPENDENT_SCORES = {"RigidAndMinRigid", "MinRigid", "MinRigidAndMinEigenvalue"}
 
 
+@cost.counted
 def score_network(env, need_mbr=None):
     """(score, is_IBR, is_MBR, rank, m) for whatever edges env.network currently holds.
 
@@ -105,6 +109,7 @@ def result(method, score, is_IBR, is_MBR, m, work=0, best_at=0, min_eig=None,
     }
 
 
+@cost.measurement
 def measure_noise(env, row, sigmas, trials, rng):
     """Fill row["noise"][sigma] with the measured RMS shape error of its graph.
 
@@ -139,6 +144,7 @@ MAX_DECISION_ANALYSIS_N = 12
 MAX_REPAIR_FIGURE_N = 8
 
 
+@cost.measurement
 def edit_landscape(env):
     """Every single-edge toggle from the current graph, scored two ways.
 
@@ -218,6 +224,7 @@ def shape_error_of(net, rank_K):
     return float(np.sqrt(a_opt / net.n)) if np.isfinite(a_opt) else np.inf
 
 
+@cost.measurement
 def repair_spread(net, rank_K, rng, drop=2, cap=20000):
     """Every minimum-size repair of a broken copy of `net`, scored by shape error.
 
@@ -269,6 +276,7 @@ def record(trace, method, episode, step, stats):
                   "shape_err": stats.get("shape_err")})
 
 
+@cost.measurement
 def stats_now(env, need_mbr=True):
     """Full per-step record for the graph currently in `env`."""
     score, is_IBR, is_MBR, rank, m = score_network(env, need_mbr=need_mbr)
@@ -367,6 +375,248 @@ def run_greedy(env, max_steps=200, verbose=True, trace=None, episode=0):
                   shape_err=st.get("shape_err"), edges=env.network.edges)
 
 
+# ── spectral ──────────────────────────────────────────────────────────────────────────
+# The same hill climb greedy runs, reading the landscape off the rigidity algebra instead
+# of rescoring every toggle. phi is affine in rank, so a toggle moves it by exactly the
+# rank it adds or costs -- which candidate_gain and removal_costs already return for all
+# pairs at once. At stiffness_kappa = 0 that is exact and this is greedy; above it the
+# addition term is a ranking prior rather than the true lambda.
+CLOSED_FORM_SCORES = {"WeightedNormalized", "WeightedNormalizedSpectral"}
+
+
+def phi_landscape(env, stiffness=True):
+    """d(phi) for every single-edge toggle, in closed form. NaN on the diagonal.
+
+    stiffness=False leaves the bonus out, giving the rank-only landscape that is exactly
+    d(phi) at stiffness_kappa = 0.
+
+    Raises on a state score whose closed form is not this one: the weights below are
+    WeightedNormalized's own, and returning them for another score would be silently wrong.
+    """
+    if env.state_score_type not in CLOSED_FORM_SCORES:
+        raise ValueError(f"no closed-form landscape for state score "
+                         f"{env.state_score_type!r}; {sorted(CLOSED_FORM_SCORES)} only")
+    w_rank, w_edge = 100.0, 25.0                      # environment.compute_state_score
+    n = env.network.n
+    kappa = float(getattr(env, "stiffness_kappa", 0.0))
+
+    B = env.network.extended_bearing_rigidity_matrix()
+    rank, _, lam = rigidity_decomposition(B, env.rank_K)
+    L = characteristic_length(env.network)
+    Z, v, w, V = nullspace_and_softest(B, int(rank))
+    Zs = nullspace_in_scaled_units(Z, n, L)
+    _, add_rk = candidate_gain(env.network, Zs, length_scale=L)
+    # the stiffness half of removal_costs is an eigvalsh(6n) per redundant edge and is
+    # not read at kappa = 0, which is the whole cost advantage over greedy
+    rem_rk, rem_st = removal_costs(B, env.network, int(env.rank_K), lam=lam, w=w, V=V,
+                                   c_max=env.c_max,
+                                   need_stiffness=stiffness and kappa > 0)
+
+    c = max(int(env.c_max), 1)
+    rank_K = max(int(env.rank_K), 1)
+    E = env.network.edges.astype(bool)
+    D = np.where(E,
+                 (-w_rank * (rem_rk * c) + w_edge * c) / rank_K,
+                 (w_rank * add_rk - w_edge * c) / rank_K)
+
+    if stiffness and kappa > 0 and rank >= env.rank_K and env.stiffness_ref > 0:
+        # an addition's true lambda is not available from the current matrix, so this is
+        # add_stiffness (a ranking prior) scaled onto the stiffness term's own budget.
+        # Removals use remove_stiffness, which is exact.
+        budget = kappa * w_edge * c / rank_K
+        add_st = np.zeros((n, n))
+        if v is not None and v.shape[1] == 1:
+            vs = nullspace_in_scaled_units(v, n, L)
+            add_st = candidate_gain(env.network, vs, length_scale=L)[0]
+        D = D + np.where(E, -budget * rem_st,
+                         budget * add_st / max(float(add_st.max()), 1e-12))
+
+    np.fill_diagonal(D, np.nan)
+    return D
+
+
+def run_spectral(env, max_steps=200, shortlist=5, verbose=True, trace=None, episode=0):
+    """Rank every toggle by the closed-form landscape, then verify the best few.
+
+    Greedy pays n(n-1) rebuild-and-decompose per improvement step for a landscape the
+    rigidity algebra already holds. This computes the landscape once and rescores only
+    the `shortlist` best candidates, so it stops on a real improvement rather than a
+    predicted one -- which matters at stiffness_kappa > 0, where the addition term is a
+    ranking prior and not the true lambda. Both methods hill-climb the same phi.
+    """
+    steps = 0
+    score = score_network(env)[0]
+    if trace is not None:
+        record(trace, "spectral", episode, 0, stats_now(env))
+    bar = tqdm(desc="    spectral", unit="edit", leave=False) if verbose else None
+
+    for _ in range(max_steps):
+        D = phi_landscape(env)
+        if not np.isfinite(D).any():
+            break
+        # stable, so an exact tie is broken by row-major order -- the same rule greedy's
+        # `delta > best_delta` applies, and in R^3 adding a rank-1 edge and dropping a
+        # redundant one *are* an exact tie
+        flat = np.argsort(-np.where(np.isfinite(D), D, -np.inf), axis=None, kind="stable")
+        best_delta, best_move = 0.0, None
+        for k in flat[:shortlist]:
+            i, j = np.unravel_index(k, D.shape)
+            env.network.edges[i, j] = not env.network.edges[i, j]
+            delta = score_network(env)[0] - score
+            env.network.edges[i, j] = not env.network.edges[i, j]
+            if delta > best_delta:
+                best_delta, best_move = delta, (int(i), int(j))
+
+        if best_move is None:                         # local optimum
+            break
+        i, j = best_move
+        env.network.edges[i, j] = not env.network.edges[i, j]
+        score += best_delta
+        steps += 1
+        if trace is not None:
+            record(trace, "spectral", episode, steps, stats_now(env))
+        if bar is not None:
+            bar.update(1)
+
+    if bar is not None:
+        bar.close()
+
+    st = stats_now(env)
+    return result("spectral", st["score"], st["is_IBR"], st["is_MBR"], st["m"],
+                  work=steps, best_at=steps, min_eig=st["min_eig"],
+                  shape_err=st.get("shape_err"), edges=env.network.edges)
+
+
+# ── anneal ────────────────────────────────────────────────────────────────────────────
+def anneal_temperatures(env):
+    """(T0, T1) in phi's own units, so the schedule transfers across n and domain.
+
+    One edge is worth w_edge*c_max/rank_K, so a move of that size is accepted at T0
+    with probability e^-1 and is essentially refused by T1.
+    """
+    one_edge = 25.0 * max(int(env.c_max), 1) / max(int(env.rank_K), 1)
+    return one_edge, one_edge / 100.0
+
+
+def run_anneal(env, rng, budget=None, verbose=True, trace=None, episode=0):
+    """Simulated annealing over single-edge toggles, on the configured phi.
+
+    Unlike greedy it assumes nothing about the objective, which is the point at
+    stiffness_kappa > 0 where the stiffness is not submodular and greedy carries no
+    guarantee. `budget` counts phi evaluations, so it is directly comparable to what
+    greedy spent on the same instance. Scored on the best state visited.
+    """
+    n = env.network.n
+    if budget is None:
+        budget = 4 * n * (n - 1)
+    T0, T1 = anneal_temperatures(env)
+    cool = (T1 / T0) ** (1.0 / max(budget - 1, 1))
+
+    score = score_network(env)[0]
+    best_score, best_edges, best_at = score, env.network.edges.copy(), 0
+    work, T = 0, T0
+    if trace is not None:
+        record(trace, "anneal", episode, 0, stats_now(env))
+    bar = tqdm(total=budget, desc="    anneal", unit="eval", leave=False) if verbose else None
+
+    for t in range(budget):
+        i = int(rng.integers(n))
+        j = int(rng.integers(n - 1))
+        j += (j >= i)                                 # any ordered pair but (i, i)
+        env.network.edges[i, j] = not env.network.edges[i, j]
+        cand = score_network(env)[0]
+
+        delta = cand - score
+        if delta > 0 or rng.random() < np.exp(delta / max(T, 1e-12)):
+            score = cand
+            work += 1
+            if score > best_score:
+                best_score, best_edges, best_at = score, env.network.edges.copy(), work
+            if trace is not None:
+                record(trace, "anneal", episode, work, stats_now(env))
+        else:
+            env.network.edges[i, j] = not env.network.edges[i, j]
+
+        T *= cool
+        if bar is not None:
+            bar.update(1)
+
+    if bar is not None:
+        bar.close()
+
+    env.network.edges = best_edges
+    st = stats_now(env)
+    return result("anneal", st["score"], st["is_IBR"], st["is_MBR"], st["m"],
+                  work=work, best_at=best_at, min_eig=st["min_eig"],
+                  shape_err=st.get("shape_err"), edges=env.network.edges,
+                  edges_are="best visited")
+
+
+# ── degree ────────────────────────────────────────────────────────────────────────────
+def run_degree(env, rng, verbose=True, trace=None, episode=0):
+    """Add to the least-connected pair until rigid, then prune the busiest redundant edge.
+
+    The only method here that reads nothing an agent could not know locally, apart from
+    the rigidity test itself: no marginal ranks, no spectrum, just degrees. The tier-1
+    reference for what a distributed rule could plausibly do.
+    """
+    n = env.network.n
+    steps = 0
+    if trace is not None:
+        record(trace, "degree", episode, 0, stats_now(env))
+    bar = tqdm(desc="    degree", unit="edit", leave=False) if verbose else None
+
+    def is_rigid():
+        brm = env.network.extended_bearing_rigidity_matrix()
+        return bool(brm.size) and is_IBR_explicit(brm, env.rank_K)[0]
+
+    def applied():
+        nonlocal steps
+        steps += 1
+        if trace is not None:
+            record(trace, "degree", episode, steps, stats_now(env))
+        if bar is not None:
+            bar.update(1)
+
+    E = env.network.edges
+    # add: whoever measures least, to whoever is measured least
+    for _ in range(n * (n - 1)):
+        if is_rigid():
+            break
+        out_deg, in_deg = E.sum(axis=1), E.sum(axis=0)
+        cost_ij = out_deg[:, None] + in_deg[None, :]
+        cost_ij = np.where(E, np.inf, cost_ij.astype(float))
+        np.fill_diagonal(cost_ij, np.inf)
+        if not np.isfinite(cost_ij).any():
+            break
+        best = np.argwhere(cost_ij == cost_ij.min())
+        i, j = best[rng.integers(len(best))]
+        E[i, j] = True
+        applied()
+
+    # prune: the busiest edge whose removal keeps the network rigid
+    while True:
+        out_deg, in_deg = E.sum(axis=1), E.sum(axis=0)
+        order = sorted(((int(out_deg[i] + in_deg[j]), int(i), int(j))
+                        for i, j in np.argwhere(E)), reverse=True)
+        for _, i, j in order:
+            E[i, j] = False
+            if is_rigid():
+                applied()
+                break
+            E[i, j] = True
+        else:
+            break
+
+    if bar is not None:
+        bar.close()
+
+    st = stats_now(env)
+    return result("degree", st["score"], st["is_IBR"], st["is_MBR"], st["m"],
+                  work=steps, best_at=steps, min_eig=st["min_eig"],
+                  shape_err=st.get("shape_err"), edges=env.network.edges)
+
+
 def _construct_once(env, order, rng):
     """One restart, on env.network. (edges, additions in order, rank reached).
 
@@ -451,6 +701,7 @@ def run_random(env, steps, trace=None, episode=0):
     return rollout_result("random", env, work)
 
 
+@cost.counted
 def deterministic_action(agent, obs):
     """argmax over the model's own scores, for PPO and DQN alike.
 
@@ -487,6 +738,8 @@ def run_policy(agent, wrapped_env, raw_env, steps, mode="sample", trace=None, ep
         if mode == "greedy":
             action = deterministic_action(agent, obs)
         else:
+            # skrl's act() is not ours to decorate, so the forward is counted here
+            cost.tally("forward")
             with torch.no_grad():
                 action, _ = agent.act(obs, states=wrapped_env.state(),
                                       timestep=t, timesteps=steps)
@@ -581,6 +834,43 @@ def run_brute_force(env, verbose=True):
 
 
 # --------------------------------------------------------------------------------------
+# Every method runs the same way: restore the instance, meter it, keep the row. The order
+# here is the order the episode line prints in; the table orders by report.METHOD_ORDER.
+ALL_METHODS = ("initial", "random", "degree", "greedy", "spectral", "anneal",
+               "constructive", "learned", "optimal")
+
+
+def run_method(name, ctx):
+    """Dispatch one method on the instance currently in ctx['env']. None if unavailable."""
+    env, args, traces, ep = ctx["env"], ctx["args"], ctx["traces"], ctx["episode"]
+    if name == "initial":
+        return run_initial(env, trace=traces, episode=ep)
+    if name == "greedy":
+        return run_greedy(env, trace=traces, episode=ep)
+    if name == "spectral":
+        return run_spectral(env, shortlist=args.spectral_shortlist,
+                            trace=traces, episode=ep)
+    if name == "anneal":
+        return run_anneal(env, ctx["anneal_rng"], budget=ctx["anneal_budget"],
+                          trace=traces, episode=ep)
+    if name == "degree":
+        return run_degree(env, ctx["degree_rng"], trace=traces, episode=ep)
+    if name == "constructive":
+        return run_constructive(env, ctx["construct_rng"], restarts=args.restarts,
+                                trace=traces, episode=ep)
+    if name == "random":
+        return run_random(env, ctx["steps"], trace=traces, episode=ep)
+    if name == "learned":
+        if ctx["agent"] is None:
+            return None
+        return run_policy(ctx["agent"], ctx["wrapped"], env, ctx["steps"],
+                          mode=args.policy_mode, trace=traces, episode=ep,
+                          decisions=ctx["decisions"])
+    if name == "optimal":
+        return run_brute_force(env)
+    raise ValueError(name)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("environment_name")
@@ -605,10 +895,20 @@ def main():
     parser.add_argument("--brief", action="store_true",
                         help="print the table without the explanatory legend")
     parser.add_argument("--methods", default="initial,greedy,constructive,random,learned",
-                        help="comma-separated subset of initial,greedy,constructive,random,"
-                             "learned (greedy and constructive are the expensive ones at large n)")
+                        help="comma-separated subset of " + ",".join(ALL_METHODS) + ", or "
+                             "'all'. greedy and anneal are the expensive ones at large n, and "
+                             "optimal is exhaustive search (n <= %d)" % MAX_BRUTE_FORCE_N)
     parser.add_argument("--restarts", type=int, default=20,
                         help="restarts for the constructive baseline; it reports the best of them")
+    parser.add_argument("--spectral-shortlist", type=int, default=5,
+                        help="how many of the closed form's top candidates the spectral "
+                             "baseline rescores before applying one. The ranking is exact "
+                             "at stiffness_kappa = 0 and a prior above it, which is what "
+                             "the verification is for")
+    parser.add_argument("--anneal-budget", type=int, default=None,
+                        help="phi evaluations the annealer gets. Default: exactly what greedy "
+                             "spent on the same instance, so the two are budget matched; "
+                             "4*n*(n-1) when greedy is not being run")
     parser.add_argument("--policy-mode", default="sample", choices=("sample", "greedy"),
                         help="sample (default): sampled actions, i.e. the policy used as a "
                              "sampling search over the horizon, scored on the best state it "
@@ -627,11 +927,16 @@ def main():
     args = parser.parse_args()
 
     methods = [m.strip() for m in args.methods.split(",") if m.strip()]
-    unknown = [m for m in methods
-               if m not in ("initial", "greedy", "constructive", "random", "learned")]
+    if methods == ["all"]:
+        methods = list(ALL_METHODS)
+    unknown = [m for m in methods if m not in ALL_METHODS]
     if unknown:
-        print(f"unknown method(s): {unknown}")
+        print(f"unknown method(s): {unknown}, expected {list(ALL_METHODS)}")
         return 1
+    # --brute-force is the older spelling of the same thing
+    if args.brute_force and "optimal" not in methods:
+        methods.append("optimal")
+    methods = [m for m in ALL_METHODS if m in methods]
 
     filepath = "./environments/" + args.environment_name + ".json"
     if not os.path.exists(filepath):
@@ -680,10 +985,10 @@ def main():
         print(f"loaded {algorithm} model '{args.model}' on {args.device}"
               f"{' (replaying its archived environment)' if args.replay_env else ''}")
 
-    if args.brute_force and n > MAX_BRUTE_FORCE_N:
+    if "optimal" in methods and n > MAX_BRUTE_FORCE_N:
         print(f"brute force refused: n={n} > {MAX_BRUTE_FORCE_N} "
               f"({2 ** (n * n - n):.3g} possible graphs)")
-        args.brute_force = False
+        methods.remove("optimal")
 
     print(f"env: {args.environment_name} | n={n} | rollout horizon={steps} | episodes={args.episodes}")
 
@@ -703,8 +1008,12 @@ def main():
     # --policy-mode sample repeatable for a given seed
     torch.manual_seed(args.seed)
 
-    # private to the constructive baseline; see the note in _construct_once
+    # private to the methods that use randomness: np.random is the stream instances are
+    # drawn from, so a method sharing it would change which networks the others are scored
+    # on. See the note in _construct_once.
     construct_rng = np.random.default_rng(args.seed)
+    anneal_rng = np.random.default_rng(args.seed)
+    degree_rng = np.random.default_rng(args.seed)
 
     instances = []
     # every legal edit is scored at every step, so this is gated on n
@@ -761,35 +1070,26 @@ def main():
             env.network = copy.deepcopy(instance)
             env.reset()
 
+        ctx = dict(env=env, args=args, traces=traces, episode=ep, steps=steps,
+                   agent=agent, wrapped=wrapped, decisions=decisions,
+                   construct_rng=construct_rng, anneal_rng=anneal_rng,
+                   degree_rng=degree_rng, anneal_budget=args.anneal_budget)
+
         episode_rows = []
-        if "initial" in methods:
+        for name in methods:
             restore()
-            episode_rows.append(run_initial(env, trace=traces, episode=ep))
-
-        if "greedy" in methods:
-            restore()
-            episode_rows.append(run_greedy(env, trace=traces, episode=ep))
-
-        if "constructive" in methods:
-            restore()
-            episode_rows.append(run_constructive(env, construct_rng, restarts=args.restarts,
-                                                 trace=traces, episode=ep))
-
-        if "random" in methods:
-            restore()
-            episode_rows.append(run_random(env, steps, trace=traces, episode=ep))
-
-        if "learned" in methods and agent is not None:
-            restore()
-            episode_rows.append(run_policy(agent, wrapped, env, steps,
-                                           mode=args.policy_mode, trace=traces, episode=ep,
-                                           decisions=decisions))
-
-        if args.brute_force:
-            restore()
-            opt = run_brute_force(env)
-            if opt is not None:
-                episode_rows.append(opt)
+            # the restore is shared setup, so only the method itself is metered
+            with cost.Meter() as meter:
+                row = run_method(name, ctx)
+            if row is None:                      # unavailable: no model, or n too large
+                continue
+            row["cost"] = meter.counts
+            row["ms"] = meter.ms
+            episode_rows.append(row)
+            # budget matching, when it was not set on the command line: the annealer gets
+            # exactly the phi evaluations greedy spent on this instance
+            if name == "greedy" and args.anneal_budget is None:
+                ctx["anneal_budget"] = meter.counts.get("score_network", 0) or None
 
         if sigmas:
             for r in episode_rows:
@@ -826,6 +1126,7 @@ def main():
                                   with_plots=bool(traces))
     report.write_summary(run_dir, table)
     report.write_csvs(run_dir, rows, traces)
+    wrote_costs = report.write_costs(run_dir, rows)
     if decisions:
         report.write_decisions(run_dir, decisions)
     report.write_meta(run_dir, {
@@ -839,6 +1140,8 @@ def main():
     })
 
     written = ["summary.txt", "results.csv"] + (["trajectories.csv"] if traces else [])
+    if wrote_costs:
+        written.append("cost.csv and cost.txt")
     if decisions:
         written.append("decisions.csv")
     if traces:
@@ -853,28 +1156,38 @@ def main():
             "seed": args.seed,
             "benchmark": args.benchmark,
         }
-        report.plot_trajectories(run_dir, traces, rows, header)
-        report.plot_outcomes(run_dir, traces, rows, header)
-        report.plot_summary(run_dir, rows, header)
-        report.plot_noise_sweep(run_dir, rows, header)
-        report.plot_prediction_check(run_dir, rows, header)
-        report.plot_uncertainty(run_dir, instances, rows, header)
-        report.plot_softest_mode(run_dir, instances, rows, header)
-        report.plot_sensitivity(run_dir, instances, rows, header)
-        report.plot_repair_choice(run_dir, repair_records, header)
-        report.plot_decisions(run_dir, decisions, header)
         # the table itself, so the numbers travel with the figures. The policy line drops
         # the model name -- the header already carries it in full one line above
         policy = (f"{algorithm}, --policy-mode {args.policy_mode}, {steps}-step budget"
                   if args.model else None)
-        report.plot_table(run_dir, rows, dict(header, objective=context["objective"],
-                                              policy=policy))
-        for ep in range(min(args.plot_episodes, args.episodes)):
-            sel = [t for t in traces if t["episode"] == ep]
-            ep_header = dict(header, episodes=None, subtitle=f"episode {ep}")
-            report.plot_trajectories(run_dir, sel, [r for r in rows if r["episode"] == ep],
-                                     ep_header, filename=f"episode_{ep:03d}",
-                                     aggregate_over_episodes=False)
+        table_header = dict(header, objective=context["objective"], policy=policy)
+
+        def draw_all():
+            report.plot_trajectories(run_dir, traces, rows, header)
+            report.plot_outcomes(run_dir, traces, rows, header)
+            report.plot_summary(run_dir, rows, header)
+            report.plot_noise_sweep(run_dir, rows, header)
+            report.plot_prediction_check(run_dir, rows, header)
+            report.plot_uncertainty(run_dir, instances, rows, header)
+            report.plot_softest_mode(run_dir, instances, rows, header)
+            report.plot_sensitivity(run_dir, instances, rows, header)
+            report.plot_repair_choice(run_dir, repair_records, header)
+            report.plot_cost(run_dir, rows, header)
+            report.plot_decisions(run_dir, decisions, header)
+            report.plot_table(run_dir, rows, table_header)
+            for ep in range(min(args.plot_episodes, args.episodes)):
+                sel = [t for t in traces if t["episode"] == ep]
+                ep_header = dict(header, episodes=None, subtitle=f"episode {ep}")
+                report.plot_trajectories(run_dir, sel,
+                                         [r for r in rows if r["episode"] == ep],
+                                         ep_header, filename=f"episode_{ep:03d}",
+                                         aggregate_over_episodes=False)
+
+        draw_all()
+        # and again without the title block or the notes card, for a document that
+        # carries its own caption
+        with report.plain():
+            draw_all()
         # counted rather than predicted: several figures skip themselves when the
         # run does not carry what they draw
         made = len(glob.glob(os.path.join(run_dir, "plots", "png", "*.png")))

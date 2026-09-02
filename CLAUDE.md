@@ -157,12 +157,19 @@ uv run train_dqn.py <environment_name> <model_name>
 # Roll out a trained model (BRUTE_FORCE_BEST compares against exhaustive search on small graphs)
 uv run inference.py <model_name> <environment_name>
 
-# Reference points: initial / random / greedy / learned / optimal, all scored with the same phi
-uv run evaluation.py <environment_name> [--episodes N] [--model <name>] [--brute-force] [--methods a,b] [--restarts K] [--replay-env] [--noise-sweep 0.5,1,5]
-#   methods: initial, greedy, constructive, random, learned
+# Reference points and baselines, all scored with the same phi, and all metered
+uv run evaluation.py <environment_name> [--episodes N] [--model <name>] [--methods a,b] [--restarts K] [--replay-env] [--noise-sweep 0.5,1,5]
+#   methods: initial, random, degree, greedy, spectral, anneal, constructive, learned,
+#     optimal -- or "all". --brute-force is the older spelling of "optimal"
+#   --spectral-shortlist K  candidates the spectral baseline rescores before it commits
+#   --anneal-budget N       phi evaluations the annealer gets; default is exactly what
+#                           greedy spent on the same instance
 #   --benchmark <name> evaluates on a frozen instance set instead of sampling
 #   --noise-sweep measures what each method's graph actually costs under bearing
 #     noise of that many DEGREES, against the analytic prediction (plots/*/noise.*)
+
+# What does each baseline's cost do as the network grows?
+OMP_NUM_THREADS=1 PYTHONPATH=. uv run tools/cost_scaling.py [--ns 6,8,12,16] [--domain R^3]
 
 # Freeze evaluation instances so results stay comparable across config regenerations
 uv run benchmark.py <environment_name> <benchmark_name> [--instances N] [--seed S]
@@ -191,7 +198,7 @@ tensorboard --logdir runs
 
 Names are filenames without extension: `<environment_name>` → `environments/<name>.json`, `<scenario_name>` → `scenarios/<name>.json`.
 
-**Tests: `uv run tests/run_all.py`** (fast suite, ~50 s, 726 checks) or
+**Tests: `uv run tests/run_all.py`** (fast suite, ~55 s, 817 checks) or
 `uv run tests/run_all.py --slow` (~3 min, adds training runs, brute force and large n).
 Individual files run standalone: `uv run pytest tests/test_flex.py -v`.
 
@@ -233,6 +240,39 @@ There is no linter or CI.
   structural argument for moving the objective from rank to stiffness. See `THEORY.md` §14.
 - `required_edge_count(network, ...)` → `m_req`, fewest edges that could make these poses rigid: closed form for homogeneous `R^d`, greedy block-rank accumulation otherwise. **A lower bound, not a ground truth** - it stays out of the reward and is used for reporting and the MBR metric only. Brute force finds it tight on everything checkable (24/24 at n=4, 6/6 at n=5, all five domains), which is evidence, not proof.
 - `repair_edge_count(network, ...)` → fewest edges that could make a **broken** graph rigid again, which is the question after an agent leaves or a link fails. Same subadditivity argument as `required_edge_count` but starting from the graph in hand: sort the exact per-pair marginals `rank(b_ij Z)` over the absent pairs, accumulate until they cover `rank_K - rank(B)`. Returns 0 on a rigid graph and reproduces `required_edge_count` exactly from the empty one. Karimian and Tron (CDC 2017) settle the homogeneous 2-D case exactly by rigid-component decomposition; **this is their `c_max = 1` formula generalised to 3-D, heterogeneous and directed graphs**, which their conclusions list as open. See `THEORY.md` §19.
+
+### Cost accounting (`cost.py`)
+
+What each method spends, so the compute comparison is measured rather than argued. A `@counted`
+decorator on the primitives that own the linear algebra - one line per function, **no call site
+anywhere changes** - plus `Meter`, a context manager that reports the deltas and the wall time for
+one method. `evaluation.py` brackets every method with one, and `report.py` prints the block.
+
+Three things about it that are easy to get wrong:
+
+- **Counts are per call to a named primitive, not per `np.linalg` call.** `nullspace` is one
+  `eigh(6n)`; `edge_block_ranks` is `m` ranks of a `3 x 6n` block; `candidate_gain` is one batched
+  `eigvalsh` over `n(n-1)` 3x3 Grams. `cost.OPERATION` maps each name to what one call does and the
+  report legend carries it, since a bare count weighs those three the same and the wall time is
+  what separates them. `extended_bearing_rigidity_matrix` is counted too - at n=8 building `B`
+  costs more than the SVD of it, so a count that tracked only decompositions would be wrong about
+  which method is expensive.
+- **`cost.LEAVES` is the subset that calls no other counted primitive**, and the single headline
+  total sums only those. `Network.eigenvalues` and `estimation.solve_shape` are deliberately out of
+  it: both build `B` themselves, so counting them would count that build twice.
+  `tests/test_cost.py` calls each leaf and asserts it tallies only itself, so the list cannot rot.
+- **`cost.reporting()` / `@cost.measurement` divert measurement work to its own bucket.** Per-step
+  tracing costs an eigendecomposition per step, so without the split a run with plots and one
+  without differ by more than the methods differ from each other. `stats_now`, `record`'s inputs,
+  `measure_noise`, `edit_landscape` and `repair_spread` are all on that side.
+
+`--replay-env` against a manifest predating the counters execs an archived `rigidity.py` that
+carries no decorators. The block detects a method that evaluated φ with zero matrix work and says
+**UNMEASURED** rather than printing a 0 that reads as "free".
+
+`tools/cost_scaling.py` is the multi-`n` companion: one evaluation run measures cost at one size
+and cannot show a scaling exponent. Measured on `R^3`, greedy's count grows as `n^2.95` and
+spectral's as `n^0.81`, at identical edge counts.
 
 ### Estimation (`estimation.py`)
 
@@ -579,11 +619,47 @@ ablation: a channel that costs nothing even when zeroed is genuinely unused.
 ### Baselines (`evaluation.py`, `agent_loader.py`)
 
 `evaluation.py` scores every method through `Environment.compute_state_score`, so all rows of its
-table are measured by the exact φ the agent trains on. `greedy` and `optimal` work in edit space
-(action-space agnostic); `random` and `learned` go through `env.step()` and are therefore specific
-to the configured action space, and are scored on best-state-visited. `optimal` scans edge count
-ascending and stops at the first level admitting an IBR graph - unlike `MBR_required_Rd` this makes
-no homogeneity assumption, but it is gated at `n ≤ 5`.
+table are measured by the exact φ the agent trains on. `greedy`, `spectral`, `anneal`, `degree` and
+`optimal` work in edit space (action-space agnostic); `random` and `learned` go through `env.step()`
+and are therefore specific to the configured action space, and are scored on best-state-visited.
+`optimal` scans edge count ascending and stops at the first level admitting an IBR graph - unlike
+`MBR_required_Rd` this makes no homogeneity assumption, but it is gated at `n ≤ 5`.
+
+**Dispatch is `ALL_METHODS` plus `run_method(name, ctx)`**, one loop in `main()` that restores the
+instance, runs the method inside a `cost.Meter` and attaches the counters to the row. That is what
+makes `--methods all` possible and what guarantees no method is metered by a different rule than
+another. `optimal` is a `--methods` name; `--brute-force` is kept as an alias. A method that
+returns `None` (no model loaded, `n` too large for brute force) is skipped rather than reported.
+
+**`spectral` computes the same landscape greedy searches for, in closed form.** φ is affine in
+rank, so a toggle moves it by exactly the rank it adds or costs, which `candidate_gain` and
+`removal_costs` return for all pairs at once - `phi_landscape(env)`. It then rescores only the
+`--spectral-shortlist` best candidates (default 5) with the real φ and applies the best that
+actually improves. The verification is not decoration: at `stiffness_kappa > 0` the addition term
+is `add_stiffness`, a normalised *ranking prior* rather than the true λ, so an unverified hill
+climb never reaches a local optimum and runs to its step cap. **At `stiffness_kappa = 0` the closed
+form is exact and `spectral` reproduces `greedy` edge for edge** - measured 60/60 instances across
+all five domains, at 3.7-6.9x fewer rigidity computations - which
+`tests/test_evaluation_reference.py` asserts. The tie break has to be row-major-stable to get
+that, since adding a rank-1 edge and dropping a redundant one are an exact tie in the `c_max = 2`
+domains. `phi_landscape` **raises** on any state score outside `WeightedNormalized` /
+`WeightedNormalizedSpectral`, whose `w_rank = 100`, `w_edge = 25` it hardcodes; returning those
+deltas for another score would be silently wrong. `tools/greedy_landscape.py` imports it rather
+than keeping a second copy, so that script validates the baseline instead of duplicating it.
+
+**`anneal` is the opponent that assumes nothing about the objective.** Simulated annealing over
+single-edge toggles on the configured φ, temperature denominated in φ's own units
+(`one_edge = w_edge·c_max/rank_K`, so the schedule transfers across `n` and domain), geometric
+cooling, scored on best-state-visited. Its budget is **exactly the φ-evaluation count greedy spent
+on the same instance**, read from the counters, falling back to `4n(n-1)` when greedy is not being
+run; `--anneal-budget` overrides. This is the honest opponent above `stiffness_kappa = 0`, where
+the stiffness is not submodular and greedy carries no guarantee (`THEORY.md` §14.4). Own RNG.
+
+**`degree` is the tier-1 distributed-plausible reference.** Add the absent pair minimising
+`(outdeg_i + indeg_j)` until rigid, then drop the highest-degree edge whose removal keeps the
+network rigid. It reads nothing beyond degrees and the rigidity test itself - no marginal ranks,
+no spectrum - which `tests/test_evaluation_reference.py` pins by asserting it never calls
+`candidate_gain`, `removal_costs`, `nullspace_and_softest` or `score_network`. Own RNG.
 
 **`constructive` is the classical opponent.** From the empty graph, keep any edge that raises
 `rank(B)`, stop at `rank_K`, best of `--restarts` random orders. It is the only method that does
@@ -616,11 +692,12 @@ Pass `--device` if you want the `--model` rollout on GPU; it defaults to cpu and
 `runs_evaluation/<timestamp>__<short-env>[__<model>][__<tag>]/`:
 
 ```
-summary.txt        the printed table and its legend
+summary.txt        the printed table, the cost block, and their legends
 results.csv        one row per (episode, method) -- the final outcome
 trajectories.csv   one row per (episode, method, step) -- the time series
+cost.csv           one row per (episode, method) -- every counter; legend in cost.txt
 meta.json          args, env config, and manifest.collect_provenance()
-plots/pdf/         table, trajectories, outcomes, summary, episode_NNN,
+plots/pdf/         table, trajectories, outcomes, summary, cost, episode_NNN,
                    uncertainty, softest_mode, sensitivity, repair_choice
                    (+ noise and prediction with --noise-sweep,
                     + decisions with --model)
@@ -628,6 +705,14 @@ decisions.csv      one row per edit the policy applied (--model only)
 plots/png/         the same figures again -- every figure is written in both formats,
                    filed by format (`PLOT_FORMATS` / `_save()`) rather than interleaved
 ```
+
+**Every figure is written twice, the second under `<name>-plain`**: one carries the title block
+and the notes card, one is the panels alone, for a document that supplies its own caption. Plain
+does not mean raw - panel titles, axis labels, units, reference lines and the direct labels that
+identify a series stay in both, since without them the plot cannot be read. The mechanism is the
+`report.plain()` context manager and a module-level flag that `_figure`, `_finish`, `_save` and
+`plot_table` consult; a plot function needs no argument and no knowledge of it. Callers draw
+their whole figure set, then draw it again inside `plain()`.
 
 The table is written to be read without the source: `work` counts graph modifications actually
 applied and `best_at` is the step the best graph was reached at (the old single `steps` column

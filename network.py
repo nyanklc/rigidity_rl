@@ -4,6 +4,7 @@ import numpy as np
 from util import circle_polygon, move_polygon, Pose, invert_color, discretize_array
 import quaternion
 import rigidity
+from cost import counted
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import viser
@@ -249,6 +250,7 @@ class Network:
         return rigidity.is_MBR(self, rank_K=rank_K, brmat=brm, block_ranks=block_ranks,
                                rank_brm=rank_brm)
 
+    @counted
     def eigenvalues(self, eps=1e-10):
         brm = self.extended_bearing_rigidity_matrix()
         information_mat = brm.T @ brm

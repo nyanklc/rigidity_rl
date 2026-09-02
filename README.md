@@ -112,6 +112,7 @@ tensorboard --logdir runs
 ```
 rigidity.py         bearing rigidity matrix, rigidity tests, derived quantities
 estimation.py       shape recovery from noisy bearings, and the error it leaves
+cost.py             counts what each method spends, so compute is measured not argued
 network.py          Agent and Network, graph features
 scenario.py         random and file-backed scenario generation
 util.py             geometry helpers
@@ -133,13 +134,6 @@ tools/              scripts worth keeping, verifications, ablations, measurement
 docs/               notes
 resources/          figures used in this README
 ```
-
-`evaluation.py` is the script to run for results. One invocation scores every method on the same
-instances and writes the table, the per-episode and per-step CSVs, and every figure: trajectories,
-outcomes, the summary, the comparison table, per-episode detail, measured error under bearing
-noise, predicted against measured error, per-agent uncertainty ellipses, the softest deformation
-mode, where the error comes from, how much the choice of repair matters, and -- with `--model` --
-how the policy's own edits rank among the edits it could have made.
 
 Directories produced by runs (`environments/`, `scenarios/`, `models/`, `runs/`, `train/`,
 `runs_evaluation/`) are not tracked.
