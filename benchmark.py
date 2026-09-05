@@ -8,7 +8,7 @@ sees literally the same graphs.
     uv run benchmark.py <environment_name> <benchmark_name> [--instances N] [--seed S]
     uv run benchmark.py rotate <source_benchmark> <benchmark_name> [--seed S]
     uv run benchmark.py list
-    uv run evaluation.py <environment_name> --benchmark <benchmark_name>
+    uv run outputs.py <environment_name> --benchmark <benchmark_name>
 """
 import contextlib
 import copy

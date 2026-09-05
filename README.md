@@ -103,7 +103,7 @@ Requires Python 3.12, an NVIDIA GPU, and [`uv`](https://docs.astral.sh/uv/).
 ```bash
 uv run environment.py 8 "R^3"
 uv run train_dqn.py <env_name> <run_name>
-uv run evaluation.py <env_name> --model <run_name>
+uv run outputs.py <env_name> --model <run_name>
 tensorboard --logdir runs
 ```
 
@@ -122,8 +122,8 @@ train_dqn.py        training (train_ppo.py for PPO)
 probe.py            periodic deterministic evaluation during training
 manifest.py         run manifests, archived sources and provenance
 agent_loader.py     rebuilds a trained agent from its manifest
-evaluation.py       THE results script: every metric, table and figure, in one run
-report.py           the tables, CSVs and figures an evaluation run writes
+outputs.py          the results script: every metric, table and figure, in one run
+report.py           the tables, CSVs and figures and outputs run writes
 benchmark.py        frozen evaluation instances
 ablation.py         which observation channels a policy actually uses
 inference.py        roll out a trained model
@@ -135,8 +135,7 @@ docs/               notes
 resources/          figures used in this README
 ```
 
-Directories produced by runs (`environments/`, `scenarios/`, `models/`, `runs/`, `train/`,
-`runs_evaluation/`) are not tracked.
+Directories produced by runs are not tracked.
 
 ## Main References
 

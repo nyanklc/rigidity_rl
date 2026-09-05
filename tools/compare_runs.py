@@ -8,7 +8,7 @@ in the tail alone.
 A caution the stop-action comparison ran into: training episodes carry epsilon
 exploration, so these curves understate any arm with short episodes. One random
 action costs proportionally more over 8 steps than over 50, and it can be the
-stop action. Judge terminations on an argmax evaluation (evaluation.py with a
+stop action. Judge terminations on an argmax evaluation (outputs.py with a
 frozen benchmark), not on these curves.
 
     PYTHONPATH=. uv run tools/compare_runs.py runA runB runC
@@ -31,15 +31,15 @@ DEFAULT = [
 ]
 
 
-def load(run):
-    """Scalars from the NEWEST run in runs/<run>, not all of them merged.
+def load(run, root="runs"):
+    """Scalars from the NEWEST run in <root>/<run>, not all of them merged.
 
     Training twice under one name leaves both sets of event files in the same
     directory, and pointing EventAccumulator at the directory silently splices
     them into one series.
     """
     from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
-    files = glob.glob(f"runs/{run}/events.out.tfevents.*")
+    files = glob.glob(os.path.join(root, run, "events.out.tfevents.*"))
     # events.out.tfevents.<starttime>.<host>.<pid>.<n>. One training process writes
     # several of these, sometimes a second apart, so the pid is what identifies a run.
     groups = {}
@@ -49,7 +49,7 @@ def load(run):
     if not groups:
         return {}, set()
     if len(groups) > 1:
-        print(f"  note: runs/{run} holds {len(groups)} runs; reading the newest only")
+        print(f"  note: {root}/{run} holds {len(groups)} runs; reading the newest only")
     newest = groups[max(groups, key=lambda k: max(os.path.getmtime(f) for f in groups[k]))]
 
     out, tags = {}, set()

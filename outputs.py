@@ -1,4 +1,4 @@
-"""The evaluation run: everything the thesis reports about a policy, in one place.
+"""Every figure and table the thesis reports, in one script.
 
 Every method is scored with Environment.compute_state_score, i.e. the exact state
 score phi the agent trains on, so the rows are directly comparable:
@@ -7,19 +7,20 @@ score phi the agent trains on, so the rows are directly comparable:
   random   uniform random actions through env.step()  -> the floor for this action space
   greedy   hill-climbing on phi, one edge toggle at a time
   constructive  builds from the empty graph, keeping any edge that raises rank(B)
-  learned  a trained policy, sampling actions (--policy-mode greedy for argmax instead)
+  learned  a trained policy, sampling actions (--policy-mode greedy for argmax instead).
+           --model takes several, and each becomes its own row
   optimal  exhaustive search for the fewest-edge rigid graph (small n only)
 
 greedy gets stuck exactly where RL should win: states where no single edit improves
 phi but a swap of two does.
 
 usage:
-  uv run evaluation.py <environment_name> [--episodes N] [--model NAME] [--brute-force]
+  uv run outputs.py <environment_name> [--episodes N] [--model NAME] [--brute-force]
       [--steps K] [--tag NAME] [--device cpu|cuda] [--methods a,b,c] [--restarts K]
       [--policy-mode sample|greedy] [--benchmark NAME] [--noise-sweep 0.5,1,5]
       [--no-plots] [--plot-episodes N] [--brief] [--out-dir PATH] [--replay-env]
 
-Writes one directory per run under runs_evaluation/: the table, per-episode results,
+Writes one directory per run under runs_outputs/: the table, per-episode results,
 per-step trajectories, provenance, and every figure. See report.py.
 """
 
@@ -32,6 +33,8 @@ import json
 import math
 import os
 import sys
+from datetime import datetime
+from types import SimpleNamespace
 
 import numpy as np
 import torch
@@ -85,14 +88,19 @@ def score_network(env, need_mbr=None):
 
 
 def result(method, score, is_IBR, is_MBR, m, work=0, best_at=0, min_eig=None,
-           shape_err=None, edges=None, edges_are="final"):
+           shape_err=None, edges=None, edges_are="final", m_req=None):
     """One method's outcome on one instance.
 
     `work` counts graph modifications actually applied and `best_at` is the step the best
     graph was reached at -- the old single `steps` column meant different things per method.
+
+    `m_req` is the instance's own lower bound, recorded per row because it is
+    pose-dependent: without it nothing downstream can say whether a graph hit the bound
+    without hardcoding a number for one benchmark.
     """
     return {
         "method": method,
+        "m_req": None if m_req is None else int(m_req),
         "score": float(score),
         "is_IBR": bool(is_IBR),
         "is_MBR": bool(is_MBR),
@@ -717,8 +725,11 @@ def deterministic_action(agent, obs):
 
 
 def run_policy(agent, wrapped_env, raw_env, steps, mode="sample", trace=None, episode=0,
-               decisions=None):
+               decisions=None, label="learned"):
     """Roll out a trained policy, scored on the best state visited.
+
+    `label` is the row this policy occupies. With one model it stays `learned`, which is
+    what every run written before --model took a list is keyed on.
 
     mode="greedy"  the action the policy considers best -- what you would deploy
     mode="sample"  sampled actions, i.e. the policy used as a sampling-based search over the
@@ -727,7 +738,7 @@ def run_policy(agent, wrapped_env, raw_env, steps, mode="sample", trace=None, ep
     agent.enable_models_training_mode(False)  # eval mode (skrl 2.x naming)
     obs, _ = wrapped_env.reset()  # freeze_network keeps the instance
     seen = set()
-    record(trace, "learned", episode, 0, step_stats(raw_env, trace is not None))
+    record(trace, label, episode, 0, step_stats(raw_env, trace is not None))
     work = 0
     before = raw_env.network.edges.tobytes()
 
@@ -755,9 +766,9 @@ def run_policy(agent, wrapped_env, raw_env, steps, mode="sample", trace=None, ep
                     kind = "add" if raw_env.network.edges[i, j] else "remove"
                     rec = decision_record(landscape, (i, j), kind)
                     if rec is not None:
-                        rec.update(episode=episode, step=t)
+                        rec.update(model=label, episode=episode, step=t)
                         decisions.append(rec)
-        record(trace, "learned", episode, t + 1, step_stats(raw_env, trace is not None))
+        record(trace, label, episode, t + 1, step_stats(raw_env, trace is not None))
 
         done = terminated.any().item() if torch.is_tensor(terminated) else terminated
         trunc = truncated.any().item() if torch.is_tensor(truncated) else truncated
@@ -772,7 +783,7 @@ def run_policy(agent, wrapped_env, raw_env, steps, mode="sample", trace=None, ep
                 break
             seen.add(key)
 
-    return rollout_result("learned", raw_env, work)
+    return rollout_result(label, raw_env, work)
 
 
 def run_brute_force(env, verbose=True):
@@ -836,38 +847,403 @@ def run_brute_force(env, verbose=True):
 # --------------------------------------------------------------------------------------
 # Every method runs the same way: restore the instance, meter it, keep the row. The order
 # here is the order the episode line prints in; the table orders by report.METHOD_ORDER.
-ALL_METHODS = ("initial", "random", "degree", "greedy", "spectral", "anneal",
-               "constructive", "learned", "optimal")
+CLASSICAL_METHODS = ("initial", "random", "degree", "greedy", "spectral", "anneal",
+                     "constructive")
+# `learned` is the label a single model takes, and the name --methods accepts for "every
+# model" whatever they are called. optimal runs last because it is the slowest.
+ALL_METHODS = CLASSICAL_METHODS + ("learned", "optimal")
+
+
+def method_sequence(labels):
+    """Run order: the classical methods, then each model, then brute force.
+
+    greedy has to come before anneal, whose budget is the phi-evaluation count greedy
+    just spent on the same instance.
+    """
+    return list(CLASSICAL_METHODS) + list(labels) + ["optimal"]
+
+
+LABEL_WIDTH = 14
+
+
+def run_info_blocks(args, env, env_config_data, models, steps, methods, rows):
+    """[(section, [(field, value)])] for the run_info figure.
+
+    Everything a reader needs to place this run: what was evaluated, on what, and what
+    each model label stands for. The per-model block records the objective a model was
+    *trained* on against the one it is *scored* by, which is the one difference between
+    models that the table cannot show and that changes how its rows should be read.
+    """
+    domains = env.domains if isinstance(env.domains, list) else [env.domains]
+    dom = domains[0] if len(set(domains)) == 1 else f"mixed {sorted(set(domains))}"
+    kappa = env_config_data.get("stiffness_kappa")
+
+    blocks = [("this run", [
+        ("environment", args.environment_name),
+        ("network", f"{env.network.n} agents in {dom}"),
+        ("action space", env.action_space_type),
+        ("objective", f"{env.state_score_type}, stiffness_kappa {kappa}"),
+        ("instances", (f"{args.episodes} from benchmark {args.benchmark} "
+                       f"({benchmark.digest(args.benchmark)})" if args.benchmark
+                       else f"{args.episodes} random, seed {args.seed}")),
+        ("methods", ", ".join(methods)),
+        ("rollout", f"--policy-mode {args.policy_mode}, {steps} steps, every model"),
+        ("device", args.device),
+        ("written", datetime.now().strftime("%Y-%m-%d %H:%M")),
+    ])]
+
+    for label, m in models.items():
+        man = m["manifest"] or {}
+        cfg = man.get("environment_config_raw") or {}
+        prov = man.get("provenance") or {}
+        hp = man.get("hyperparameters") or {}
+        lr = hp.get("learning_rate")
+        trained_kappa = cfg.get("stiffness_kappa")
+        objective = f"{cfg.get('state_score_type', '?')}, stiffness_kappa {trained_kappa}"
+        if trained_kappa != kappa:
+            objective += "   (scored here at %s)" % kappa
+        blocks.append((f"model  {label}", [
+            ("name", m["name"]),
+            ("algorithm", f"{m['algorithm']}, {man.get('backbone', '?')} backbone"),
+            ("width", f"gnn {man.get('gnn_hidden_dim', '?')}, "
+                      f"head {man.get('head_hidden_dim', '?')}"),
+            ("training", f"{man.get('timesteps_completed', '?')} of "
+                         f"{man.get('total_timesteps_configured', '?')} steps, "
+                         f"{man.get('status', '?')}"),
+            ("learning rate", lr if not isinstance(lr, list) else ", ".join(map(str, lr))),
+            ("trained on", man.get("environment_config")),
+            ("its objective", objective),
+            ("seed / commit", f"{prov.get('seed')} / {str(prov.get('git_commit'))[:12]}"
+                              f"{' (dirty)' if prov.get('git_dirty') else ''}"),
+        ]))
+    return blocks
+
+
+def load_manifest(name):
+    """The run manifest for a trained model, or {} when there is none."""
+    path = os.path.join("train", f"{name}.json")
+    if not os.path.exists(path):
+        return {}
+    with open(path) as f:
+        return json.load(f)
+
+
+# The config keys that decide the observation's width and meaning. A model whose training
+# config disagrees with the evaluation one on any of these has a checkpoint of the wrong
+# shape, which surfaces deep inside agent_loader as "parameter shapes do not match".
+OBS_KEYS = ("n", "obs_type", "action_type", "graph_features",
+            "include_candidate_bearings", "rigidity_global", "rigidity_quality",
+            "rigidity_flex", "rigidity_edge", "rigidity_stiffness", "rigidity_removal")
+
+
+def observation_mismatch(trained, current):
+    """[(key, trained value, current value)] for the keys that change the observation."""
+    return [(k, trained.get(k), current.get(k)) for k in OBS_KEYS
+            if trained.get(k) != current.get(k)]
+
+
+def parse_models(values):
+    """--model NAME[=LABEL], repeatable and comma-splittable. -> [(name, label)].
+
+    One model keeps the label `learned`: that is the row name every run and every test
+    written before --model took a list is keyed on. Two or more are labelled by the
+    `_`-separated tokens that actually differ between them, so
+    stiff_dqn_gine / stiff_ppo_gine read as dqn / ppo rather than as two long names.
+    """
+    names, given = [], {}
+    for v in values or []:
+        for part in v.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            name, _, label = part.partition("=")
+            names.append(name)
+            if label:
+                given[name] = label
+    if not names:
+        return []
+    if len(names) == 1 and not given:
+        return [(names[0], "learned")]
+
+    auto = auto_labels(names)
+    out, seen = [], {}
+    for name in names:
+        label = given.get(name, auto[name])
+        if label in seen:
+            raise SystemExit(
+                f"--model: {name} and {seen[label]} both come out as '{label}'. "
+                f"Pass an explicit label, e.g. --model {name}=<label>")
+        seen[label] = name
+        out.append((name, label))
+    return out
+
+
+def auto_labels(names):
+    """{name: label} from the `_` tokens that tell `names` apart.
+
+    Tokens every name carries say nothing, so they go. What is left is trimmed from the
+    front if it still does not fit, since the distinguishing part of these names is
+    usually at the end (stiff_dqn_gine vs stiff_dqn_equi).
+    """
+    parts = [n.split("_") for n in names]
+    shared = set(parts[0]).intersection(*(set(p) for p in parts[1:]))
+    out = {}
+    for name, p in zip(names, parts):
+        keep = [t for t in p if t not in shared] or p
+        label = "_".join(keep)
+        while len(label) > LABEL_WIDTH and len(keep) > 1:
+            keep = keep[1:]
+            label = "_".join(keep)
+        out[name] = label[:LABEL_WIDTH]
+    return out
+
+
+SECTIONS = ("baselines", "ablation", "training", "generalisation")
+
+
+def section_generalisation(args, run_dir, models, header):
+    """Gather earlier output directories, one per instance set. -> (written, draws).
+
+    Reads what those runs already measured rather than re-running them, so the rows
+    can carry the code they were produced by.
+    """
+    pattern = args.prior or os.path.join("runs_outputs", "*")
+    wanted = {m["name"] for m in models.values()} | {"greedy"}
+    # the label this run gave each model, so the figure's series match its table's rows
+    short = {m["name"]: lab for lab, m in models.items()}
+
+    best = {}                     # (method, benchmark) -> (dir mtime, row)
+    for d in sorted(glob.glob(pattern)):
+        meta_path = os.path.join(d, "meta.json")
+        res_path = os.path.join(d, "results.csv")
+        if not (os.path.exists(meta_path) and os.path.exists(res_path)):
+            continue
+        with open(meta_path) as f:
+            meta = json.load(f)
+        bench = meta.get("benchmark")
+        if not bench:
+            continue
+        # A run written before --model took a list records the model in args and calls
+        # its row `learned`. Without this, every such run contributes only its
+        # baselines and the figure looks like the models were never evaluated.
+        labels = meta.get("models") or {}
+        if not labels:
+            was = meta.get("args", {}).get("model")
+            if isinstance(was, str) and was:
+                labels = {"learned": was}
+        with open(res_path) as f:
+            rows = list(csv.DictReader(f))
+        # a run's own label -> the model behind it, so rows from runs that used
+        # different labels for the same checkpoint still line up
+        for method in {r["method"] for r in rows}:
+            name = labels.get(method, method)
+            if name not in wanted:
+                continue
+            sel = [r for r in rows if r["method"] == method]
+            row = _generalisation_row(short.get(name, name), bench, sel, d, meta)
+            if row is None:
+                continue
+            key = (name, bench)
+            stamp = os.path.getmtime(d)
+            if key not in best or stamp > best[key][0]:
+                best[key] = (stamp, row)
+
+    gen_rows = [row for _, row in best.values()]
+    if not gen_rows:
+        print(f"  generalisation: no earlier runs matched {pattern} for "
+              f"{', '.join(sorted(wanted))}")
+        return [], []
+
+    gen_rows.sort(key=lambda r: (r["n"] or 0, r["benchmark"], r["method"]))
+    path = os.path.join(run_dir, "generalisation.csv")
+    fields = ["method", "benchmark", "n", "m_req", "episodes", "rigid_pct",
+              "at_bound_pct", "edges_over_bound", "phi", "shape_err", "source_dir",
+              "git_commit"]
+    with open(path, "w", newline="") as f:
+        wr = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        wr.writeheader()
+        for r in gen_rows:
+            wr.writerow(r)
+    print(f"  generalisation: {len(gen_rows)} rows over "
+          f"{len({r['benchmark'] for r in gen_rows})} instance sets")
+    return [os.path.relpath(path, run_dir)], [
+        lambda: report.plot_generalisation(run_dir, gen_rows, header)]
+
+
+def _generalisation_row(name, bench, sel, source_dir, meta):
+    """One (method, benchmark) summary from a prior run's rows, or None."""
+    def num(r, k):
+        v = r.get(k)
+        return None if v in (None, "", "nan") else float(v)
+
+    m = [num(r, "m") for r in sel if num(r, "m") is not None]
+    if not m:
+        return None
+    bounds = [num(r, "m_req") for r in sel if num(r, "m_req") is not None]
+    rigid = [r.get("is_IBR") == "True" for r in sel]
+    at_bound = [r.get("at_bound") == "True" for r in sel
+                if r.get("at_bound") not in (None, "")]
+    err = [num(r, "shape_err") for r in sel
+           if num(r, "shape_err") and num(r, "shape_err") > 0]
+    bound = float(np.mean(bounds)) if bounds else None
+    return {
+        "method": name,
+        "benchmark": bench,
+        "n": meta.get("n"),
+        "m_req": bound,
+        "episodes": len(sel),
+        "rigid_pct": 100.0 * float(np.mean(rigid)) if rigid else None,
+        # None rather than 0 where the prior run predates m_req in results.csv, so a
+        # missing bar reads as "not recorded" and not as "never reached the bound"
+        "at_bound_pct": 100.0 * float(np.mean(at_bound)) if at_bound else None,
+        "edges_over_bound": (float(np.mean(m)) / bound) if bound else None,
+        "phi": float(np.mean([num(r, "score") for r in sel])),
+        "shape_err": report._gmean(err),
+        "source_dir": source_dir,
+        "git_commit": str((meta.get("provenance") or {}).get("git_commit", ""))[:12],
+    }
+
+
+def section_training(args, run_dir, models, header):
+    """Learning curves from the tensorboard logs under runs/. -> (written, draws)."""
+    from tools.compare_runs import load as load_events, tail
+
+    names = ([r.strip() for r in args.runs.split(",") if r.strip()] if args.runs
+             else [m["name"] for m in models.values()])
+    labels = {}
+    for name in names:
+        # the label is the model's if this run belongs to one, so a curve and a table
+        # row for the same policy carry the same name and the same colour
+        label = next((lab for lab, m in models.items() if m["name"] == name), name)
+        labels[label] = name
+
+    series, missing = {}, []
+    for label, name in labels.items():
+        if not os.path.isdir(os.path.join("runs", name)):
+            missing.append(name)
+            continue
+        scalars, _ = load_events(name)
+        series[label] = {t: (np.array([x.step for x in s], float),
+                             np.array([x.value for x in s], float))
+                         for t, s in scalars.items()}
+    if missing:
+        print(f"  training: no tensorboard directory for {', '.join(missing)}")
+    if not series:
+        return [], []
+
+    path = os.path.join(run_dir, "training.csv")
+    with open(path, "w", newline="") as f:
+        wr = csv.writer(f)
+        wr.writerow(["run", "metric", "steps", "tail_mean"])
+        for label, tags in series.items():
+            for tag, (st, v) in sorted(tags.items()):
+                # the tail mean is what a curve is read for; the raw series stays in
+                # the event files rather than being copied here
+                wr.writerow([labels[label], tag.strip(), len(v),
+                             f"{float(np.mean(v[int(len(v) * 0.85):])):.6g}"])
+    return [os.path.relpath(path, run_dir)], [
+        lambda: report.plot_training(run_dir, series, header)]
+
+
+def section_ablation(args, run_dir, env, wrapped, models, header, doing=None):
+    """Destroy each observation channel in turn, per model. -> (written, draws).
+
+    Runs against the environment and the agents the baselines section already built, so
+    two sections in one directory cannot report numbers measured on different
+    environments.
+    """
+    import ablation
+    from skrl.utils.spaces.torch import unflatten_tensorized_space
+
+    out_dir = os.path.join(run_dir, "ablation")
+    os.makedirs(out_dir, exist_ok=True)
+    space = wrapped.observation_space
+    steps = int(min(getattr(env, "max_steps", 100), 100))
+    modes = [m.strip() for m in args.ablation_mode.split(",") if m.strip()]
+    if modes == ["all"]:
+        modes = ["shuffle", "zero", "noise"]
+    bad = [m for m in modes if m not in ("shuffle", "zero", "noise")]
+    if bad:
+        raise SystemExit(f"--ablation-mode: {bad}, expected shuffle, zero, noise or all")
+
+    written, draws = [], []
+    for label, m in models.items():
+        agent = m["agent"]
+        agent.enable_models_training_mode(False)
+        env.freeze_network = False
+        obs, _ = wrapped.reset()
+        layout = ablation.resolve_layout(env, unflatten_tensorized_space(space, obs))
+        per_mode = {}
+        for mode in modes:
+            if doing is not None:
+                doing(f"ablation {label}, {mode}, {len(layout)} channels x "
+                      f"{args.ablation_episodes} episodes")
+            rng = torch.Generator(device="cpu").manual_seed(args.seed)
+            np.random.seed(args.seed)
+            torch.manual_seed(args.seed)
+            rows, ref_row, converged = ablation.measure(
+                agent, wrapped, env, layout, space, episodes=args.ablation_episodes,
+                steps=steps, mode=mode, rng=rng, progress=False)
+            per_mode[mode] = (rows, ref_row)
+            meta = (f"model {m['name']}  |  env={args.environment_name}"
+                    f"  |  n={env.network.n}  |  {len(layout)} channels  |  mode={mode}"
+                    f"  |  {args.ablation_episodes} episodes x {steps} steps"
+                    f"  |  seed {args.seed}  |  live env"
+                    f"  |  stopped at the reference's convergence, "
+                    f"median {int(np.median(converged))} of {steps} steps")
+            csv_path = os.path.join(out_dir, f"{label}-{mode}.csv")
+            ablation.write_csv(csv_path, rows, ref_row,
+                               SimpleNamespace(mode=mode, episodes=args.ablation_episodes),
+                               meta)
+            written.append(os.path.relpath(csv_path, run_dir))
+
+        draws.append(lambda label=label, per_mode=per_mode, m=m:
+                     report.plot_ablation(run_dir, per_mode, header, m["name"],
+                                          filename=f"ablation-{label}"))
+    env.freeze_network = False
+    return written, draws
+
+
+def section_refusal(name, args, models):
+    """Why `name` cannot run here, as a sentence, or None."""
+    if name in ("ablation", "generalisation") and not models:
+        return f"{name} needs at least one --model"
+    if name == "training" and not (args.runs or models):
+        return "training needs --runs, or a --model whose name is a directory under runs/"
+    return None
 
 
 def run_method(name, ctx):
-    """Dispatch one method on the instance currently in ctx['env']. None if unavailable."""
+    """Dispatch one method on the instance currently in ctx['env']. None if unavailable.
+
+    Nothing here draws its own progress bar: the run has one, and a nested bar either
+    fights it for the line or scrolls it away.
+    """
     env, args, traces, ep = ctx["env"], ctx["args"], ctx["traces"], ctx["episode"]
     if name == "initial":
         return run_initial(env, trace=traces, episode=ep)
     if name == "greedy":
-        return run_greedy(env, trace=traces, episode=ep)
+        return run_greedy(env, verbose=False, trace=traces, episode=ep)
     if name == "spectral":
-        return run_spectral(env, shortlist=args.spectral_shortlist,
+        return run_spectral(env, shortlist=args.spectral_shortlist, verbose=False,
                             trace=traces, episode=ep)
     if name == "anneal":
         return run_anneal(env, ctx["anneal_rng"], budget=ctx["anneal_budget"],
-                          trace=traces, episode=ep)
+                          verbose=False, trace=traces, episode=ep)
     if name == "degree":
-        return run_degree(env, ctx["degree_rng"], trace=traces, episode=ep)
+        return run_degree(env, ctx["degree_rng"], verbose=False, trace=traces, episode=ep)
     if name == "constructive":
         return run_constructive(env, ctx["construct_rng"], restarts=args.restarts,
-                                trace=traces, episode=ep)
+                                verbose=False, trace=traces, episode=ep)
     if name == "random":
         return run_random(env, ctx["steps"], trace=traces, episode=ep)
-    if name == "learned":
-        if ctx["agent"] is None:
-            return None
-        return run_policy(ctx["agent"], ctx["wrapped"], env, ctx["steps"],
+    if name in ctx["models"]:
+        m = ctx["models"][name]
+        return run_policy(m["agent"], ctx["wrapped"], env, ctx["steps"],
                           mode=args.policy_mode, trace=traces, episode=ep,
-                          decisions=ctx["decisions"])
+                          decisions=ctx["decisions"], label=name)
     if name == "optimal":
-        return run_brute_force(env)
+        return run_brute_force(env, verbose=False)
     raise ValueError(name)
 
 
@@ -875,7 +1251,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("environment_name")
     parser.add_argument("--episodes", type=int, default=20)
-    parser.add_argument("--model", default=None, help="trained model name from train/")
+    parser.add_argument("--model", action="append", default=None,
+                        help="trained model from train/, repeatable and comma-splittable. "
+                             "NAME=LABEL names its row; otherwise a label is derived from "
+                             "the parts of the names that differ. One model is labelled "
+                             "`learned`")
     parser.add_argument("--brute-force", action="store_true")
     parser.add_argument("--steps", type=int, default=None,
                         help="rollout horizon for random/learned (default: env truncate/max steps)")
@@ -887,7 +1267,7 @@ def main():
     parser.add_argument("--tag", default=None,
                         help="label appended to the run directory name")
     parser.add_argument("--out-dir", default=None,
-                        help="write results here instead of runs_evaluation/<generated name>")
+                        help="write results here instead of runs_outputs/<generated name>")
     parser.add_argument("--no-plots", action="store_true",
                         help="skip plots; also skips per-step tracing, so rollouts are faster")
     parser.add_argument("--plot-episodes", type=int, default=3,
@@ -921,22 +1301,60 @@ def main():
                              "against the analytic prediction, e.g. 0.5,1,5")
     parser.add_argument("--noise-trials", type=int, default=30,
                         help="noise draws per (method, sigma)")
+    parser.add_argument("--sections", default="baselines",
+                        help="comma-separated subset of " + ",".join(SECTIONS) +
+                             ", or 'all'. baselines is the method comparison; the rest "
+                             "need their own inputs and say so when they are missing")
+    parser.add_argument("--runs", default=None,
+                        help="tensorboard directories under runs/ for the training "
+                             "section; defaults to the model names")
+    parser.add_argument("--prior", default=None,
+                        help="where the generalisation section looks for the earlier "
+                             "runs it aggregates, one per instance set. Default "
+                             "runs_outputs/*. It reads what those runs already measured "
+                             "rather than re-running them, so evaluate each benchmark "
+                             "once with --benchmark and this figure then compares them")
+    parser.add_argument("--ablation-mode", default="shuffle",
+                        help="shuffle, zero, noise, a comma-separated subset, or 'all'. "
+                             "Reading one mode alone is how a channel gets called "
+                             "unimportant when it was simply not perturbed")
+    parser.add_argument("--ablation-episodes", type=int, default=10)
     parser.add_argument("--replay-env", action="store_true",
                         help="score every method against the environment --model was trained "
                              "on (from its manifest) instead of the current code")
     args = parser.parse_args()
 
+    sections = [s.strip() for s in args.sections.split(",") if s.strip()]
+    if sections == ["all"]:
+        sections = list(SECTIONS)
+    unknown = [s for s in sections if s not in SECTIONS]
+    if unknown:
+        print(f"unknown section(s): {unknown}, expected {list(SECTIONS)}")
+        return 1
+
+    model_specs = parse_models(args.model)
+    labels = [lab for _, lab in model_specs]
+    if args.replay_env and len(model_specs) > 1:
+        print("--replay-env replays one model's archived environment, so with several "
+              "models the rows would not all be scored by the same phi. Pass one "
+              "--model, or drop --replay-env.")
+        return 1
+
+    known = method_sequence(labels)
     methods = [m.strip() for m in args.methods.split(",") if m.strip()]
     if methods == ["all"]:
-        methods = list(ALL_METHODS)
-    unknown = [m for m in methods if m not in ALL_METHODS]
+        methods = list(known)
+    # `learned` names every model whatever they are called, which is what keeps the
+    # default --methods string meaning what it always meant
+    methods = [m for x in methods for m in (labels if x == "learned" else [x])]
+    unknown = [m for m in methods if m not in known]
     if unknown:
-        print(f"unknown method(s): {unknown}, expected {list(ALL_METHODS)}")
+        print(f"unknown method(s): {unknown}, expected {known}")
         return 1
     # --brute-force is the older spelling of the same thing
     if args.brute_force and "optimal" not in methods:
         methods.append("optimal")
-    methods = [m for m in ALL_METHODS if m in methods]
+    methods = [m for m in known if m in methods]
 
     filepath = "./environments/" + args.environment_name + ".json"
     if not os.path.exists(filepath):
@@ -959,18 +1377,22 @@ def main():
         steps = int(env.truncate_max_steps if env.truncate_enable else env.max_steps)
     n = env.network.n
 
-    agent = wrapped = None
-    if args.model:
+    wrapped = None
+    models = {}                       # label -> {name, agent, algorithm, manifest}
+    if model_specs:
         from skrl.envs.wrappers.torch import wrap_env
         from agent_loader import load_agent, load_run
 
         if args.replay_env:
-            # every method is then scored through the archived compute_state_score, which
-            # is what keeps the table internally consistent with the run being evaluated
+            # load_run execs one model's archived rigidity.py and environment.py into
+            # sys.modules, so two archives cannot both be live
+            (name, label), = model_specs
             agent, wrapped, env, info = load_run(
-                args.model, env_name=args.environment_name, device=args.device
+                name, env_name=args.environment_name, device=args.device
             )
-            algorithm = (info or {}).get("algorithm", "?")
+            models[label] = {"name": name, "agent": agent,
+                             "algorithm": (info or {}).get("algorithm", "?"),
+                             "manifest": info or {}}
             env.action_space.seed(args.seed)
             n = env.network.n
             if args.steps is None:
@@ -978,12 +1400,42 @@ def main():
         else:
             # the wrapper reads env.device to decide where to put observations; without
             # this it defaults to cuda while the agent is built on cpu
+            bad = []
+            for name, _ in model_specs:
+                diff = observation_mismatch(
+                    load_manifest(name).get("environment_config_raw") or {}, env_config_data)
+                if diff:
+                    bad.append((name, diff))
+            if bad:
+                print("these models were trained on a different observation, so their "
+                      "checkpoints do not fit this environment:")
+                for name, diff in bad:
+                    for k, was, now in diff:
+                        print(f"  {name}: {k} was {was}, this environment has {now}")
+                return 1
+
             env.device = args.device
             wrapped = wrap_env(env)
             wrapped.reset()
-            agent, algorithm = load_agent(args.model, wrapped, env, device=args.device)
-        print(f"loaded {algorithm} model '{args.model}' on {args.device}"
-              f"{' (replaying its archived environment)' if args.replay_env else ''}")
+            for name, label in model_specs:
+                agent, algorithm = load_agent(name, wrapped, env, device=args.device)
+                # not `manifest`: that name is the module this file imports
+                man = load_manifest(name)
+                models[label] = {"name": name, "agent": agent, "algorithm": algorithm,
+                                 "manifest": man}
+                trained_on = man.get("environment_config")
+                # the same environment gets regenerated under different names, so the
+                # name is only a warning
+                if isinstance(trained_on, str) and trained_on != args.environment_name:
+                    print(f"  note: {name} was trained on {trained_on}, "
+                          f"scoring it on {args.environment_name}")
+        for label, m in models.items():
+            print(f"loaded {m['algorithm']} model '{m['name']}' as '{label}' "
+                  f"on {args.device}"
+                  f"{' (replaying its archived environment)' if args.replay_env else ''}")
+
+    report.configure_methods([(lab, f"trained policy {m['name']} ({m['algorithm']})")
+                              for lab, m in models.items()])
 
     if "optimal" in methods and n > MAX_BRUTE_FORCE_N:
         print(f"brute force refused: n={n} > {MAX_BRUTE_FORCE_N} "
@@ -1017,10 +1469,13 @@ def main():
 
     instances = []
     # every legal edit is scored at every step, so this is gated on n
-    decisions = [] if (agent is not None and not args.no_plots
+    decisions = [] if (models and not args.no_plots
                        and n <= MAX_DECISION_ANALYSIS_N) else None
-    if decisions is None and agent is not None and not args.no_plots:
+    if decisions is None and models and not args.no_plots:
         print(f"  decision analysis skipped: n={n} > {MAX_DECISION_ANALYSIS_N}")
+    elif decisions is not None and len(models) > 1:
+        # it scores every legal edit at every step, once per model
+        print(f"  decision analysis runs for all {len(models)} models")
     # the repair figure enumerates every minimum-size repair, so it is small-n only
     repair_rng = np.random.default_rng(args.seed)
     repair_records = [] if (not args.no_plots and n <= MAX_REPAIR_FIGURE_N) else None
@@ -1045,6 +1500,15 @@ def main():
             args.episodes = len(frozen)
         print(f"  instances: benchmark {args.benchmark} "
               f"({benchmark.digest(args.benchmark)}), sampling disabled")
+
+    # One bar for the run. Every method on every episode is a unit, the noise sweep is
+    # one more per episode, and the report is the last; the description says which.
+    units = args.episodes * (len(methods) + (1 if sigmas else 0)) + 1
+    progress = tqdm(total=units, unit="step", dynamic_ncols=True, leave=True,
+                    bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]")
+
+    def doing(what):
+        progress.set_description_str(what)
 
     rows = []
     for ep in range(args.episodes):
@@ -1071,16 +1535,18 @@ def main():
             env.reset()
 
         ctx = dict(env=env, args=args, traces=traces, episode=ep, steps=steps,
-                   agent=agent, wrapped=wrapped, decisions=decisions,
+                   models=models, wrapped=wrapped, decisions=decisions,
                    construct_rng=construct_rng, anneal_rng=anneal_rng,
                    degree_rng=degree_rng, anneal_budget=args.anneal_budget)
 
         episode_rows = []
         for name in methods:
+            doing(f"episode {ep + 1}/{args.episodes}  {name}")
             restore()
             # the restore is shared setup, so only the method itself is metered
             with cost.Meter() as meter:
                 row = run_method(name, ctx)
+            progress.update(1)
             if row is None:                      # unavailable: no model, or n too large
                 continue
             row["cost"] = meter.counts
@@ -1092,16 +1558,19 @@ def main():
                 ctx["anneal_budget"] = meter.counts.get("score_network", 0) or None
 
         if sigmas:
+            doing(f"episode {ep + 1}/{args.episodes}  bearing noise")
             for r in episode_rows:
                 measure_noise(env, r, sigmas, args.noise_trials,
                               np.random.default_rng(args.seed + ep))
+            progress.update(1)
 
         for r in episode_rows:
             r["episode"] = ep
+            # the bound is a property of the poses, so it belongs to the row rather than
+            # to the run; stamped here so no run_* can forget it
+            r["m_req"] = int(env.m_req)
         rows.extend(episode_rows)
 
-        line = "  ".join(f"{r['method']}: m={r['m']} phi={r['score']:.1f}" for r in episode_rows)
-        print(f"  ep {ep:>3}  {line}")
 
     # ── report ────────────────────────────────────────────────────────────────────────
     domains = env.domains if isinstance(env.domains, list) else [env.domains]
@@ -1114,15 +1583,18 @@ def main():
                       f"({benchmark.digest(args.benchmark)})" if args.benchmark
                       else f"{args.episodes} random networks, seed {args.seed}"),
     }
-    if args.model:
-        context["policy"] = (f"{args.model} ({algorithm}, --policy-mode {args.policy_mode}, "
-                             f"{steps}-step budget)")
+    if models:
+        context["policy"] = "  |  ".join(
+            f"{lab} = {m['name']} ({m['algorithm']})" for lab, m in models.items())
+        context["rollout"] = (f"--policy-mode {args.policy_mode}, "
+                              f"{steps}-step budget, same for every model")
 
+    doing("writing the table")
     table = report.format_table(rows, context, brief=args.brief)
-    print("\n" + table)
 
-    run_dir = report.make_run_dir("runs_evaluation", args.environment_name,
-                                  model_name=args.model, tag=args.tag, out_dir=args.out_dir,
+    run_dir = report.make_run_dir("runs_outputs", args.environment_name,
+                                  model_names=[m["name"] for m in models.values()],
+                                  tag=args.tag, out_dir=args.out_dir,
                                   with_plots=bool(traces))
     report.write_summary(run_dir, table)
     report.write_csvs(run_dir, rows, traces)
@@ -1133,6 +1605,9 @@ def main():
         "args": vars(args),
         "environment_config": env_config_data,
         "n": n, "rollout_steps": steps,
+        # label -> the model behind it, since the labels are derived and the figures
+        # only carry the short one
+        "models": {lab: m["name"] for lab, m in models.items()},
         # the instance set, so two runs are only comparable when these agree
         "benchmark": args.benchmark,
         "benchmark_digest": benchmark.digest(args.benchmark) if args.benchmark else None,
@@ -1145,24 +1620,42 @@ def main():
     if decisions:
         written.append("decisions.csv")
     if traces:
-        # the full names go in the figure titles (wrapped): a plot pulled into a slide
-        # has to say which model and which environment produced it
         header = {
             "short": report.short_env_name(args.environment_name),
             "env": args.environment_name,
-            "model": args.model,
+            "model": ("  ".join(f"{lab} = {m['name']}" for lab, m in models.items())
+                      or None),
             "network": context["network"],
             "episodes": args.episodes,
             "seed": args.seed,
             "benchmark": args.benchmark,
         }
-        # the table itself, so the numbers travel with the figures. The policy line drops
-        # the model name -- the header already carries it in full one line above
-        policy = (f"{algorithm}, --policy-mode {args.policy_mode}, {steps}-step budget"
-                  if args.model else None)
+        policy = context.get("rollout")
         table_header = dict(header, objective=context["objective"], policy=policy)
 
+        extra_draws = []
+        for name in sections:
+            if name != "baselines":
+                doing(f"section {name}")
+            if name == "baselines":
+                continue
+            why = section_refusal(name, args, models)
+            if why:
+                print(f"skipping {name}: {why}")
+                continue
+            if name == "ablation":
+                files, draws = section_ablation(args, run_dir, env, wrapped, models,
+                                                header, doing=doing)
+            elif name == "training":
+                files, draws = section_training(args, run_dir, models, header)
+            elif name == "generalisation":
+                files, draws = section_generalisation(args, run_dir, models, header)
+            written.extend(files)
+            extra_draws.extend(draws)
+
         def draw_all():
+            for draw in extra_draws:
+                draw()
             report.plot_trajectories(run_dir, traces, rows, header)
             report.plot_outcomes(run_dir, traces, rows, header)
             report.plot_summary(run_dir, rows, header)
@@ -1172,6 +1665,11 @@ def main():
             report.plot_softest_mode(run_dir, instances, rows, header)
             report.plot_sensitivity(run_dir, instances, rows, header)
             report.plot_repair_choice(run_dir, repair_records, header)
+            report.plot_comparison(run_dir, rows, header)
+            report.plot_estimation(run_dir, rows, header)
+            report.plot_topology(run_dir, instances, rows, header)
+            report.plot_run_info(run_dir, run_info_blocks(
+                args, env, env_config_data, models, steps, methods, rows), header)
             report.plot_cost(run_dir, rows, header)
             report.plot_decisions(run_dir, decisions, header)
             report.plot_table(run_dir, rows, table_header)
@@ -1183,9 +1681,11 @@ def main():
                                          ep_header, filename=f"episode_{ep:03d}",
                                          aggregate_over_episodes=False)
 
+        doing("drawing figures")
         draw_all()
         # and again without the title block or the notes card, for a document that
         # carries its own caption
+        doing("drawing figures, plain")
         with report.plain():
             draw_all()
         # counted rather than predicted: several figures skip themselves when the
@@ -1193,6 +1693,11 @@ def main():
         made = len(glob.glob(os.path.join(run_dir, "plots", "png", "*.png")))
         written.append(f"plots/pdf/ and plots/png/ ({made} figures each)")
 
+    progress.update(1)
+    doing("done")
+    progress.close()
+
+    print("\n" + table)
     print(f"\nwrote {run_dir}/")
     for w in written:
         print(f"  {w}")

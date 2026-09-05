@@ -22,7 +22,7 @@ import copy
 
 import numpy as np
 
-import evaluation as B
+import outputs as B
 import benchmark
 from environment import Environment
 
@@ -84,7 +84,7 @@ def build_env(nets, max_steps):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=None,
-                    help="print the evaluation.py commands that check the learned rows")
+                    help="print the outputs.py commands that check the learned rows")
     ap.add_argument("--quick", action="store_true",
                     help="digests and constants only, no baseline runs")
     ap.add_argument("--restarts", type=int, default=20)
@@ -122,7 +122,7 @@ def main():
         rng = np.random.default_rng(args.seed)
         acc = {"greedy": [], "constructive": []}
         for inst in nets:
-            # freeze BEFORE reset, exactly as evaluation.py does: with freeze_network
+            # freeze BEFORE reset, exactly as outputs.py does: with freeze_network
             # False, reset() redraws the network and the frozen instance is discarded
             e.freeze_network = False
             e.network = copy.deepcopy(inst)
@@ -150,14 +150,14 @@ def main():
     print("-" * 76)
     print(f"{'FAILURES: ' + str(failures) if failures else 'all documented values reproduce'}")
 
-    # the learned rows go through evaluation.py rather than being reimplemented here:
+    # the learned rows go through outputs.py rather than being reimplemented here:
     # a second rollout path would drift and the verification would be the thing that is wrong
     print("\nThe `learned` rows are not checked here. models/ and train/ are gitignored, so a\n"
           "checkout does not carry the checkpoint, and re-implementing the rollout would risk\n"
           "verifying against a different code path. On the machine holding the checkpoint:")
     for label, bench, *_ in CLAIMS:
         env_hint = bench.replace("bench_", "")
-        print(f"  uv run evaluation.py <env for {env_hint}> --benchmark {bench} "
+        print(f"  uv run outputs.py <env for {env_hint}> --benchmark {bench} "
               f"--model {args.model or '<name>'} --steps 100")
     return 1 if failures else 0
 

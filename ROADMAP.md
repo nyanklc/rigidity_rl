@@ -54,6 +54,17 @@ see `DESIGN_NOTES.md#spectral-baseline` and `#cost-counters`). What they said, a
   half an edge for 3% of the compute -- and it sharpens the question of what the policy is for.
   Its shape error is 20x greedy's, which is the obvious place to look for where it pays.
 
+**`outputs.py` now compares models against each other**, and the presentation figures are
+reproducible from the repository rather than from gitignored scripts. On `bench_mixed`, 20
+instances, four models against eight baselines: every model reaches the proven bound more often
+than any classical method (`gine` and `equi` 90%, `greedy` 65%), and `k10_gine`, trained at
+`stiffness_kappa = 10`, has the best shape error (6.9 against greedy's 12.2) while placing last of
+the four on edges. That is what a stiffness-weighted objective should do, and it is the first
+side-by-side measurement of it.
+
+One seed, one benchmark, and three of those four models differ from the reference in one axis
+each, so read the ordering rather than the digits until the statistical protocol below is done.
+
 Immediate follow-ups, in order:
 
 - Re-run the above on `--benchmark` sets of 50 rather than 6, with three seeds. Nothing in this

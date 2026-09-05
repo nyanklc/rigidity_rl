@@ -6,7 +6,7 @@ import pytest
 
 import cost
 import report
-from evaluation import (_is_best, _percentile_of, decision_record, edit_landscape,
+from outputs import (_is_best, _percentile_of, decision_record, edit_landscape,
                         measure_noise, phi_landscape, run_anneal, run_degree, run_greedy,
                         run_initial, run_spectral, score_network, run_random)
 
@@ -41,7 +41,7 @@ def test_greedy_is_at_least_as_good_as_random_and_far_cheaper(make_env):
     The restore between methods is the point: without it run_random continues from
     the graph run_greedy just optimised and can only improve on it, which makes the
     comparison meaningless (and eventually fails, when random finds the two-edit
-    swap greedy cannot). evaluation.py deep-copies for the same reason.
+    swap greedy cannot). outputs.py deep-copies for the same reason.
     """
     e = make_env(n=6, domains="R^3", max_steps=80,
                  termination_condition_type="MaxSteps")

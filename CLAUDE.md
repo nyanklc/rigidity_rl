@@ -157,10 +157,21 @@ uv run train_dqn.py <environment_name> <model_name>
 # Roll out a trained model (BRUTE_FORCE_BEST compares against exhaustive search on small graphs)
 uv run inference.py <model_name> <environment_name>
 
-# Reference points and baselines, all scored with the same phi, and all metered
-uv run evaluation.py <environment_name> [--episodes N] [--model <name>] [--methods a,b] [--restarts K] [--replay-env] [--noise-sweep 0.5,1,5]
+# Every figure and table, in one script. Reference points, baselines and any number of
+# trained models, all scored with the same phi, and all metered
+uv run outputs.py <environment_name> [--episodes N] [--model A,B=label] [--methods a,b] [--sections s,t] [--restarts K] [--replay-env] [--noise-sweep 0.5,1,5]
 #   methods: initial, random, degree, greedy, spectral, anneal, constructive, learned,
-#     optimal -- or "all". --brute-force is the older spelling of "optimal"
+#     optimal -- or "all". `learned` names every --model whatever they are labelled.
+#     --brute-force is the older spelling of "optimal"
+#   --model NAME[=LABEL], repeatable and comma-splittable. One model is labelled
+#     `learned`; several are labelled by the parts of their names that differ
+#   --sections baselines,ablation,training,generalisation -- or "all".
+#     Default baselines. A section without its inputs says so and is skipped
+#   --runs NAME[,...]  tensorboard dirs for the training section (default: the models)
+#   --prior GLOB       where generalisation looks for the earlier runs it aggregates,
+#     one per instance set (default runs_outputs/*). It reads what those runs already
+#     measured, so evaluate each benchmark once with --benchmark and it compares them
+#   --ablation-mode shuffle|zero|noise, a subset, or "all"; --ablation-episodes
 #   --spectral-shortlist K  candidates the spectral baseline rescores before it commits
 #   --anneal-budget N       phi evaluations the annealer gets; default is exactly what
 #                           greedy spent on the same instance
@@ -198,7 +209,7 @@ tensorboard --logdir runs
 
 Names are filenames without extension: `<environment_name>` → `environments/<name>.json`, `<scenario_name>` → `scenarios/<name>.json`.
 
-**Tests: `uv run tests/run_all.py`** (fast suite, ~55 s, 817 checks) or
+**Tests: `uv run tests/run_all.py`** (fast suite, ~55 s, 822 checks) or
 `uv run tests/run_all.py --slow` (~3 min, adds training runs, brute force and large n).
 Individual files run standalone: `uv run pytest tests/test_flex.py -v`.
 
@@ -246,7 +257,7 @@ There is no linter or CI.
 What each method spends, so the compute comparison is measured rather than argued. A `@counted`
 decorator on the primitives that own the linear algebra - one line per function, **no call site
 anywhere changes** - plus `Meter`, a context manager that reports the deltas and the wall time for
-one method. `evaluation.py` brackets every method with one, and `report.py` prints the block.
+one method. `outputs.py` brackets every method with one, and `report.py` prints the block.
 
 Three things about it that are easy to get wrong:
 
@@ -356,7 +367,7 @@ three times more eager to add than to prune, R^2 is neutral. Its optimum also mo
 configuration (50 at n=4/R^2, 300 at n=8/R^3), shifting the critic's target range.
 `WeightedNormalized` is the dimensionless replacement.
 
-**Episode reset** re-randomizes poses *and* edges (a fresh `random_scenario`), so the policy must generalize across geometries, not memorize one. Setting `env.freeze_network = True` makes `reset()` redo only the per-episode bookkeeping (`begin_episode()`) and keep the current graph - that is how `evaluation.py` runs several methods on one instance.
+**Episode reset** re-randomizes poses *and* edges (a fresh `random_scenario`), so the policy must generalize across geometries, not memorize one. Setting `env.freeze_network = True` makes `reset()` redo only the per-episode bookkeeping (`begin_episode()`) and keep the current graph - that is how `outputs.py` runs several methods on one instance.
 
 **`skip_enabled`** (env config). When `False`, `train_ppo.py` / `train_dqn.py` pass `allow_skip=False` to the models, which mask the skip logit to `MASK_VALUE` (`-inf`) in `compute()` *and* in the DQN `random_act()`. The action space keeps its width, so checkpoints and `agent_loader` stay compatible. **Skip must either be masked out or be a real stop** (`skip_is_stop: True`): as a free no-op it is an absorbing zero-reward cycle that on-policy methods collapse onto (observed: entropy → 0, all rewards exactly 0, graph unmodified for two thirds of training). Generated configs default to skip masked out, scored with the best-state-visited metric below; the stop arm is `skip_enabled` + `skip_is_stop` + a small `time_penalty_value`, and is measured but unresolved (`DESIGN_NOTES.md#horizon`).
 
@@ -616,16 +627,54 @@ network never saw, so the reaction measures out-of-distribution surprise rather 
 negative results are the ones that survive mode changes, because `zero` is the *aggressive*
 ablation: a channel that costs nothing even when zeroed is genuinely unused.
 
-### Baselines (`evaluation.py`, `agent_loader.py`)
+### Outputs (`outputs.py`, `report.py`, `agent_loader.py`)
 
-`evaluation.py` scores every method through `Environment.compute_state_score`, so all rows of its
+`outputs.py` is the single results script: the baseline comparison, the ablation, the training
+curves, the cross-benchmark generalisation and the training-loop diagram, selected with
+`--sections` and written into one run directory. `ablation.py` and the tools stay runnable on
+their own; the sections call into them rather than replacing them.
+
+**Sections declare what they need and refuse cleanly.** `section_refusal(name, args, models)`
+returns a sentence or None; a refusal prints `skipping <name>: <reason>` and only an all-refused
+run exits non-zero, so a missing input never costs the sections that can run. Each returns
+`(written_files, draws)` where `draws` are zero-argument thunks, which is what keeps the "draw
+everything, then draw it again plain" contract in one place. `ablation` reuses the agent and the
+live environment the baselines section already built, so two sections in one directory cannot
+report numbers measured against different environments.
+
+**`--model` takes a list, and it is a model-against-model comparison.** Models may differ in
+algorithm, backbone, `stiffness_kappa` and training length at once, so series are labelled by
+model and never by algorithm. `parse_models` accepts `NAME[=LABEL]`, repeatable and
+comma-splittable; one model keeps the label `learned`, and several are labelled by the `_` tokens
+that differ between the names (`stiff_dqn_gine` / `stiff_ppo_gine` -> `dqn` / `ppo`), erroring on
+a collision rather than appending a digit. `--replay-env` is refused past one model: it execs one
+archive's `rigidity.py` and `environment.py` into `sys.modules` and two cannot both be live.
+`--policy-mode` and `--device` stay global, the first because comparing argmax against sampled
+compares protocols rather than policies.
+
+**A model whose observation does not fit is named before anything loads.** `observation_mismatch`
+compares the config keys that decide the observation's width (`OBS_KEYS`) against the evaluation
+environment's, and prints which key differs. The environment *name* is only a note, because the
+same environment is regenerated under different names; the flags are what predict the failure,
+which otherwise surfaces as "parameter shapes do not match the checkpoint" from inside
+`agent_loader`.
+
+**`run_info` is where the run is written down.** The per-figure title block is gone, which gives
+every figure back four lines of height. In its place one figure carries the environment, the
+instances, the methods, and per model the algorithm, backbone, widths, training length, learning
+rate, seed and git commit, plus **the objective each model was trained on against the one it is
+scored by**. All rows are scored by the current environment's φ, which is what makes the table
+comparable; a model trained at `stiffness_kappa = 2` sitting beside one trained at `10` is a fact
+the reader needs.
+
+`outputs.py` scores every method through `Environment.compute_state_score`, so all rows of its
 table are measured by the exact φ the agent trains on. `greedy`, `spectral`, `anneal`, `degree` and
 `optimal` work in edit space (action-space agnostic); `random` and `learned` go through `env.step()`
 and are therefore specific to the configured action space, and are scored on best-state-visited.
 `optimal` scans edge count ascending and stops at the first level admitting an IBR graph - unlike
 `MBR_required_Rd` this makes no homogeneity assumption, but it is gated at `n ≤ 5`.
 
-**Dispatch is `ALL_METHODS` plus `run_method(name, ctx)`**, one loop in `main()` that restores the
+**Dispatch is `method_sequence(labels)` plus `run_method(name, ctx)`**, one loop in `main()` that restores the
 instance, runs the method inside a `cost.Meter` and attaches the counters to the row. That is what
 makes `--methods all` possible and what guarantees no method is metered by a different rule than
 another. `optimal` is a `--methods` name; `--brute-force` is kept as an alias. A method that
@@ -640,7 +689,7 @@ is `add_stiffness`, a normalised *ranking prior* rather than the true λ, so an 
 climb never reaches a local optimum and runs to its step cap. **At `stiffness_kappa = 0` the closed
 form is exact and `spectral` reproduces `greedy` edge for edge** - measured 60/60 instances across
 all five domains, at 3.7-6.9x fewer rigidity computations - which
-`tests/test_evaluation_reference.py` asserts. The tie break has to be row-major-stable to get
+`tests/test_outputs_reference.py` asserts. The tie break has to be row-major-stable to get
 that, since adding a rank-1 edge and dropping a redundant one are an exact tie in the `c_max = 2`
 domains. `phi_landscape` **raises** on any state score outside `WeightedNormalized` /
 `WeightedNormalizedSpectral`, whose `w_rank = 100`, `w_edge = 25` it hardcodes; returning those
@@ -658,7 +707,7 @@ the stiffness is not submodular and greedy carries no guarantee (`THEORY.md` §1
 **`degree` is the tier-1 distributed-plausible reference.** Add the absent pair minimising
 `(outdeg_i + indeg_j)` until rigid, then drop the highest-degree edge whose removal keeps the
 network rigid. It reads nothing beyond degrees and the rigidity test itself - no marginal ranks,
-no spectrum - which `tests/test_evaluation_reference.py` pins by asserting it never calls
+no spectrum - which `tests/test_outputs_reference.py` pins by asserting it never calls
 `candidate_gain`, `removal_costs`, `nullspace_and_softest` or `score_network`. Own RNG.
 
 **`constructive` is the classical opponent.** From the empty graph, keep any edge that raises
@@ -689,19 +738,27 @@ Pass `--device` if you want the `--model` rollout on GPU; it defaults to cpu and
 1.6k subsets at `n=4` (needs 5 edges) but ~432k at `n=5` when 9 edges are needed.
 
 **Output lives in one directory per run** (`report.py`), named
-`runs_evaluation/<timestamp>__<short-env>[__<model>][__<tag>]/`:
+`runs_outputs/<timestamp>__<short-env>[__<models>][__<tag>]/`. Past two models the count
+stands in for the names and `meta.json` says which they were. Every section writes into
+the same directory:
 
 ```
 summary.txt        the printed table, the cost block, and their legends
 results.csv        one row per (episode, method) -- the final outcome
 trajectories.csv   one row per (episode, method, step) -- the time series
 cost.csv           one row per (episode, method) -- every counter; legend in cost.txt
-meta.json          args, env config, and manifest.collect_provenance()
-plots/pdf/         table, trajectories, outcomes, summary, cost, episode_NNN,
-                   uncertainty, softest_mode, sensitivity, repair_choice
+decisions.csv      one row per edit a policy applied, with a `model` column (--model only)
+ablation/          one <label>-<mode>.csv + .txt per model        [ablation]
+training.csv       tail mean per (run, metric)                    [training]
+generalisation.csv one row per (model, instance set), with the source dir and its
+                   git commit                                     [generalisation]
+meta.json          args, env config, the label -> model map, and provenance
+plots/pdf/         run_info, table, comparison, estimation, topology, trajectories,
+                   outcomes, summary, cost, episode_NNN, uncertainty, softest_mode,
+                   sensitivity, repair_choice
                    (+ noise and prediction with --noise-sweep,
-                    + decisions with --model)
-decisions.csv      one row per edit the policy applied (--model only)
+                    + decisions with --model,
+                    + ablation-<label>, training, generalisation per section)
 plots/png/         the same figures again -- every figure is written in both formats,
                    filed by format (`PLOT_FORMATS` / `_save()`) rather than interleaved
 ```
@@ -740,6 +797,24 @@ high phi percentile beside a chance-level error percentile is a statement about 
 rather than about the policy. `MAX_DECISION_ANALYSIS_N` gates it -- it costs `n(n-1)` score
 evaluations per step.
 
+**`at bound` and `minimal` are two different questions and both are reported.** `m_req` is now
+recorded per row (`result(..., m_req=)`, stamped in the episode loop so no `run_*` can forget it)
+and reaches `results.csv`, because it is pose-dependent and a run cannot otherwise say whether a
+graph hit the bound without hardcoding a number for one benchmark. `at_bound` is rigid on exactly
+`m_req` edges, which is exact since the bound is proven; `is_MBR` is the repository's heuristic,
+which can over- and under-report on heterogeneous networks. Measured on `bench_mixed`, they
+disagree on most methods (`greedy` 65% against 80%, `equi` 90% against 100%), so the two columns
+sit side by side rather than one standing in for the other.
+
+**Three figures carry the comparison** on top of the older ones, which are all still written:
+`comparison` (edges, rigid, at bound, minimal, φ, and edges per network as one dot per instance),
+`estimation` (shape error, stiffness, measured against predicted error under noise, and shape
+error per network), and `topology` (per method, the graph it built, then the same graph behind the
+per-agent uncertainty shells and the softest mode). The shells share one scale across panels so
+their sizes compare, and the arrows are scaled per panel so their lengths do not. The 3-D panels
+carry no tick labels: the poses are centred and unit-normalised, so the numbers said nothing and
+three axes of them crowded every panel.
+
 **`shape err` is the column to read, not `stiffness`.** It is the RMS state error per radian of
 bearing noise (position in formation radii, attitude in radians), so `8.0` means one degree of
 bearing error displaces the shape by ~14% of its own size. **Lower is better**, and unlike λ it is
@@ -776,15 +851,23 @@ Per-step tracing rides with the plots - `--no-plots` skips both. It costs one ex
 eigendecomposition per step (+31% at `n=4`, +21% at `n=8`) and is served by
 `Environment.last_stats`, which `step()` fills from values it already computes; the
 `trace_min_eig` flag makes it also compute the rigidity eigenvalue without a TensorBoard writer.
-Both are guarded with `getattr`/`hasattr` in `evaluation.py` because `--replay-env` can hand back
+Both are guarded with `getattr`/`hasattr` in `outputs.py` because `--replay-env` can hand back
 an *archived* `Environment` from before those attributes existed.
 
-Plot colours come from the data-viz reference palette, used unchanged: the three compared methods
-take categorical slots 1-3 (certified for the all-pairs case), while `initial` and `optimal` are
-reference points drawn in neutral ink with dashed strokes rather than competing for a hue.
+**Colour belongs to the models, once there is more than one.** `report.configure_methods(models)`
+rebuilds the method tables once per run. With a single policy every method keeps a categorical hue
+(`SINGLE_MODEL_STYLE`, the palette the figures had before `--model` took a list). With two or more
+the hues go to the models in command order, since colour then has to answer "which model", and
+every classical baseline moves to ink and dash instead. `SURFACE` carries three usable line tones
+(`INK`, `INK_2`, `MUTED`), so eight baselines separate by tone and dash together, with `greedy` on
+the darkest ink as the reference opponent and `initial` / `optimal` keeping their dotted and dashed
+strokes. `method_style(name)` is the only lookup: its predecessor's `.get(name, INK_2)` fallback
+handed every unregistered method the same ink, which draws two policies as one line. Configured
+with no models it restores the single-policy tables, `learned` included, which is what every run
+written before `--model` took a list is keyed on.
 
 `agent_loader.load_agent()` rebuilds a trained skrl agent from its `train/<name>.json` manifest.
-Both `inference.py` and `evaluation.py` use it.
+Both `inference.py` and `outputs.py` use it.
 
 **Manifests are self-contained records of a run** (`manifest.py`, `manifest_version: 2`). Besides
 the hyperparameters and env config they archive the full text of every file that determined the
@@ -808,7 +891,7 @@ sources were not captured at the time. Where the check fails it writes `reconstr
 with the reason rather than a plausible lie. It also recovers `environment_config_raw` from
 `environments/<name>.json` for manifests that only recorded the config's name.
 
-**`load_run(model_name, env_name)`** is the entry point `inference.py` uses (and `evaluation.py`
+**`load_run(model_name, env_name)`** is the entry point `inference.py` uses (and `outputs.py`
 under `--replay-env`). When the archived sources differ from the working tree it says so and
 rebuilds *the environment the run was trained against*: `archived_modules()` execs each archived
 file into a fresh module registered under its real name in dependency order - so the archived
@@ -877,7 +960,7 @@ shim has `add_scalar` only. See `DESIGN_NOTES.md#training-metrics`.
 existing ones; generate a new config under a new name if an experiment needs different settings.
 
 ### Gitignored (don't assume present)
-`environments/`, `scenarios/`, `models/`, `runs/`, `runs_old*/`, `runs_evaluation/`, `train/`, `tboard_logs/`, `junk/`, `dummy/`.
+`environments/`, `scenarios/`, `models/`, `runs/`, `runs_old*/`, `runs_outputs/`, `train/`, `tboard_logs/`, `junk/`, `dummy/`.
 
 **`tools/` is where reusable scripts accumulate** (see the standing instruction above). `tests/` is
 for anything the suite should run; `tools/` is for everything else worth re-running.
@@ -892,7 +975,7 @@ separate is the point: two independent implementations agreeing is the evidence.
 its whole purpose is that a number measured today is comparable next month, which an untracked file
 cannot deliver. Three 20-instance sets cost 32 KB. See `DESIGN_NOTES.md#benchmarks`.
 
-**Nothing a run produces is tracked any more.** `runs_evaluation/` and `train/` were both tracked until they were untracked wholesale - the first churned hundreds of binary files per run, the second is paired with `models/` which was already ignored. Consequence: a manifest now only exists on the machine that trained it, so `train/<name>.json` is no longer a shared record - back it up alongside the checkpoint it describes. Anything that has to survive (the README's figures) is copied into `resources/`.
+**Nothing a run produces is tracked any more.** `runs_outputs/` and `train/` were both tracked until they were untracked wholesale - the first churned hundreds of binary files per run, the second is paired with `models/` which was already ignored. Consequence: a manifest now only exists on the machine that trained it, so `train/<name>.json` is no longer a shared record - back it up alongside the checkpoint it describes. Anything that has to survive (the README's figures) is copied into `resources/`.
 
 Because every output directory is ignored, **a fresh clone has none of them**, and any code that writes output has to `os.makedirs(..., exist_ok=True)` *before* opening the file. Two places had the call inside the `with open(...)` block, which fails on exactly that fresh clone (`environment.py` writing `environments/`, `scenario.py` writing `scenarios/`); both are fixed. The library-managed paths take care of themselves: `SummaryWriter` creates its `log_dir`, and skrl creates its checkpoint directory (`skrl/agents/torch/base.py`).
 

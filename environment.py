@@ -1628,7 +1628,7 @@ class Environment(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
 
-        # evaluation.py sets this to run several methods from the *same* random
+        # outputs.py sets this to run several methods from the *same* random
         # instance: the episode bookkeeping is redone, the graph is left alone
         if self.freeze_network:
             return self.begin_episode()
@@ -1742,8 +1742,8 @@ if __name__ == "__main__":
     # ACTION_TYPE = "AddEdgeDiscreteNoSkip"
     # ACTION_TYPE = "AddEdgeDiscreteNoSelfLoops"
     # ACTION_TYPE = "AddEdgeDiscreteNoSkipNoSelfLoops"
-    ACTION_TYPE = "AddRemoveEdgeDiscreteNoSelfLoops"
-    # ACTION_TYPE = "SelectNodesSequentially"
+    # ACTION_TYPE = "AddRemoveEdgeDiscreteNoSelfLoops"
+    ACTION_TYPE = "SelectNodesSequentially"
     # ACTION_TYPE = "DecideOnEdge"
 
     # ACTION_REWARDS_ENABLE = True
@@ -1800,7 +1800,7 @@ if __name__ == "__main__":
 
     STIFFNESS_KAPPA = 2.0
     STIFFNESS_REF_SAMPLES = 3
-    SPECTRAL_FUNCTIONAL = "eigenvalue" # eigenvalue | trace | logdet
+    SPECTRAL_FUNCTIONAL = "trace" # eigenvalue | trace | logdet
 
     INCLUDE_CANDIDATE_BEARINGS = True
 
@@ -1815,7 +1815,7 @@ if __name__ == "__main__":
     #############################################
 
     if len(sys.argv) < 3:
-        print("Usage: python3 environment.py [n] [domains] or python3 environment.py file [scenario_name]")
+        print("Usage: python3 environment.py [n] [domains] [optional_suffix] or python3 environment.py file [scenario_name] [optional_suffix]")
         print(f"Note: Only homogeneous networks for now")
         quit()
 
@@ -1871,6 +1871,10 @@ if __name__ == "__main__":
     rig_tag = f"_rig{rig_tag}" if rig_tag else ""
     rig_tag += "" if GRAPH_FEATURES else "_lean"
     model_name = f"action{ACTION_TYPE}_reward{STATE_SCORE_TYPE}_term{TERMINATION_CONDITION_TYPE}{rig_tag}_{scenario_name if scenario_name is not None else n_domains}"
+
+    if len(sys.argv) > 3 and sys.argv[3] is not None:
+        model_name += f"_{sys.argv[3]}"
+
     print(f"MODEL NAME: {model_name}")
 
     log_dir = "./tboard_logs/"

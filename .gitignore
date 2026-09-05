@@ -1,6 +1,7 @@
 __pycache__/
 scenarios/
 environments/
+resources/thesis/
 models/
 tboard_logs/
 *.zip
@@ -9,6 +10,7 @@ runs/
 runs_old/
 runs_old_old/
 runs_evaluation/
+runs_outputs/
 .idea/
 .spyproject/
 .vscode/

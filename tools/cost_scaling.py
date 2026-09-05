@@ -20,7 +20,7 @@ import copy
 import numpy as np
 
 import cost
-import evaluation as E
+import outputs as E
 from environment import Environment
 
 METHODS = ("degree", "spectral", "greedy", "constructive", "anneal")

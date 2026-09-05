@@ -379,7 +379,7 @@ def report(rows, ref, args, meta, out=sys.stdout):
 def write_csv(path, rows, ref, args, meta):
     """Data to <path>, the readable report to <path>.txt beside it.
 
-    Same split evaluation.py uses (results.csv next to summary.txt), for the same
+    Same split outputs.py uses (results.csv next to summary.txt), for the same
     reason: a legend commented into the head of the csv means every spreadsheet,
     csv viewer and `column -s,` shows 27 lines of noise before the table. The csv
     is a plain rectangle with the header on line 1; the prose lives next door,
@@ -447,12 +447,33 @@ def main():
             f"  |  seed {args.seed}  |  {'live' if args.live_env else 'archived'} env")
     print(f"\n{meta}")
 
+    rows, ref_row, converged = measure(
+        agent, wrapped, raw, layout, space, episodes=args.episodes, steps=steps,
+        mode=args.mode, rng=rng)
+
+    print(" " * 40, end="\r")
+    meta += (f"  |  stopped at the reference's convergence, "
+             f"median {int(np.median(converged))} of {steps} steps")
+    report(rows, ref_row, args, meta)
+
+    if args.csv:
+        data, notes = write_csv(args.csv, rows, ref_row, args, meta)
+        print(f"\nwrote {data}\n      {notes}  (the table and legend above)")
+
+
+def measure(agent, wrapped, raw, layout, space, *, episodes, steps, mode, rng,
+            progress=True):
+    """Destroy each channel in turn and measure what it cost. (rows, ref_row, converged).
+
+    The whole loop, so outputs.py can run it against an agent and an environment it has
+    already built rather than loading a second copy of both.
+    """
     acc = {name: [] for name, _, _ in layout}
     sens = {name: [] for name, _, _ in layout}
     ref_acc = []
     converged = []
 
-    for ep in range(args.episodes):
+    for ep in range(episodes):
         raw.freeze_network = False
         wrapped.reset()                 # draw a fresh instance
         instance = copy.deepcopy(raw.network)
@@ -473,12 +494,13 @@ def main():
         converged.append(used)
 
         for name, key, sl in layout:
-            sens[name].append(sensitivity(agent, states, space, key, sl, args.mode, rng))
+            sens[name].append(sensitivity(agent, states, space, key, sl, mode, rng))
             restore()
-            abl, _ = rollout(agent, wrapped, raw, used, space, key, sl, args.mode, rng)
+            abl, _ = rollout(agent, wrapped, raw, used, space, key, sl, mode, rng)
             acc[name].append({k: ref[k] - abl[k] for k in ref})
 
-        print(f"  episode {ep + 1}/{args.episodes}", end="\r", flush=True)
+        if progress:
+            print(f"  episode {ep + 1}/{episodes}", end="\r", flush=True)
 
     raw.freeze_network = False
     mean = lambda rs, k: float(np.mean([r[k] for r in rs]))
@@ -494,15 +516,7 @@ def main():
         "d_rigid": mean(acc[name], "rigid"),
         "d_minimal": mean(acc[name], "minimal"),
     } for name, _, _ in layout]
-
-    print(" " * 40, end="\r")
-    meta += (f"  |  stopped at the reference's convergence, "
-             f"median {int(np.median(converged))} of {steps} steps")
-    report(rows, ref_row, args, meta)
-
-    if args.csv:
-        data, notes = write_csv(args.csv, rows, ref_row, args, meta)
-        print(f"\nwrote {data}\n      {notes}  (the table and legend above)")
+    return rows, ref_row, converged
 
 
 if __name__ == "__main__":

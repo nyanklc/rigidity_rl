@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 import cost
-import evaluation as E
+import outputs as E
 import rigidity as R
 
 

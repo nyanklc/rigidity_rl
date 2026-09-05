@@ -39,7 +39,7 @@ PYTHONPATH=. uv run tools/<name>.py
 | `cost_scaling.py` | how does each baseline's cost grow with n, and does the cheaper one give up anything? |
 
 `constructive_greedy.py` is the standalone version of the `constructive` baseline
-now wired into `evaluation.py`, for difficulty sweeps that need no env config. It
+now wired into `outputs.py`, for difficulty sweeps that need no env config. It
 also shows that the `c_max = 1` domains are a matroid where any greedy is already
 optimal, which is why a "beats greedy" claim only means something in the spatial
 domains.
@@ -58,7 +58,7 @@ and `gnn_hidden_dim` an experiment actually uses, and report which control it
 ran. Widths are measured by forwarding rather than assumed, since assuming them
 is what hid the original 11-vs-128 mismatch.
 
-`cost_scaling.py` is the multi-`n` companion to `evaluation.py`'s cost block: one
+`cost_scaling.py` is the multi-`n` companion to `outputs.py`'s cost block: one
 evaluation run measures cost at one size, which cannot show a scaling exponent.
 Its first table is the check that matters before the rest means anything -- at
 `stiffness_kappa = 0` the closed form `spectral` uses is exact, so it must reach
@@ -72,7 +72,7 @@ anywhere. It builds the environment programmatically rather than reading the
 gitignored `environments/`, so it works on a fresh clone: benchmark digests tie a
 number to an instance set, and `greedy` / `constructive` need no checkpoint. The
 `learned` rows cannot be checked from a clone, because `models/` and `train/` are
-gitignored; it prints the `evaluation.py` commands instead of duplicating the
+gitignored; it prints the `outputs.py` commands instead of duplicating the
 rollout, since a second rollout path would drift and the check would become the
 thing that is wrong.
 

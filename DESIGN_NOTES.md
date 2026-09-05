@@ -253,7 +253,7 @@ Gated by `MAX_DECISION_ANALYSIS_N`: it costs `n(n-1)` score evaluations per step
 
 ### noise-sweep
 
-`evaluation.py --noise-sweep` measures what each method's graph actually costs: perturb
+`outputs.py --noise-sweep` measures what each method's graph actually costs: perturb
 every bearing by that many degrees, recover the formation, compare against the truth
 (`estimation.py`). The table prints measured against predicted, and `plots/*/noise.*`
 draws both.
@@ -482,7 +482,7 @@ use), but the maths is correct for arbitrary axes and the environment could not 
 ### benchmarks
 
 `benchmark.py` freezes evaluation instances (poses, orientations, domains, rotation axes, initial
-edges) into `benchmarks/<name>.npz`; `evaluation.py --benchmark <name>` evaluates on them instead of
+edges) into `benchmarks/<name>.npz`; `outputs.py --benchmark <name>` evaluates on them instead of
 sampling, and records the name and a content digest in `meta.json`.
 
 This exists because regenerating an env config silently resamples the instance distribution, and
@@ -906,7 +906,7 @@ is scale-invariant anyway, but the rigidity eigenvalue is not.
 
 When tracking is on, the rigidity eigenvalue is needed for logging anyway, so `step()` computes it
 once and hands it to the best-state tracker rather than letting that recompute it. `trace_min_eig`
-asks for the same value without a writer attached - `evaluation.py` records the rigidity eigenvalue
+asks for the same value without a writer attached - `outputs.py` records the rigidity eigenvalue
 over time.
 
 ---
@@ -1200,7 +1200,7 @@ Not settled, and this is the measurement that decides it: whether greedy's local
 are worse than what the policy reaches. The structural reason to expect a gap is already recorded -
 the stiffness is **not** submodular ([THEORY.md](THEORY.md) 14, 59% of tested triples violating
 diminishing returns), so greedy carries no guarantee there, unlike the rank objective where it sits
-0-5% above `m_req`. Expecting a gap is not measuring one. `evaluation.py` at `stiffness_kappa > 0`
+0-5% above `m_req`. Expecting a gap is not measuring one. `outputs.py` at `stiffness_kappa > 0`
 with `greedy` and `learned` on the same instances is the experiment, read on `shape err` and
 stiffness rather than on edge count, and no such comparison is recorded anywhere in this repository
 yet.
@@ -1212,7 +1212,7 @@ objective.
 
 ### constructive-baseline
 
-`evaluation.py --methods constructive`. From the empty graph, keep any edge that raises `rank(B)`,
+`outputs.py --methods constructive`. From the empty graph, keep any edge that raises `rank(B)`,
 stop at `rank_K`; best of `--restarts` independent random orders. This is the classical algorithm
 for the problem and the one the learned policy has to beat. `tools/constructive_greedy.py` is the
 standalone version, used for difficulty sweeps that do not need an env config.
@@ -1247,7 +1247,7 @@ restart, by replaying its additions from empty.
 
 ### spectral-baseline
 
-`evaluation.py --methods spectral`. Greedy rescores all `n(n-1)` toggles per improvement step. This
+`outputs.py --methods spectral`. Greedy rescores all `n(n-1)` toggles per improvement step. This
 computes the same landscape in closed form from the rigidity algebra, ranks the toggles by it, and
 rescores only the `--spectral-shortlist` best (default 5) before applying one.
 
@@ -1291,7 +1291,7 @@ there would make the check meaningless.
 
 ### anneal-baseline
 
-`evaluation.py --methods anneal`. Simulated annealing over single-edge toggles on the configured
+`outputs.py --methods anneal`. Simulated annealing over single-edge toggles on the configured
 phi: accept an improvement, accept a worsening with probability `exp(dphi/T)`, cool geometrically.
 Scored on best-state-visited, since the last state of an annealer is not its best.
 
@@ -1320,12 +1320,12 @@ the reason in `#constructive-baseline`.
 
 ### degree-baseline
 
-`evaluation.py --methods degree`. Add the absent pair minimising `outdeg(i) + indeg(j)` until the
+`outputs.py --methods degree`. Add the absent pair minimising `outdeg(i) + indeg(j)` until the
 network is rigid, then repeatedly drop the highest-degree edge whose removal keeps it rigid.
 
 It exists to price the tier-1 row of `#distributed-feasibility`: everything it reads is locally
 available except the rigidity test itself, which is global and unavoidable. No marginal ranks, no
-spectrum, no phi. `tests/test_evaluation_reference.py` pins that by asserting it never calls
+spectrum, no phi. `tests/test_outputs_reference.py` pins that by asserting it never calls
 `candidate_gain`, `removal_costs`, `nullspace_and_softest` or `score_network` - a test that fails
 the moment someone "improves" it with information a distributed agent could not have.
 
@@ -1378,7 +1378,7 @@ reward never asks it to use. `#greedy-vs-policy` predicted exactly this ("cost i
 from the scaling; this is the measurement. `spectral` is 190. From the cost block of
 
 ```bash
-uv run evaluation.py <mixed-config> --episodes 6 --methods all \
+uv run outputs.py <mixed-config> --episodes 6 --methods all \
     --model estimation_k10_dqn_gine --no-plots
 ```
 
@@ -1697,6 +1697,39 @@ node, so the six checks were ported to Python and checked against the reference 
 numbers (9.1 / 19.6) before being trusted. Reproduce that before changing a hue rather than
 reasoning about Delta E.
 
+### sections
+
+`outputs.py` produces every figure and table the thesis reports, and `--sections` picks which.
+Default `baselines`, and `all` for everything.
+
+**Why one script rather than four.** The figures share a palette, a method identity, a plain-variant
+mechanism and a run directory. Split across scripts those drift, which is exactly what happened to
+the presentation figures in `dummy/rl_course`: they redefine `GRID` one shade lighter than
+`report.GRID`, alias `C_DQN = METHOD_STYLE["greedy"]["color"]` so blue means DQN there and greedy
+here, and reimplement the plain variant as a module global mutated across modules.
+
+**Ablation is why sections are opt-in.** It re-runs every episode once per channel per mode, so at
+`19 channels x 3 modes x N models` it dwarfs the comparison it sits beside. `ablation.py` keeps its
+own CLI; the section calls `ablation.measure(...)`, lifted out of its `main()` verbatim, against
+the agent and the live environment the baselines section already built. Two sections in one
+directory reporting numbers from two different environments is the failure that would be hardest
+to notice.
+
+**`generalisation` is the one section that mixes vintages.** It aggregates earlier run directories,
+which were produced at different times against possibly different code. `generalisation.csv`
+carries each row's `source_dir` and `git_commit` and the figure card says so. It also writes an
+empty cell rather than a zero where a prior run predates `m_req` in `results.csv`, since a zero
+bar there would read as "never reached the bound" instead of "not recorded".
+
+**`training` reuses `tools/compare_runs.py:load`**, which groups event files by PID. The naive
+version in `dummy/rl_course` globs the directory and merges, so training twice under one name
+silently splices two runs into one curve.
+
+**`generalisation` draws only what it can compare.** A method present on one instance set says
+nothing about generalising and puts a "not run" marker on every other column, so those series are
+listed on the card instead of drawn. Its width is capped rather than scaled per set: at a few
+inches each, a dozen sets produce a figure no display can show.
+
 ### formation-panels
 
 The three formation figures (`uncertainty`, `softest_mode`, `sensitivity`) draw one 3-D panel per
@@ -1713,13 +1746,85 @@ because the figure exists to show it. Using display order as figure priority sil
 policy from all three figures the moment the method count passed the cap, since `learned` sits
 second to last in `METHOD_ORDER`. Selection is by priority and *drawing* is still by `METHOD_ORDER`,
 so the panels read in the same order as the table's rows.
-`tests/test_evaluation_reference.py` asserts `learned` survives a cap tight enough to bite.
+`tests/test_outputs_reference.py` asserts `learned` survives a cap tight enough to bite.
 
 **The cap bounds height, not width.** Every panel is a fixed 6.8 inches, so `_grid_for` choosing
 more columns widens the figure rather than shrinking the panels. It picks the column count in
 {3, 4} leaving the fewest empty cells, ties going to the narrower grid, which puts seven panels at
 4x2 with one hole instead of 3x3 with two - a third of the figure left blank. At nine the cap and
 the grid coincide.
+
+### method-identity
+
+`report.configure_methods(models)` rebuilds `METHOD_ORDER`, `METHOD_STYLE`, `METHOD_BLURB` and
+`FORMATION_PRIORITY` in place, once per run, from the models the run was given.
+
+**Why in place rather than a registry threaded through every plot function.** The seven
+`METHOD_ORDER` read sites and the `_rank_in` sort keys then do not change at all, against roughly
+forty signature and call-site edits for the alternative. The hidden-global objection is real in
+general and weak here: `report.py` is single-threaded, is drawn once per process, and already
+carries `_PLAIN` for exactly this reason. What the alternative would have bought is not safety but
+plumbing.
+
+**The fallback was the actual bug.** Every lookup used to be
+`METHOD_STYLE.get(name, {"color": INK_2})`, which hands *every* unregistered method the same ink.
+With one policy that never fired; with three it would have drawn them as one line. `method_style`
+takes the next unused categorical hue instead and remembers it.
+
+**Colour belongs to the models, once there is more than one.** A run with one policy has a hue to
+spare for every method and keeps the palette the figures had before, `SINGLE_MODEL_STYLE`. Past
+one, the hue has to answer "which model" and the baselines carry none, which is also the only
+thing that scales: the validated palette has eight categorical slots and there are already eight
+baselines. `SURFACE` supports three usable line tones (`INK` ~19:1, `INK_2` ~6.5:1, `MUTED` ~2.9:1;
+`AXIS` and `GRID` cannot carry a line), so the dash does the rest, and the honest limit is that
+`--methods all` with three models puts six grey lines in one panel, separated by dash and by the
+direct end label rather than by tone. The default `--methods` is five and a thesis figure should
+subset.
+
+**One model keeps the label `learned`.** Every existing `results.csv`, `tools/verify_results.py`
+and the tests key on that literal, and `--methods learned` still means "every model" whatever they
+are labelled, so the default `--methods` string means what it always meant.
+
+### observation-compatibility
+
+A checkpoint only loads against an environment whose observation has the same width and meaning.
+Three of the five models that looked like obvious comparison partners predate the
+`rigidity_quality` channel, so they cannot be scored on a current config at all.
+
+The environment *name* does not predict this: those three name the same environment as the models
+that do fit, because the config was regenerated in place. `observation_mismatch` compares
+`OBS_KEYS` instead and names the differing key before anything loads, which turns
+`ValueError: parameter shapes do not match the checkpoint`, raised from inside
+`agent_loader.resolve_model`, into `rigidity_quality was None, this environment has True`. The
+name check survives as a note, since the same environment does also get regenerated under
+different names.
+
+### run-info
+
+The title block used to repeat the environment, model, network and instance set on every figure.
+Removing it gives each figure back about four lines of height, and `run_info` carries that
+information once.
+
+It also carries what the table cannot: per model the algorithm, backbone, widths, training length,
+learning rate, seed and git commit, and **the objective the model was trained on beside the one it
+is scored by**. Every row in a run is scored by the current environment's phi, which is what makes
+the table comparable, but a model trained at `stiffness_kappa = 10` sitting in a table scored at
+`2` is a fact that changes how its row reads and it was previously written down nowhere.
+
+### at-bound
+
+`m_req` is pose-dependent, so it belongs to the row rather than to the run. It is stamped in the
+episode loop next to `episode`, where no `run_*` can forget it, and reaches `results.csv`.
+
+That is what makes `at_bound` possible without hardcoding a benchmark constant. The presentation
+scripts in `dummy/rl_course` set `M_REQ = 17` and threshold four figures on it, which is correct
+for exactly one benchmark and silently wrong for every other. It is also what lets the
+`generalisation` section put instance sets with different bounds on one axis, as edges over the
+bound.
+
+`is_MBR` is kept beside it rather than replaced. The two disagree on most methods on `bench_mixed`
+(`greedy` 65% at bound against 80% minimal, `degree` 30% against 45%), and since the bound is
+proven and the heuristic is not, seeing the gap is worth a column.
 
 ### plain-figures
 

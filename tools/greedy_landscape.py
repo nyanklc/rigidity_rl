@@ -1,6 +1,6 @@
 """Is greedy's phi landscape the same thing the observation already computes?
 
-`evaluation.py --methods greedy` scores every one of the n(n-1) single-edge
+`outputs.py --methods greedy` scores every one of the n(n-1) single-edge
 toggles by rebuilding B and taking an SVD. The observation's `add_rank` and
 `remove_rank` channels are the exact rank change of those same toggles, computed
 for all pairs at once. So the two can be compared directly, and the answer
@@ -23,7 +23,7 @@ import numpy as np
 
 import rigidity as R
 from environment import Environment
-from evaluation import phi_landscape, run_greedy, score_network
+from outputs import phi_landscape, run_greedy, score_network
 
 
 def make(n, domain, seed, **kw):
@@ -65,7 +65,7 @@ def brute_deltas(env):
 
 
 def rank_deltas(env):
-    """The same landscape in closed form, as evaluation.py's spectral baseline reads it.
+    """The same landscape in closed form, as outputs.py's spectral baseline reads it.
 
     Kept as a one-liner on purpose: this script exists to check that function, so a
     second copy of the formula here would make the check meaningless.

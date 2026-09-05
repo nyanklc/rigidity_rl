@@ -8,7 +8,7 @@ The figures that need the Network objects and per-row edge sets are not
 regenerable and are left untouched: uncertainty, softest_mode, sensitivity,
 repair_choice, decisions, noise, prediction.
 
-    PYTHONPATH=. uv run tools/rerender_evaluation.py [run_dir ...]
+    PYTHONPATH=. uv run tools/rerender_outputs.py [run_dir ...]
 """
 import csv
 import glob
@@ -162,7 +162,7 @@ def rerender(run_dir):
 
 
 def main(argv):
-    dirs = argv or sorted(glob.glob(os.path.join("runs_evaluation", "*")))
+    dirs = argv or sorted(glob.glob(os.path.join("runs_outputs", "*")))
     dirs = [d for d in dirs if os.path.exists(os.path.join(d, "meta.json"))]
     if not dirs:
         print("no evaluation runs with a meta.json")
