@@ -32,8 +32,46 @@ def transformed(e, kind, planar):
 
 
 def rigid_env(make_env, domain, n=6):
+    # every rigidity flag: the stiffness and removal channels were absent here, which
+    # is why their scale dependence in the oriented domains went unnoticed
     return make_env(n=n, domains=[domain] * n, graph_features=True,
-                    rigidity_global=True, rigidity_flex=True, rigidity_edge=True)
+                    rigidity_global=True, rigidity_quality=True, rigidity_flex=True,
+                    rigidity_edge=True, rigidity_stiffness=True,
+                    rigidity_removal=True, stiffness_kappa=2.0)
+
+
+def made_rigid(make_env, domain, n=6):
+    """An env whose graph is rigid, so the stiffness channels are live.
+
+    add_* is identically zero once rigid and remove_*/add_stiffness are identically
+    zero while flexible, so a channel has to be checked in the regime that carries it
+    or the comparison is machine noise against machine noise.
+    """
+    from rigidity import greedy_rigid_repair
+    e = rigid_env(make_env, domain, n=n)
+    e.reset()
+    greedy_rigid_repair(e.network, e.rank_K, rng=np.random.default_rng(0))
+    return e
+
+
+STIFFNESS_CHANNELS = {"node_slack": ("node_features", -2),
+                      "add_stiffness": ("edge_features", -3),
+                      "remove_stiffness": ("edge_features", -1)}
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+@pytest.mark.parametrize("kind", ["translate", "scale"])
+def test_stiffness_channels_are_invariant_on_a_rigid_graph(make_env, domain, kind):
+    """They are read off the length-normalised B; off the raw one a rescale moved
+    remove_stiffness by up to 49% in SE(3), because B mixes 1/length and
+    dimensionless columns."""
+    e = made_rigid(make_env, domain)
+    before = snapshot(e)
+    after = transformed(e, kind, domain in ("R^2", "R^2xS^1"))
+    for name, (key, col) in STIFFNESS_CHANNELS.items():
+        b = before[key][..., col]
+        assert np.abs(b).max() > 1e-6, f"{domain}: {name} is dead, nothing was tested"
+        assert np.abs(b - after[key][..., col]).max() < 1e-7, f"{domain} {kind} {name}"
 
 
 @pytest.mark.parametrize("domain", ALL_DOMAINS)

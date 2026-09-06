@@ -691,6 +691,34 @@ def greedy_rigid_repair(network, rank_K, rng=None, brmat=None, length_scale=None
 SPECTRAL_FUNCTIONALS = ("eigenvalue", "trace", "logdet")
 SPECTRAL_SIGMOID_WIDTH = {"eigenvalue": 0.75, "trace": 0.60, "logdet": 6.7}
 
+# A fixed centre for the conditioning term, so it needs no per-episode reference.
+# lambda's centre moves 2.5 decades over n = 8..20 and the five domains, which is why
+# it needed one; shape_err's moves 1.1, because the formation's size is already divided
+# out by the length normalisation and the agent count by the /n.
+# The exponent would divide out what is left of n, and is 0 because it was measured not
+# to buy anything: a sigmoid wide enough for the within-instance spread is already wide
+# enough for that drift, so at 1.9 the median and p10 instance keep exactly the same
+# gradient. Setting it near 1.9 makes phi's ceiling n-invariant, worth about 1% of phi
+# at kappa = 2. tools/shape_error_scale.py re-derives all three and prices the exponent.
+SHAPE_ERR_EXPONENT = 0.0
+SHAPE_ERR_CENTRE = 1.35
+SHAPE_ERR_SIGMOID_DECADES = 0.70
+
+
+def shape_error_quality(shape_err, n):
+    """q in (0, 1): how well conditioned this graph is, on a scale fixed in advance.
+
+    Lower shape_err is better, so q rises as it falls, and q = 0.5 at the centre --
+    a graph as good as a typical minimal one. None when the shape is not
+    identifiable, i.e. on a flexible framework.
+    """
+    if shape_err is None or not np.isfinite(shape_err) or shape_err <= 0:
+        return None
+    g = np.log10(shape_err) - SHAPE_ERR_CENTRE
+    if SHAPE_ERR_EXPONENT:
+        g -= SHAPE_ERR_EXPONENT * np.log10(max(int(n), 2))
+    return float(1.0 / (1.0 + np.exp(g / SHAPE_ERR_SIGMOID_DECADES)))
+
 
 def spectral_value(functional, lam, a_opt=None, d_opt=None):
     """The scalar a spectral state score reads. None when it is undefined."""

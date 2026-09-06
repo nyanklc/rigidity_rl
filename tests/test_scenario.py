@@ -102,3 +102,82 @@ def test_scale_network_scales_about_the_centroid():
     p1 = net.get_position_features()
     assert np.allclose(p1.mean(axis=0), c0)
     assert np.allclose(p1 - c0, 3.0 * (p0 - c0))
+
+
+# ---------------------------------------------------------------- random domains
+
+def test_domains_are_fixed_across_resets_by_default(make_env):
+    doms = ["R^2", "R^3", "SE(3)", "R^3xS^1", "R^2xS^1", "R^2"]
+    e = make_env(n=6, domains=doms)
+    for _ in range(5):
+        e.reset()
+        assert [a.domain for a in e.network.agents] == doms
+        assert e.domains == doms
+
+
+def test_random_domains_redraws_the_mix_every_reset(make_env):
+    from network import DOMAINS
+    e = make_env(n=8, domains="R^3", random_domains=True)
+    seen = set()
+    for _ in range(20):
+        e.reset()
+        drawn = [a.domain for a in e.network.agents]
+        assert set(drawn) <= set(DOMAINS)
+        assert e.domains == drawn
+        assert all(isinstance(d, str) and type(d) is str for d in drawn)
+        seen.add(tuple(drawn))
+    assert len(seen) > 1
+
+
+def test_random_domains_keeps_planar_agents_in_the_plane(make_env):
+    e = make_env(n=8, domains="R^3", random_domains=True)
+    for _ in range(20):
+        e.reset()
+        for a in e.network.agents:
+            if a.domain in ("R^2", "R^2xS^1"):
+                assert abs(a.pose.position[2]) < 1e-12
+
+
+def test_random_domains_recomputes_m_req_for_the_drawn_mix(make_env):
+    """The episode constants describe the mix this episode drew."""
+    from rigidity import required_edge_count
+    e = make_env(n=8, domains="R^3", random_domains=True)
+    for _ in range(20):
+        e.reset()
+        assert e.m_req == required_edge_count(e.network)
+
+
+def test_random_domains_samples_the_edge_count_around_this_episode_m_req(make_env):
+    """The initial edge count tracks the mix drawn now, not the previous episode's.
+
+    Reading the previous episode's cached m_req leaves the two uncorrelated, which is
+    what the correlation separates; the ratio pins the level.
+    """
+    e = make_env(n=8, domains="R^3", random_domains=True,
+                 random_graph_with_mean_min_edges=True)
+    m_req, m0 = [], []
+    for _ in range(160):
+        e.reset()
+        m_req.append(e.m_req)
+        m0.append(int(e.network.edges.sum()))
+    m_req, m0 = np.array(m_req), np.array(m0)
+    assert m_req.min() < m_req.max(), "the sampler drew one composition only"
+    assert np.corrcoef(m0, m_req)[0, 1] > 0.15
+    assert abs((m0 / m_req).mean() - 1.0) < 0.25
+
+
+def test_random_domains_rejects_only_randomize_edges(make_env):
+    with pytest.raises(ValueError):
+        make_env(n=6, domains="R^3", random_domains=True, only_randomize_edges=True)
+
+
+def test_random_domains_is_off_unless_the_config_says_so(env_config_file):
+    from environment import Environment
+    e = Environment()
+    e.load(env_config_file("nodom"))          # the key is absent, as in archived configs
+    assert e.random_domains is False
+    e2 = Environment()
+    e2.load(env_config_file("dom", random_domains=True))
+    assert e2.random_domains is True
+    e2.reset()
+    assert len({a.domain for a in e2.network.agents}) >= 1

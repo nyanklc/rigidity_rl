@@ -389,7 +389,8 @@ def run_greedy(env, max_steps=200, verbose=True, trace=None, episode=0):
 # rank it adds or costs -- which candidate_gain and removal_costs already return for all
 # pairs at once. At stiffness_kappa = 0 that is exact and this is greedy; above it the
 # addition term is a ranking prior rather than the true lambda.
-CLOSED_FORM_SCORES = {"WeightedNormalized", "WeightedNormalizedSpectral"}
+CLOSED_FORM_SCORES = {"WeightedNormalized", "WeightedNormalizedSpectral",
+                      "WeightedNormalizedShapeError"}
 
 
 def phi_landscape(env, stiffness=True):
@@ -427,7 +428,7 @@ def phi_landscape(env, stiffness=True):
                  (-w_rank * (rem_rk * c) + w_edge * c) / rank_K,
                  (w_rank * add_rk - w_edge * c) / rank_K)
 
-    if stiffness and kappa > 0 and rank >= env.rank_K and env.stiffness_ref > 0:
+    if stiffness and rank >= env.rank_K and env.stiffness_term_active():
         # an addition's true lambda is not available from the current matrix, so this is
         # add_stiffness (a ranking prior) scaled onto the stiffness term's own budget.
         # Removals use remove_stiffness, which is exact.
@@ -866,6 +867,15 @@ def method_sequence(labels):
 LABEL_WIDTH = 14
 
 
+def describe_domains(env):
+    """What mix the run is over. `env.domains` is one episode's draw when the sampler
+    redraws it, so reporting that as the run's composition would be wrong."""
+    if getattr(env, "random_domains", False):
+        return "uniformly random domains per agent"
+    domains = env.domains if isinstance(env.domains, list) else [env.domains]
+    return domains[0] if len(set(domains)) == 1 else f"mixed {sorted(set(domains))}"
+
+
 def run_info_blocks(args, env, env_config_data, models, steps, methods, rows):
     """[(section, [(field, value)])] for the run_info figure.
 
@@ -874,8 +884,7 @@ def run_info_blocks(args, env, env_config_data, models, steps, methods, rows):
     *trained* on against the one it is *scored* by, which is the one difference between
     models that the table cannot show and that changes how its rows should be read.
     """
-    domains = env.domains if isinstance(env.domains, list) else [env.domains]
-    dom = domains[0] if len(set(domains)) == 1 else f"mixed {sorted(set(domains))}"
+    dom = describe_domains(env)
     kappa = env_config_data.get("stiffness_kappa")
 
     blocks = [("this run", [
@@ -1296,7 +1305,8 @@ def main():
                              "which is reproducible and terminates on a cycle. A DQN q-network "
                              "has nothing to sample from and is argmax either way.")
     parser.add_argument("--noise-sweep", default=None,
-                        help="comma-separated bearing-noise levels in DEGREES; measures "
+                        help="comma-separated bearing-noise levels as the per-axis "
+                             "sigma in DEGREES; the RMS angle is sqrt(2) times it. Measures "
                              "the shape error each method's graph actually produces "
                              "against the analytic prediction, e.g. 0.5,1,5")
     parser.add_argument("--noise-trials", type=int, default=30,
@@ -1488,7 +1498,8 @@ def main():
                      if args.noise_sweep else [])
     sigmas = [float(np.radians(d)) for d in sweep_degrees]
     if sigmas:
-        print(f"  noise sweep: {sweep_degrees} degrees of bearing error, "
+        print(f"  noise sweep: sigma = {sweep_degrees} degrees per axis "
+              f"(RMS angle x{np.sqrt(2):.2f}), "
               f"{args.noise_trials} draws each")
 
     frozen = None
@@ -1573,8 +1584,7 @@ def main():
 
 
     # ── report ────────────────────────────────────────────────────────────────────────
-    domains = env.domains if isinstance(env.domains, list) else [env.domains]
-    domain_str = domains[0] if len(set(domains)) == 1 else f"mixed {sorted(set(domains))}"
+    domain_str = describe_domains(env)
     context = {
         "environment": args.environment_name,
         "network": f"{n} agents in {domain_str}, action space {env.action_space_type}",

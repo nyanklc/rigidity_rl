@@ -306,3 +306,21 @@ def test_a_single_edges_share_predicts_perturbing_only_that_edge(domain):
     measured = np.sqrt(np.mean(sq))
     predicted = sigma * np.sqrt(per_edge[k] / net.n)
     assert 0.9 < measured / predicted < 1.15
+
+
+@pytest.mark.parametrize("sigma", [1e-4, 1e-3, 1e-2, 1e-1])
+def test_sigma_is_the_per_axis_sd_and_the_rms_angle_is_sqrt_two_times_it(sigma):
+    """The tangent plane has two independent components, so the angle between the
+    true and the noisy bearing is sqrt(2)*sigma, not sigma. The Fisher information
+    B^T B / sigma^2 is written in the per-axis convention, so both agree; what this
+    pins is the label a noise level is quoted under."""
+    net, _ = random_scenario(6, ["R^3"] * 6, edge_count=12)
+    b = E.true_bearings(net)
+    rng = np.random.default_rng(0)
+    angles = []
+    for _ in range(200):
+        z = E.perturb_bearings(net, sigma, rng, bearings=b)
+        cos = np.clip((b.reshape(-1, 3) * z.reshape(-1, 3)).sum(-1), -1.0, 1.0)
+        angles.append(np.arccos(cos))
+    rms = float(np.sqrt((np.concatenate(angles) ** 2).mean()))
+    assert abs(rms / (sigma * np.sqrt(2)) - 1.0) < 0.05, (sigma, rms)

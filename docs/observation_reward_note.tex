@@ -1,0 +1,428 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{microtype}
+\usepackage[colorlinks=true,linkcolor=blue,urlcolor=blue]{hyperref}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\SEthree}{\mathrm{SE}(3)}
+\newcommand{\rk}{\operatorname{rank}}
+\newcommand{\B}{\mathbf{B}}
+\newcommand{\Bs}{\widetilde{\mathbf{B}}}
+
+\title{\bf Reward and observation: what each component is,\\ and how it is computed}
+\author{Noyan Erdin Kilic}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent
+Reference for the environment's state score $\varphi$ and its \texttt{Dict} observation.
+Source of truth: \texttt{Environment.compute\_state\_score},
+\texttt{Environment.compute\_rigidity\_features}, \texttt{build\_dict\_obs} and the
+primitives in \texttt{rigidity.py} / \texttt{network.py}.
+
+\section{Notation and episode constants}
+
+Agent $i$ has position $p_i\in\R^3$ and attitude $R_i\in SO(3)$; a \emph{domain}
+$\mathcal D_i\in\{\R^2,\R^3,\R^2\!\times\!S^1,\R^3\!\times\!S^1,\SEthree\}$ fixes which
+coordinates it can vary. A directed edge $i\to j$ means $i$ measures the bearing to $j$:
+\[
+p_{ij}=p_j-p_i,\qquad \hat p_{ij}=p_{ij}/\|p_{ij}\|,\qquad b_{ij}=R_i^{\!\top}\hat p_{ij},
+\qquad P(x)=I-xx^{\!\top}.
+\]
+The extended bearing rigidity matrix is $\B=[\,D_p\bar E^{\!\top}\bar S \mid D_a\bar E_o^{\!\top}\bar P\,]\in\R^{3m\times 6n}$,
+with one $3$-row block per directed edge, $S_i$ and $P_i$ the per-node translational and
+rotational DOF projectors, and per edge $k=(i,j)$
+\[
+D_{p,k}=\tfrac{1}{\|p_{ij}\|}R_i^{\!\top}P(\hat p_{ij}),
+\qquad
+D_{a,k}=-R_i^{\!\top}[\hat p_{ij}]_\times .
+\]
+
+\paragraph{Length normalisation.} $\B$'s position columns carry $1/\text{length}$ and its
+attitude columns are dimensionless, so any spectrum read off $\B$ moves when the formation
+is rescaled. Everything spectral below is therefore read off
+\[
+\Bs=\B\cdot\operatorname{diag}(L\,I_{3n},\,I_{3n}),
+\qquad
+L=\Big(\tfrac1n\textstyle\sum_i\|p_i-\bar p\|^2\Big)^{1/2}
+\]
+(\texttt{scaled\_rigidity\_matrix}, \texttt{characteristic\_length}). Column scaling by a
+positive scalar leaves the rank unchanged, so the rigidity verdict is unaffected.
+
+\paragraph{Episode constants} (\texttt{compute\_episode\_constants}; poses only, edge
+independent, computed once per \texttt{reset}).
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+symbol & meaning & status \\
+\midrule
+$\rk_{\mathcal K}$ & $\rk \B$ of the complete graph on these poses & exact \\
+$c_{\max}$ & most rank one edge block can carry, $\max_k \rk \B_{\mathcal K}[3k{:}3k{+}3,:]$ & exact \\
+$m_{\text{req}}$ & fewest edges that could make these poses rigid & \emph{lower bound} \\
+$L$ & RMS radius about the centroid & exact \\
+$Z_{\mathcal K}$ & orthonormal basis of $\ker\Bs_{\mathcal K}$, the trivial variations & exact \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+$m_{\text{req}}$ is a subadditivity bound, not a ground truth, and is deliberately kept out
+of the reward. Closed forms, validated exactly on 216 configurations for $n=4\ldots24$:
+\[
+\rk_{\mathcal K}=\sum_i \dim\mathcal D_i-q_t,
+\qquad
+q_t=\underbrace{(2\ \text{if any planar else}\ 3)}_{\text{translations}}+\underbrace{1}_{\text{scale}}+q_r,
+\]
+\[
+q_r=\begin{cases}
+0 & \text{some agent is } \R^2 \text{ or } \R^3 \text{ (no frame)}\\
+3 & \text{every agent is } \SEthree\\
+1 & \text{otherwise (all framed, shared } S^1 \text{ axis)}
+\end{cases}
+\qquad
+c_k=\begin{cases}1 & \text{both ends planar}\\ 2 & \text{otherwise,}\end{cases}
+\]
+with $\dim\mathcal D_i \in \{2,3,3,4,6\}$ for the five domains in the order above, planar
+meaning $\R^2$ or $\R^2\!\times\!S^1$, and $m_{\text{req}}$ the greedy accumulation of the
+$c_k$ sorted descending until $\rk_{\mathcal K}$ is reached.
+
+\section{Reward}
+
+The step reward is potential based,
+\[
+r_t=\varphi(s_{t+1})-\varphi(s_t)\;-\;\text{\texttt{time\_penalty\_value}}\;+\;[\text{terminal bonus}],
+\]
+so it is the \emph{improvement} in $\varphi$, not its level. The discount must stay
+$\gamma<1$: at $\gamma=1$ the return telescopes to $\varphi(s_T)-\varphi(s_0)$ and the
+advantage collapses to $\approx 0$ under a mixing policy.
+
+\subsection*{\texttt{WeightedNormalizedShapeError} (current)}
+\[
+\boxed{\;
+\varphi=\frac{w_r\,\rk\B-w_e\,m\,c_{\max}}{\rk_{\mathcal K}}
+\;+\;\kappa\cdot\underbrace{\frac{w_e\,c_{\max}}{\rk_{\mathcal K}}}_{\text{one edge}}\cdot\;
+\mathbb 1[\text{IBR}]\cdot q\;}
+\qquad w_r=100,\ w_e=25
+\]
+\[
+q=\sigma\!\left(-\frac{\log_{10}\varepsilon-c_0}{s}\right),
+\qquad
+\varepsilon=\sqrt{\frac{\operatorname{tr}\big((\Bs^{\!\top}\Bs)^{+}\big)}{n}},
+\qquad c_0=1.35,\ s=0.70 .
+\]
+
+\begin{itemize}\itemsep2pt
+\item $m=\sum_{ij}A_{ij}$ is the edge count; $\rk\B$ comes from one thin SVD per step.
+\item $m\,c_{\max}$ is ``the rank this many edges could at best have carried'', so both
+      numerators are ranks and the score is dimensionless.
+\item A maximally informative edge gains $(w_r-w_e)c_{\max}/\rk_{\mathcal K}$ and pruning a
+      redundant one gains $w_e c_{\max}/\rk_{\mathcal K}$: an exchange rate of exactly $3{:}1$
+      in every domain, at every $n$. The optimum is $w_r-w_e=75$.
+\item $\varepsilon$ is \texttt{shape\_err}, read off the $\rk_{\mathcal K}$ nonzero
+      eigenvalues of $\Bs^{\!\top}\Bs$; lower is better, so $q$ rises as $\varepsilon$ falls.
+      It is a \emph{slope}, $\mathrm d(\text{error})/\mathrm d\sigma$, so its unit is
+      $\mathrm{rad}^{-1}$ and it is not evaluated at $\sigma=1$: see \S\ref{sec:shape}
+      for what it means and where it is valid.
+\item $c_0,s$ are fixed constants, not per-episode quantities: no reference construction is
+      built. \texttt{rigidity.SHAPE\_ERR\_EXPONENT} (default $0$) optionally subtracts
+      $\alpha\log_{10}n$ from the sigmoid argument, which makes $\varphi$'s ceiling
+      $n$-invariant. Re-derive all three with \texttt{tools/shape\_error\_scale.py}.
+\item $\kappa=$ \texttt{stiffness\_kappa} scales the conditioning term. The term is
+      bounded in $[0,\kappa\cdot\text{one edge})$, so $\kappa$ is an \emph{upper bound} on
+      how many edges could ever be traded for conditioning, and it is a very loose one:
+      see \S\ref{sec:kappa}. $\kappa=0$ reproduces the rank-only score exactly.
+\item The term is gated on rigidity, so becoming rigid is never punished.
+\end{itemize}
+
+\subsection*{Earlier score types, kept so archived runs replay}
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+type & conditioning term & per-episode cost \\
+\midrule
+\texttt{WeightedNormalized} & $\kappa\,(\text{one edge})\,\sigma\!\big(\log_{10}(\lambda/\lambda_{\text{ref}})/0.75\big)$ & 3 greedy constructions \\
+\texttt{WeightedNormalizedSpectral} & same, functional $\in\{\lambda,\ \operatorname{tr},\ \log\det\}$ & 3 greedy constructions \\
+\texttt{Weighted} & $20\rk\B-10m$, none & none \\
+\bottomrule
+\end{tabular}
+\end{center}
+$\lambda$ is the rigidity eigenvalue, the first nonzero eigenvalue of $\B^{\!\top}\B$. It has
+no fixed scale, which is why those two need $\lambda_{\text{ref}}$, the median $\lambda$ of
+\texttt{stiffness\_ref\_samples} greedy constructions on the episode's own poses. One
+construction rebuilds $\B$ once per candidate edge. \texttt{Weighted} does not transfer
+across domains: a rank-adding edge is worth $+30$ in $\R^3$ and $+10$ in $\R^2$.
+
+\subsection{What \texttt{shape\_err} is}
+\label{sec:shape}
+
+Each bearing is a unit vector, so its noise lives in the tangent plane. With
+$z_k=\text{normalize}(b_k+\sigma P(b_k)\varepsilon_k)$ and $\B$ the Jacobian of the
+bearing map (checked against central differences in all five domains), the chain is
+\[
+\underbrace{\B^{\!\top}\B/\sigma^2}_{\text{Fisher}}
+\;\longrightarrow\;
+\underbrace{\sigma^2(\Bs^{\!\top}\Bs)^{+}}_{\text{Cram\'er--Rao covariance}}
+\;\longrightarrow\;
+\mathbb E\big[\|\delta\hat\chi-\delta\chi\|^2\big]=\sigma^2\,a_{\text{opt}},
+\qquad a_{\text{opt}}=\operatorname{tr}\big((\Bs^{\!\top}\Bs)^{+}\big).
+\]
+So $a_{\text{opt}}$ is not a proxy for the error, it \emph{is} the expected squared error
+per unit $\sigma^2$; ``A-optimality'' is only what the experiment-design literature calls
+$\operatorname{tr}\Sigma$. Dividing by $n$ and taking the root gives the RMS per-agent
+state error, position in formation radii and attitude in radians:
+$\sigma\,\varepsilon$ with $\varepsilon=\sqrt{a_{\text{opt}}/n}$.
+
+\paragraph{The pseudo-inverse is what makes it a \emph{shape} error.}
+$\Bs^{\!\top}\Bs$ is singular and its kernel is exactly the trivial variation set
+(Michieletto Thm.\ 1): translation, uniform scale, and the rotations the frames absorb,
+of dimension $6n-\rk_{\mathcal K}$. The ${}^{+}$ inverts on the row space and returns zero
+there, so the sum runs over the identifiable directions only and the unobservable ones are
+never charged for. There is no separate gauge-quotient step. Measured at $n{=}6$
+$\SEthree$: $6n=36$, $\rk_{\mathcal K}=29$, a $7$-column gauge basis with
+$\|\Bs Z_{\mathcal K}\|=7.0\times10^{-15}$ and the seven smallest eigenvalues at $10^{-15}$.
+
+\paragraph{$\sigma$ is the per-axis standard deviation, not the angle.}
+The tangent plane has two independent components each of standard deviation $\sigma$, so
+the RMS angle between the true and the noisy bearing is $\sigma\sqrt2$. Measured
+$1.40$--$1.42$ over four decades. The Fisher information above is written in the same
+per-axis convention, so every validation is self-consistent; what needs the $\sqrt2$ is
+relating a noise level to a sensor specification. \texttt{--noise-sweep 1} applies a
+per-axis $\sigma$ of one degree and an RMS angle of $1.41$ degrees.
+
+\paragraph{Where it holds.} The whole construction is a linearisation. Measured over the
+ratio of the recovered error to the predicted one, it is exact while the predicted
+\emph{relative} error $\sigma\varepsilon$ stays below roughly $0.2$, and degrades above:
+
+\begin{center}
+\begin{tabular}{lrrrrr}
+\toprule
+network & $\varepsilon$ & $0.06^\circ$ & $0.57^\circ$ & $1.72^\circ$ & $5.73^\circ$ \\
+\midrule
+$n{=}6$ $\R^3$   &  3.6 & 1.02 & 1.02 & 0.99 & 1.01 \\
+$n{=}6$ $\SEthree$ & 6.2 & 1.00 & 1.01 & 1.07 & 0.96 \\
+$n{=}6$ $\R^2$   &  5.6 & 0.96 & 0.96 & 0.96 & 0.95 \\
+$n{=}8$ $\R^3$   & 29.4 & 1.06 & 0.80 & 0.61 & 0.18 \\
+$n{=}10$ mixed   & 22.5 & 0.95 & 1.04 & 0.87 & 0.41 \\
+$n{=}10$ mixed, ill conditioned & 693.7 & 0.12 & 0.03 & 0.02 & 0.01 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+The rows break at a common $\sigma\varepsilon$, not at a common $\sigma$. For a typical
+$\varepsilon$ of $5$ to $30$ that is $\sigma$ below about $0.4^\circ$ to $2^\circ$. Quote
+it at an operating point rather than at one radian: $\varepsilon=8$ means one degree of
+per-axis bearing noise displaces the shape by about $14\%$ of its own size.
+
+\subsection{What $\kappa$ actually trades}
+\label{sec:kappa}
+
+Over rigid graphs the score collapses to
+\[
+\varphi=100-\text{one edge}\cdot\big(m-\kappa q\big),
+\]
+so the $\varphi$-optimal graph at a given $\kappa$ is the one minimising $m-\kappa q$, and
+the optimum moves from $m$ to $m+1$ edges exactly when
+\[
+\kappa\,\big(q^\ast(m+1)-q^\ast(m)\big)>1,
+\qquad\text{i.e.}\qquad \kappa>1/\Delta q .
+\]
+Because $q\in(0,1)$, $\kappa$ bounds the trade at $\kappa$ edges. The realised trade is
+$\kappa\,\Delta q$, and $\Delta q$ is small.
+
+Measured by enumerating $(m,q)$ for every graph and reading the $\kappa$ curve off it
+exactly: exhaustive at $n=4,5$; at $n\ge6$ the best graph per edge count is approximated
+by random restarts plus single-edge-swap hill climbing, which lower bounds $q^\ast$ and so
+upper bounds the $\kappa$ threshold. 46 networks over $n\in\{4,5,6,8,10\}$ and six
+compositions:
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+ & range over 46 networks & typical \\
+\midrule
+$\Delta q$ per extra edge & $0.005$ -- $0.041$ & $0.015$ \\
+$\Delta\log_{10}\varepsilon$ per extra edge & $0.027$ -- $0.187$ decades & $0.07$ \\
+$\kappa$ needed to buy \emph{one} edge & $24$ -- $208$ & $\approx 65$ \\
+extra edges bought at $\kappa\le20$ & \multicolumn{2}{c}{$0$, in every network} \\
+extra edges bought at $\kappa=100$ & \multicolumn{2}{c}{$0$ -- $3$} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+So at the $\kappa=2$ the configs use, the optimum spends \textbf{no} extra edges at all.
+Part of the gap is that $q(m_{\text{req}})$ sits at $0.76$--$0.85$ rather than at the
+sigmoid's centre, since $c_0$ was calibrated on greedy constructions and an exhaustive
+optimum is better conditioned than one; a perfectly centred sigmoid would raise
+$\mathrm dq/\mathrm dg$ from $0.23$ to at most $0.357$ and so cut the thresholds by about
+$1.6\times$, leaving them an order of magnitude above $2$.
+
+What $\kappa$ does instead is break the tie that $\kappa=0$ leaves. At $\kappa=0$ every
+rigid graph on $m_{\text{req}}$ edges scores identically, and those graphs are not
+equivalent at all. Exhaustively, over all rigid graphs at exactly $m_{\text{req}}$ edges:
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+configuration & rigid graphs & worst/best $\varepsilon$ & $q$ range \\
+\midrule
+$n{=}4$ $\R^3$        &    48 &     $3.1\times$ & $0.686$--$0.814$ \\
+$n{=}4$ $\R^2$        &   192 &     $8.4\times$ & $0.596$--$0.847$ \\
+$n{=}4$ $\SEthree$    &   108 &    $77.6\times$ & $0.201$--$0.790$ \\
+$n{=}4$ $\R^3\!\times\!S^1$ & 302 & $610\times$ & $0.071$--$0.803$ \\
+$n{=}5$ $\R^3$        &  4480 &     $9.3\times$ & $0.543$--$0.825$ \\
+$n{=}5$ mixed         & 18648 &  $7079\times$   & $0.014$--$0.782$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+$\kappa$ is therefore a \emph{selector among equally sparse graphs} over the whole usable
+range, not a sparsity-versus-conditioning exchange rate. That is consistent with the greedy
+sweep, where edge count is flat to within $0.08$ of an edge from $\kappa=0$ to $4$ while
+stiffness moves $20\times$.
+
+\section{Observation (\texttt{obs\_type = "Dict"})}
+
+Five tensors. Widths below are per node or per ordered pair; bracketed flags are the env
+config keys that switch a block on. Order matches \texttt{build\_dict\_obs}'s concatenation.
+
+\subsection*{\texttt{node\_features}, $(n,\cdot)$}
+\begin{longtable}{p{2.9cm}cp{9.4cm}}
+\toprule
+channel & w & definition \\
+\midrule
+\endhead
+\texttt{domain} & 5 & one-hot over $(\R^2,\R^2\!\times\!S^1,\R^3,\R^3\!\times\!S^1,\SEthree)$ \\
+\texttt{degree} & 2 & $(\deg^{\text{in}}_i,\deg^{\text{out}}_i)\big/(m_{\text{req}}/n)$, i.e. relative to the mean degree of a minimal graph. Dividing by $n-1$ instead introduces a $1/n$ trend \\
+\texttt{closeness} & 1 & $\frac{r_i}{\sum_j d_{ij}}\cdot\frac{r_i}{n-1}$, $r_i$ reachable nodes, $d$ from Floyd--Warshall \ [\texttt{graph\_features}] \\
+\texttt{eigenvector} & 1 & power iteration on $A^{\!\top}$, unit norm \ [\texttt{graph\_features}] \\
+\texttt{node\_between} & 1 & Brandes betweenness \ [\texttt{graph\_features}] \\
+\texttt{rigidity\_glob} & 3 & $\big(\tfrac{\rk_{\mathcal K}-\rk\B}{\rk_{\mathcal K}},\ \tfrac{m}{m_{\text{req}}},\ \mathbb 1[\text{IBR}]\big)$, tiled identically on every node \ [\texttt{rigidity\_global}] \\
+\texttt{quality} & 1 & the same $q$ the reward uses, tiled; $0$ while flexible \ [\texttt{rigidity\_quality}] \\
+\texttt{node\_freedom} & 1 & $\|F_i\|$ divided by its RMS over nodes, where $F$ is an orthonormal basis of $\ker\Bs\ominus\ker\Bs_{\mathcal K}$ (the non-trivial flex) and $F_i$ is node $i$'s $6$ rows. Zero once rigid \ [\texttt{rigidity\_flex}] \\
+\texttt{node\_slack} & 2 & $\big(\|v_i^{\text{pos}}\|,\|v_i^{\text{att}}\|\big)$, each divided by its own mean over nodes, with $v$ the eigenvector of $\Bs^{\!\top}\Bs$ at the rigidity eigenvalue. Zero while flexible \ [\texttt{rigidity\_stiffness}] \\
+\bottomrule
+\end{longtable}
+
+\subsection*{\texttt{edge\_features}, $(n,n,\cdot)$ over \emph{all} ordered pairs}
+\begin{longtable}{p{2.9cm}cp{9.4cm}}
+\toprule
+channel & w & definition \\
+\midrule
+\endhead
+\texttt{bearings} & 3 & $b_{ij}=R_i^{\!\top}\hat p_{ij}$ for every ordered pair, edge or not. \texttt{include\_candidate\_bearings=False} reverts to existing edges only, same shape \\
+\texttt{edge\_exists} & 1 & $A_{ij}\in\{0,1\}$ \\
+\texttt{edge\_between} & 1 & Brandes edge betweenness \ [\texttt{graph\_features}] \\
+\texttt{reciprocity} & 1 & $A_{ij}\wedge A_{ji}$ \\
+\texttt{common\_nbrs} & 1 & $(A^2)_{ij}\big/(m_{\text{req}}/n)$ \\
+\texttt{add\_independence} & 1 & $\|b_{ij}Z\|_F/\|b_{ij}\|_F\in[0,1]$, $Z$ an orthonormal basis of $\ker\Bs$. Zero exactly on the pairs that would add no rank; zero everywhere once rigid \ [\texttt{rigidity\_flex}] \\
+\texttt{pair\_max\_rank} & 1 & $c_k/c_{\max}$ from the \emph{complete} graph, so a candidate reads its own value rather than $0$. Constant in any homogeneous network \ [\texttt{rigidity\_edge}] \\
+\texttt{add\_rank} & 1 & $\rk(b_{ij}Z)/c_{\max}$, the exact rank adding $i\to j$ would gain. Threshold $\texttt{add\_independence}>10^{-6}$, which sits mid-way in an eight-decade gap \ [\texttt{rigidity\_edge}] \\
+\texttt{add\_stiffness} & 1 & $\|b_{ij}v\|$ divided by its own mean over pairs; first-order $\Delta\lambda\approx\|b_{ij}v\|^2$. A ranking prior, not an oracle. Zero while flexible \ [\texttt{rigidity\_stiffness}] \\
+\texttt{remove\_rank} & 1 & rank lost by deleting $i\to j$, over $c_{\max}$: the number of unit eigenvalues of the leverage block $H=b(\Bs^{\!\top}\Bs)^{+}b^{\!\top}$. Exact. Zero on non-edges \ [\texttt{rigidity\_removal}] \\
+\texttt{remove\_stiffness} & 1 & $1-\lambda(\Bs^{\!\top}\Bs-b^{\!\top}b)/\lambda(\Bs^{\!\top}\Bs)\in[0,1]$, exact via the rank-3 downdate; $1$ when removal breaks rigidity. Zero on non-edges \ [\texttt{rigidity\_removal}] \\
+\bottomrule
+\end{longtable}
+
+\noindent
+$b_{ij}$ is the $3\times 6n$ block edge $i\to j$ would contribute to $\Bs$; it is never
+materialised, \texttt{candidate\_gain} expands
+$b_{ij}Z=D_p(S_jZ_j-S_iZ_i)-D_aP_iZ_i$ into batched products over all pairs and reads norm
+and rank off the $3\times3$ Gram matrix.
+
+\subsection*{Remaining tensors}
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+key & shape & definition \\
+\midrule
+\texttt{coord\_features} & $(n,3)$ & positions centred on the centroid, divided by $L$ \\
+\texttt{adj} & $(n,n)$ & adjacency; this is what the model's action mask reads \\
+\texttt{selection} & $(n)$ & pointer state, \texttt{SelectNodesSequentially} only \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Invariance}
+
+The task is defined up to a similarity transform, so the observation and $\varphi$ should be
+too. Measured by transforming the network and diffing each channel, both regimes
+(flexible and rigid), $\R^3$ / $\SEthree$ / mixed, $n$ up to $100$.
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+ & translation & rotation & uniform scaling \\
+\midrule
+$\varphi$ & exact & exact & exact \\
+every rigidity channel & $\le 10^{-11}$ & $\le 10^{-11}$ & $\le 10^{-11}$ \\
+\texttt{degree}, \texttt{adj}, \texttt{reciprocity}, \texttt{common\_nbrs} & exact & exact & exact \\
+\texttt{bearings} & exact & \textbf{moves in $\R^2,\R^3$} & exact \\
+\texttt{coord\_features} & exact & \textbf{equivariant by design} & exact \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{itemize}\itemsep2pt
+\item \texttt{bearings} rotate in the frameless domains because $R_i=I$ there, so
+      \texttt{get\_bearing} returns a global-frame vector. Exact to $10^{-15}$ in
+      $\R^2\!\times\!S^1$, $\R^3\!\times\!S^1$, $\SEthree$. \texttt{rotation\_augmentation}
+      is the mitigation.
+\item \texttt{coord\_features} rotate deliberately. GINE never receives them; EGNN reads
+      them only through $\|x_i-x_j\|^2$, which is invariant.
+\item Scale invariance of the three stiffness channels requires that $v$, $Z$ and the
+      removal downdate all come from $\Bs$ rather than from $\B$. Mapping a null
+      \emph{space} into scaled units afterwards is valid; applying the same map to the
+      single eigenvector $v$ is not.
+\item Channels normalised by their own mean or RMS (\texttt{node\_freedom},
+      \texttt{node\_slack}, \texttt{add\_stiffness}) encode \emph{which} node or pair is
+      soft, never how soft in absolute terms.
+\end{itemize}
+
+\section{Scale under a per-episode domain draw}
+
+With \texttt{random\_domains}, the composition is redrawn every \texttt{reset}, so
+$\rk_{\mathcal K}$, $c_{\max}$ and $m_{\text{req}}$ move between episodes and with them the
+size of one reward step. Measured over 4000 uniform draws per $n$:
+
+\begin{center}
+\begin{tabular}{rccc}
+\toprule
+$n$ & one edge, median [p10--p90] & p90/p10 & $\varphi$ optimum p90/p10 \\
+\midrule
+8   & 1.923 [1.613--2.381] & 1.48 & 1.015 \\
+16  & 0.926 [0.806--1.042] & 1.29 & 1.007 \\
+32  & 0.446 [0.410--0.490] & 1.20 & 1.003 \\
+64  & 0.220 [0.207--0.234] & 1.13 & 1.002 \\
+100 & 0.140 [0.133--0.147] & 1.11 & 1.001 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{itemize}\itemsep2pt
+\item The spread \emph{narrows} with $n$: $\rk_{\mathcal K}$ is a sum of $n$ i.i.d. per-agent
+      DOFs, so its relative spread falls as $1/\sqrt n$. The corner-to-corner range is a
+      flat $2.0\times$ at every $n$; uniform draws occupy a shrinking part of it.
+\item $\varphi$'s optimum is effectively constant, which is what a value-based method needs:
+      with a potential-based reward the return telescopes to $\varphi(s_T)-\varphi(s_0)$.
+\item $c_{\max}=1$ requires every agent planar: $0.05\%$ of draws at $n=8$, none above.
+\item Within one episode the realised rewards already span $-3$ to $+3$ times one edge.
+      Measured across 120 episodes, the within-episode standard deviation exceeds the
+      between-episode one by $2$--$3.8\times$, and switching from a fixed mix to a random
+      one raises the between-episode figure from $0.434$ to $0.507$ at $n=10$ and not at
+      all at $n=20$.
+\item Across \emph{sizes} the step size does move by an order of magnitude ($1.92$ at $n=8$
+      to $0.109$ at $n=128$), since one edge is $w_ec_{\max}/\rk_{\mathcal K}$ and
+      $\rk_{\mathcal K}$ grows linearly in $n$.
+\end{itemize}
+
+\end{document}

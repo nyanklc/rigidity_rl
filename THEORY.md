@@ -957,11 +957,11 @@ phi = (w_rank*rank - w_edge*m*c_max)/rank_K  +  w_eig * 1[is_IBR] * q(lam)      
   a yardstick has to be a typical answer for `q ≈ 0.5` to mean "typical".
 - **`s = 0.75` decades**, because the p10-p90 spread of `log10 λ` among minimal graphs is 1.1-1.9
   decades, so the logistic spends its range on the achievable band.
-- **`w_eig` is denominated in edges.** `w_edge·c_max/rank_K` is what one edge costs, so the whole
-  stiffness term is worth `κ` edges and rescales with `n` and domain by itself. `κ = 0` reproduces the
-  rank-only score exactly, and the term is bounded in `[0, κ·one_edge)`, so the agent can profit by
-  at most about `κ` extra edges. `κ < 1` is a tie-break sparsity always wins; `κ > 1` is a real
-  trade-off with no principled value, answered by a front over κ rather than a number.
+- **`w_eig` is denominated in edges, as a bound.** `w_edge·c_max/rank_K` is what one edge costs, and
+  the term is bounded in `[0, κ·one_edge)`, so trading more than `κ` edges for conditioning can never
+  pay and the weight rescales with `n` and domain by itself. `κ = 0` reproduces the rank-only score
+  exactly. **The bound is not the trade**, and it is loose by more than an order of magnitude: see
+  §15.6.
 - **`q ≥ 0`, gated on IBR**, so becoming rigid is never punished; a raw `log λ` term would make the
   transition to rigidity a large negative jump.
 
@@ -1032,6 +1032,114 @@ test rather than a result.
 `constructive` does **not** adapt - it is the rank-based classical algorithm scored on the stiffness
 objective, which is the comparison §14.4 predicts it loses.
 
+### 15.5b Removing the reference: `WeightedNormalizedShapeError`
+
+`λ_ref` exists only because λ has no fixed scale (§15.1), and it is expensive: one greedy
+construction rebuilds `B` once per candidate edge, so at n=20 a single `reset()` performs **2290
+rigidity-matrix builds** against 1.6 per environment step, which is 65% of an episode's wall clock
+and is paid at inference as well as in training.
+
+The scale can be fixed in advance instead. `shape_err = sqrt(a_opt/n)` on the length-normalised `B`
+(§18.1) is already dimensionless: the formation's size is divided out by the length normalisation
+and the agent count by the `/n`. What is left drifts far less than λ. Medians of `log10`, over
+near-minimal rigid graphs, n = 8…20 and all five domains plus mixtures:
+
+| quantity | drift of the centre | within-configuration spread | drift / spread |
+|---|---|---|---|
+| λ | 2.46 decades | 2.75 | 0.89 |
+| λ / λ_K (complete-graph reference) | 2.09 | 2.61 | 0.80 |
+| `shape_err` | **1.06** | 1.27 | 0.84 |
+| `η = rank_K²/(Σw · Σ1/w)`, no fit | 2.06 | 2.57 | 0.80 |
+
+`λ/λ_K` is nearly free, since `B_K` is built every reset anyway, and it does not work — which
+independently reproduces §15.2's rejection of a complete-graph yardstick. `η` is the Cauchy-Schwarz
+efficiency of the spectrum, dimensionless with nothing fitted, and it correlates +0.95 to +0.99 with
+the error inside every configuration; it normalises worse because it multiplies two varying
+quantities and doubles the dynamic range. `shape_err` wins.
+
+So the score becomes
+
+```
+φ = (w_r·rank - w_e·m·c_max)/rank_K + κ·one_edge·1[IBR]·q,
+q = sigmoid( -( log10(shape_err) - c₀ ) / s ),     c₀ = 1.35,  s = 0.70            (15.4)
+```
+
+with `c₀` and `s` fixed constants rather than per-episode quantities. **No construction is built at
+all**: measured at n=20, `reset()` goes from 2974 ms to 56 ms and the episode from 4645 ms to
+2427 ms. During training the extra SVD is free, since `step()` already computes `shape_err` for the
+`Best shape err` log.
+
+`rigidity.SHAPE_ERR_EXPONENT` optionally subtracts `α·log10(n)`, which cuts the centre's drift from
+1.06 to 0.58 decades. It defaults to **0** because it was measured not to buy anything: with the
+width set from the spread, the median instance keeps 0.97 of the sigmoid's peak gradient either way
+and the p10 instance 0.83 against 0.85. A sigmoid wide enough for the within-instance spread already
+absorbs the drift. Setting it near 1.9 makes φ's ceiling `n`-invariant, worth about 1% of φ at
+κ = 2. `tools/shape_error_scale.py` re-derives all three constants and prices the exponent.
+
+Two properties this buys beyond the cost. φ becomes **exactly** scale-invariant, where (15.1) was
+only approximately so in the oriented domains (§15.4): measured `Δφ = 0` under translation, rotation
+and rescaling by 0.2x-5x, at every n up to 100, against 8.8e-2 for `WeightedNormalizedSpectral` in
+`SE(3)`. And the reward and the headline metric become the same quantity, since `shape_err` is what
+the results table reports.
+
+`WeightedNormalized` and `WeightedNormalizedSpectral` keep `λ_ref` and are kept so archived runs
+replay. At `κ = 0` all three scores are bit-identical.
+
+### 15.6 What κ actually trades, measured
+
+Over rigid graphs (15.1) collapses to
+
+```
+φ = w_r - one_edge·(m - κ·q),        one_edge = w_e·c_max/rank_K,   q ∈ (0,1)      (15.2)
+```
+
+so the φ-optimal graph at a given κ is the one minimising `m - κ·q`, and the optimum moves from `m`
+to `m+1` edges **exactly** when
+
+```
+κ·( q*(m+1) - q*(m) ) > 1,      i.e.   κ > 1/Δq                                    (15.3)
+```
+
+`q ∈ (0,1)` gives the bound of §15.2. The realised trade is `κ·Δq`, and `Δq` is small.
+
+Measured by storing `(m, q)` for every graph and reading the κ curve off (15.3) with no search:
+exhaustive at n=4 and n=5, and at n≥6 the best graph per edge count found by random restarts plus
+single-edge-swap hill climbing, which lower-bounds `q*` and so **upper**-bounds the κ threshold.
+46 networks over n ∈ {4,5,6,8,10} and six compositions (`tools/kappa_trade.py`):
+
+| | range | typical |
+|---|---|---|
+| `Δq` per extra edge | 0.005 - 0.041 | 0.015 |
+| `Δlog10(shape_err)` per extra edge | 0.027 - 0.187 decades | 0.07 |
+| **κ needed to buy one edge** | **24 - 208** | ≈ 65 |
+| extra edges bought at κ ≤ 20 | 0, in every network | |
+| extra edges bought at κ = 100 | 0 - 3 | |
+
+So at the κ any run has used, the optimum spends **no** extra edges. Part of the gap is that
+`q(m_req)` sits at 0.76-0.85 rather than at the sigmoid's centre, since an exhaustive optimum is
+better conditioned than the greedy constructions the centre is set from; a perfectly centred sigmoid
+raises `dq/dg` from 0.23 to at most 0.357 and cuts the thresholds by ~1.6x, which does not close it.
+
+**What κ does instead is break the tie `κ = 0` leaves.** At `κ = 0` every rigid graph on `m_req`
+edges scores identically, and those graphs are nothing like equivalent. Exhaustively, over all rigid
+graphs at exactly `m_req` edges:
+
+| configuration | rigid graphs | worst/best `shape_err` | `q` range |
+|---|---|---|---|
+| n=4 `R^3` | 48 | 3.1x | 0.686-0.814 |
+| n=4 `R^2` | 192 | 8.4x | 0.596-0.847 |
+| n=4 `SE(3)` | 108 | 77.6x | 0.201-0.790 |
+| n=4 `R^3xS^1` | 302 | 610x | 0.071-0.803 |
+| n=5 `R^3` | 4480 | 9.3x | 0.543-0.825 |
+| n=5 `mixed` | 18648 | **7079x** | 0.014-0.782 |
+
+**κ is a selector among equally sparse graphs over its whole usable range, not a sparsity-versus-
+conditioning exchange rate.** That is the same fact §15.5 records from the other side, where greedy's
+edge count is flat to within 0.08 of an edge from κ=0 to 4 while stiffness moves 20x, and it is
+consistent with §19.4, where equally sparse *repairs* differ 4x-17x in the error they leave.
+
+---
+
 ## 16. The softest mode as an observation
 
 §15 puts stiffness in the objective. This section is the feature that lets a policy act on it.
@@ -1100,11 +1208,18 @@ placed, not where they are cut.
 
 | | translate | rotate | scale |
 |---|---|---|---|
-| `add_stiffness` | 4.8e-14 | **6.6e-14** | 2.2e-04 |
+| `add_stiffness` | 4.8e-14 | **6.6e-14** | **9.5e-15** |
 
 Exactly rotation-invariant in every domain, including `R^d`, where the raw bearings are **not**
-(§11). The residual under scaling is the same position-versus-attitude column effect as §15.4 and is
-negligible against a channel of order 1.
+(§11), and exactly scale-invariant as well.
+
+That last column used to read `2.2e-04`, and only in `R^d`: measured across 5 instances per domain
+at a 2.7x rescale, `add_stiffness` moved by a median 3.1e-02 in `SE(3)` and up to 1.5e-01. The cause
+is §15.4's position-versus-attitude column effect, reaching the channel through the mode `v`.
+`nullspace_in_scaled_units` maps `ker(B)` into scaled units correctly, because a *subspace* survives
+re-orthonormalisation, but the same map applied to the single eigenvector `v` does not produce the
+scaled matrix's own softest mode. `compute_rigidity_features` now takes `Z`, `v` and the removal
+downdate from `scaled_rigidity_matrix` directly, and the residual is gone.
 
 ### 16.5 The information is irreducibly pairwise
 
@@ -1190,10 +1305,14 @@ what a pruning policy needs.
 - **`remove_rank` is informative in both regimes**, unlike every other rigidity channel:
   `add_independence` dies once rigid (§16.1) and `add_stiffness` is zero while flexible, but
   removing an edge can drop the rank either way.
-- **Exactly similarity invariant, scaling included.** `H = b (BᵀB)⁺ bᵀ` is unchanged by any
-  invertible column scaling `b → bS`, since `(SᵀBᵀBS)⁺ = S⁻¹(BᵀB)⁺S⁻¹`. Measured 6.7e-14 under a
-  2.7x rescale and 1.3e-13 under rotation, so it has none of the 1e-4 scale residual §15.4 and
-  §16.4 carry.
+- **`remove_rank` is exactly similarity invariant, scaling included**, and by proof: `H = b (BᵀB)⁺ bᵀ`
+  is unchanged by any invertible column scaling `b → bS`, since `(SᵀBᵀBS)⁺ = S⁻¹(BᵀB)⁺S⁻¹`. Measured
+  6.7e-14 under a 2.7x rescale and 1.3e-13 under rotation.
+- **`remove_stiffness` is invariant too, but not by that argument.** It is a ratio of eigenvalues of
+  the *downdated* matrix, which the column-scaling identity does not cover, so read off the raw `B`
+  it moved by a median 1.1e-01 and up to 4.9e-01 in `SE(3)` under a 2.7x rescale. It is computed
+  from `scaled_rigidity_matrix` now, with that matrix's own λ, and measures 1.5e-13. The invariance
+  is a property of the construction, not of the formula.
 - **Cost.** 3.46 → 5.76 ms per step at n=10 with ~35 edges, pinned to one BLAS thread, so about
   +66%. It grows as `m · (6n)³` and will need revisiting before n=32. Two skips keep it down: the
   `eigvalsh` is not run when the rank drops (the answer is 1) or when the framework is flexible (no
@@ -1245,10 +1364,32 @@ The environment logs `shape_err = sqrt(a_opt / n)`: **RMS state error per radian
 Unlike λ it has an absolute meaning and is comparable across `n`, domain and pose range — `8.0`
 means one degree of bearing error (0.017 rad) displaces the shape by about 14% of its own size.
 
+It is a *slope*, `d(error)/dσ`, so its unit is `rad⁻¹` and it is never evaluated at σ = 1: the whole
+construction is a linearisation. Measured as the ratio of recovered to predicted error, it is exact
+while the predicted **relative** error `σ·shape_err` stays below roughly 0.2, and degrades above.
+The rows break at a common `σ·shape_err`, not at a common σ:
+
+| network | `shape_err` | 0.06° | 0.57° | 1.72° | 5.73° |
+|---|---|---|---|---|---|
+| n=6 `R^3` | 3.6 | 1.02 | 1.02 | 0.99 | 1.01 |
+| n=6 `SE(3)` | 6.2 | 1.00 | 1.01 | 1.07 | 0.96 |
+| n=6 `R^2` | 5.6 | 0.96 | 0.96 | 0.96 | 0.95 |
+| n=8 `R^3` | 29.4 | 1.06 | 0.80 | 0.61 | 0.18 |
+| n=10 `mixed` | 22.5 | 0.95 | 1.04 | 0.87 | 0.41 |
+| n=10 `mixed`, ill conditioned | 693.7 | 0.12 | 0.03 | 0.02 | 0.01 |
+
+For a typical `shape_err` of 5-30 that is σ below about 0.4°-2°. Quote it at an operating point,
+not at one radian. (Columns are the per-axis σ of §18.2; the RMS angle is `√2` times each.)
+
 ### 18.2 Measuring it (`estimation.py`)
 
 `perturb_bearings` draws `z = normalize(b + σ (I − bbᵀ) ε)`, the small-angle limit of von
-Mises-Fisher, so **σ is an angle in radians**. The noise is full 2-DOF tangent in *every* domain: a
+Mises-Fisher, so **σ is the standard deviation of one tangent component, in radians**. The tangent
+plane has two independent components, so the RMS angle between the true and the noisy bearing is
+**σ·√2** (measured 1.40-1.42 over four decades, `tests/test_estimation.py`). The Fisher information
+below is written in the same per-axis convention, so prediction and measurement are consistent; the
+`√2` is what a noise level needs before it is compared against a sensor specification.
+The noise is full 2-DOF tangent in *every* domain: a
 planar agent's motion is restricted, its camera is not, and the component the restriction makes
 unobservable is exactly the one `B` already zeroes as a zero row.
 

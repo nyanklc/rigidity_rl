@@ -40,10 +40,11 @@ cost anything across all three modes -- it is the pruning signal. Raw `bearings`
 **The survey's baselines and a compute axis are in** (`spectral`, `anneal`, `degree`, `cost.py`;
 see `DESIGN_NOTES.md#spectral-baseline` and `#cost-counters`). What they said, and what is left:
 
-- **Compute is no longer an argument for the policy.** On `mixed` at n=10 the policy costs 1424
-  rigidity computations against greedy's 2252 -- same order, because its observation does the
-  algebra its reward never asks it to use. `#greedy-vs-policy` predicted this; it is now measured.
-  The honest framing for the thesis is that the policy competes on the *answer*, not on the cost.
+- **Compute is not settled, and the measurement that said so is mis-metered.** The 1424 against
+  greedy's 2252 charged the policy for a `reset()` no other method pays for, roughly 60% of its
+  row (`DESIGN_NOTES.md#cost-counters`). Fix the metering and re-run before quoting it either way.
+  Removing the reward's greedy reference cut a reset from 2974 ms to 56 ms at n=20, which moves
+  this further in the policy's favour.
 - **`spectral` is greedy at a fraction of the price.** Identical output at `stiffness_kappa = 0`
   (60/60 instances, five domains) for 3.7-6.9x fewer computations, growing as `n^0.81` against
   `n^2.95` (`tools/cost_scaling.py`). It replaces `greedy` as the cost-fair opponent at large `n`,
@@ -91,16 +92,24 @@ Karimian and Tron's factor-graph algorithm is deliberately **not** implemented: 
 is the minimum-edge guarantee in homogeneous 2-D, and `greedy_rigid_repair` was measured to
 attain that bound wherever `c_max = 1`, which §14.3's matroid argument predicts.
 
-**Randomised domain composition.** A `domain_sampler` env key drawing the per-agent mix in
-`reset()`; `n` fixed. Dirichlet-multinomial rather than per-agent uniform, which at n=10 would
-draw a homogeneous corner with probability 5e-7. Fix the ordering while there: draw the mix,
-compute `m_req` for it, then sample the edge count -- `sample_initial_edge_count` currently uses
-the *previous* episode's cached `m_req`. Set `max_steps` from the worst case over the sampler's
-support so the horizon stays constant. `benchmark.py` needs per-instance `domains`.
+**Randomised domain composition. Done, as `random_domains`**, uniform per agent rather than the
+Dirichlet-multinomial planned here. The ordering fix, the worst-case horizon and per-instance
+benchmark domains all landed with it; see `DESIGN_NOTES.md#random-domains`.
 
-Criterion, fixed before the run: train on Dirichlet draws, evaluate on held-out composition
+Uniform was chosen over Dirichlet because the argument recorded here (a homogeneous corner at
+5e-7) is an argument for putting the corners *in* the training distribution, while the evaluation
+plan below holds them out, and because the measured worry -- that the reward scale would move
+between episodes -- did not survive contact: the quantum's p90/p10 narrows with `n` and the
+composition adds 17% at n=10 and nothing at n=20 to a between-episode spread that already exists.
+What uniform does not do is reach the high-DOF-majority compositions where transfer is measured to
+degrade, since the multinomial concentrates near the centroid. Dirichlet-multinomial with a
+concentration `alpha` is the one-parameter family that spans both (`alpha -> infinity` recovers
+uniform), and is the arm to add if the held-out corners come out badly.
+
+Criterion, fixed before the run: train on the uniform draw, evaluate on held-out composition
 families (the five homogeneous corners, and two-domain mixes never seen as such), and require
-parity with greedy on edges *and* minimality on every family.
+parity with greedy on edges *and* minimality on every family. The corners are held out for free
+here, since uniform draws never reach them.
 
 **Statistical protocol**, threaded through the above rather than done last. Three seeds per
 arm; `report.paired_stats(rows, reference="greedy")` for per-instance paired differences with a

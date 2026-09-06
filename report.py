@@ -460,6 +460,7 @@ def format_table(rows, context, brief=False):
     if sweep:
         sigmas = sorted({s for v in sweep.values() for s in v})
         lines.append("MEASURED SHAPE ERROR UNDER BEARING NOISE  (predicted in brackets)")
+        lines.append("  columns are the per-axis sigma; the RMS angle is sqrt(2) times it")
         lines.append("  " + "method".ljust(13)
                      + "".join(f"{np.degrees(s):.2f} deg".rjust(22) for s in sigmas))
         marked = False
@@ -530,7 +531,10 @@ def format_table(rows, context, brief=False):
         lines.append("WHAT THE COST BLOCK MEANS")
         lines.extend(cost_legend())
     if sweep:
-        lines.append("  The noise block perturbs every bearing by that many degrees,")
+        lines.append("  The noise block perturbs every bearing by that many degrees of")
+        lines.append("  per-axis sigma -- the RMS angle between the true and the noisy")
+        lines.append("  bearing is sqrt(2) times it, the tangent plane having two")
+        lines.append("  components -- then")
         lines.append("  recovers the formation from the noisy measurements and reports the")
         lines.append("  RMS position error in formation radii. The bracketed number is what")
         lines.append("  the rigidity matrix predicts. The two agree while the error stays")
@@ -1195,7 +1199,7 @@ def plot_noise_sweep(run_dir, rows, header, filename="noise"):
 
     ax.set_xscale("log")
     ax.set_yscale("log")
-    ax.set_xlabel("bearing noise per measurement (degrees)")
+    ax.set_xlabel("bearing noise per measurement (degrees, per-axis sigma)")
     ax.set_ylabel("RMS position error (formation radii)")
     _style_axes(ax, log=True)
     _panel_title(ax, "Measured against predicted",
@@ -1427,7 +1431,7 @@ def plot_uncertainty(run_dir, instances, rows, header, sigma=0.0175,
         f"One formation with one panel per method. The agents and poses are identical "
         f"and only the measured bearings differ. Drawn on the first evaluated network.",
         f"Each shell is where that agent ends up when every bearing carries "
-        f"{np.degrees(sigma):.1f} degrees of error. Bigger means the topology pins that "
+        f"{np.degrees(sigma):.1f} degrees of per-axis error. Bigger means the topology pins that "
         f"agent down less well. The percentage above each panel is the worst agent, at "
         f"true scale.",
         f"Shells are drawn {exaggeration}x larger than life so they are visible at all, "
@@ -2093,7 +2097,7 @@ def plot_estimation(run_dir, rows, header, filename="estimation"):
         ax.set_xticks(np.degrees(ticks))
         ax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{x:g}"))
         ax.xaxis.set_minor_formatter(NullFormatter())
-        ax.set_xlabel("bearing noise (degrees)", color=INK_2, fontsize=8.5)
+        ax.set_xlabel("bearing noise (degrees, per-axis sigma)", color=INK_2, fontsize=8.5)
         ax.set_ylabel("RMS position error (formation radii)", color=INK_2, fontsize=8.5)
         # the only panel where identity is not a y tick label, so it needs the key.
         # Outside the axes, because inside it sits on top of the curves it labels.

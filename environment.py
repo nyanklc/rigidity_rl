@@ -8,7 +8,7 @@ import json
 from datetime import datetime
 import os
 import sys
-from network import Network
+from network import Network, DOMAINS
 from rigidity import *
 from util import sample_gaussian
 from stable_baselines3.common.env_util import make_vec_env
@@ -620,6 +620,7 @@ class Environment(gym.Env):
         action_rewards_enable=False,
         skip_is_stop=True,
         random_graph_with_mean_min_edges=False,
+        random_domains=False,
         time_penalty_value=0.0,
         track_data_enable=False,
         max_steps=1e4,
@@ -649,6 +650,15 @@ class Environment(gym.Env):
         self.termination_condition_type = termination_condition_type
 
         self.random_graph_with_mean_min_edges = random_graph_with_mean_min_edges
+
+        # draw each agent's domain uniformly and independently every reset, instead of
+        # carrying one fixed mix. The composition then concentrates near n/5 agents per
+        # domain, so the homogeneous corners stay out of the training distribution.
+        self.random_domains = random_domains
+        if random_domains and only_randomize_edges:
+            raise ValueError(
+                "random_domains redraws the poses with the mix, and only_randomize_edges "
+                "keeps the poses; together they would silently do nothing. Pick one.")
 
         # tier-2 information: an agent cannot know a bearing it has not measured.
         # False reverts to bearings on existing edges only, same obs shape.
@@ -805,6 +815,7 @@ class Environment(gym.Env):
         # keys added after the older configs were generated
         SKIP_IS_STOP = config.get("skip_is_stop", False)
         RANDOM_GRAPH_WITH_MEAN_MIN_EDGES = config.get("random_graph_with_mean_min_edges", False)
+        RANDOM_DOMAINS = config.get("random_domains", False)
         TIME_PENALTY_VALUE = config["time_penalty_value"]
         TRACK_DATA_ENABLE = config["track_data_enable"]
         MAX_STEPS = config["max_steps"]
@@ -848,6 +859,7 @@ class Environment(gym.Env):
             action_rewards_enable=ACTION_REWARDS_ENABLE,
             skip_is_stop=SKIP_IS_STOP,
             random_graph_with_mean_min_edges=RANDOM_GRAPH_WITH_MEAN_MIN_EDGES,
+            random_domains=RANDOM_DOMAINS,
             time_penalty_value=TIME_PENALTY_VALUE,
             track_data_enable=TRACK_DATA_ENABLE,
             max_steps=MAX_STEPS,
@@ -915,28 +927,38 @@ class Environment(gym.Env):
         self.m_req = required_edge_count(
             self.network, rank_K=self.rank_K, brmat_K=brmat_K, block_ranks=blocks_K
         )
-        # edge-independent, so it stays an episode constant and the shaping
-        # stays potential-based.
+        # edge-independent, so they stay episode constants and the shaping stays
+        # potential-based. Each costs stiffness_ref_samples greedy constructions, and
+        # one construction rebuilds B once per candidate edge, so only the reference
+        # the configured score actually reads is built: they are the same
+        # constructions under the same seed, and computing both doubled every reset.
+        score = self.state_score_type
         self.stiffness_rng = np.random.default_rng(self.stiffness_seed)
         self.stiffness_ref = (reference_stiffness(self.network, self.rank_K,
                                                   self.stiffness_rng,
                                                   samples=self.stiffness_ref_samples)
-                              if self.stiffness_kappa > 0 else 0.0)
-        self.spectral_ref = None
-        if (self.rigidity_quality
-                or (self.stiffness_kappa > 0
-                    and self.state_score_type == "WeightedNormalizedSpectral")):
-            self.spectral_ref = reference_spectral(
-                self.network, self.rank_K, np.random.default_rng(self.stiffness_seed),
-                samples=self.stiffness_ref_samples,
-                functional=self.spectral_functional)
+                              if (self.stiffness_kappa > 0
+                                  and score == "WeightedNormalized")
+                              else 0.0)
+        # rigidity_quality reads spectral_ref under every score but the shape-error
+        # one, where state_quality uses the same fixed scale phi does
+        needs_spectral = (score != "WeightedNormalizedShapeError"
+                          and (self.rigidity_quality
+                               or (self.stiffness_kappa > 0
+                                   and score == "WeightedNormalizedSpectral")))
+        self.spectral_ref = (reference_spectral(
+            self.network, self.rank_K, np.random.default_rng(self.stiffness_seed),
+            samples=self.stiffness_ref_samples,
+            functional=self.spectral_functional) if needs_spectral else None)
 
         # pose-dependent, edge-independent, and needed every step by the rigidity
         # features: the trivial variation space and every pair's own block rank
         if self.rigidity_features_enabled():
             self.length_scale = characteristic_length(self.network)
-            ZK = nullspace(brmat_K, int(self.rank_K))
-            self.Z_K = nullspace_in_scaled_units(ZK, self.network.n, self.length_scale)
+            self.Z_K = nullspace(
+                scaled_rigidity_matrix(network_K, brmat=brmat_K,
+                                       length_scale=self.length_scale),
+                int(self.rank_K))
             self.block_rank_K = np.zeros((self.network.n, self.network.n))
             ii, jj = np.nonzero(network_K.edges)
             cm = max(int(self.c_max), 1)
@@ -948,7 +970,8 @@ class Environment(gym.Env):
     # Rigidity-derived observation features for the current graph, cached so obs()
     # does not recompute them. Only filled when some rigidity flag is on -- these
     # are tier-3 information, an ablation arm, not the default.
-    def compute_rigidity_features(self, brm, rank_brm, is_IBR, Z=None, lam=None):
+    def compute_rigidity_features(self, brm, rank_brm, is_IBR, Z=None, lam=None,
+                                  shape_err=None):
         if not self.rigidity_features_enabled():
             self.last_rigidity = None
             return
@@ -961,19 +984,34 @@ class Environment(gym.Env):
         }
 
         if self.rigidity_quality:
-            feats["quality"] = self.state_quality(brm, is_IBR, lam)
+            feats["quality"] = self.state_quality(brm, is_IBR, lam, shape_err=shape_err)
 
-        v, eig_w, eig_V = None, None, None
+        # Every channel below is read off the LENGTH-NORMALISED matrix. B's position
+        # columns carry 1/length and its attitude columns do not, so a spectrum taken
+        # from the raw matrix moves when the formation is rescaled. Mapping a null
+        # space into scaled units afterwards is fine, since a subspace survives
+        # re-orthonormalisation, but the softest mode is a single eigenvector and the
+        # same map does not produce the scaled matrix's own -- which is why the
+        # stiffness channels drifted by up to 49% under a rescale in SE(3).
+        L = self.length_scale
+        Bs = scaled_rigidity_matrix(self.network, brmat=brm, length_scale=L)
+
+        v, eig_w, eig_V, lam_s = None, None, None, 0.0
         if Z is None:
             if self.rigidity_stiffness or self.rigidity_removal:
-                Z, v, eig_w, eig_V = nullspace_and_softest(brm, int(rank_brm))
+                Zs, v, eig_w, eig_V = nullspace_and_softest(Bs, int(rank_brm))
+                # the scaled matrix's own rigidity eigenvalue, the one v belongs to.
+                # 0 unless rigid, matching rigidity_decomposition: below rank_K the
+                # smallest nonzero eigenvalue is not a stiffness, and reporting one
+                # costs removal_costs its skip of the per-edge downdate.
+                if (eig_w is not None and v is not None and v.shape[1] == 1
+                        and int(rank_brm) >= int(self.rank_K)):
+                    lam_s = float(eig_w[Bs.shape[1] - int(rank_brm)])
             else:
-                Z = nullspace(brm, int(rank_brm))
+                Zs = nullspace(Bs, int(rank_brm))
+        else:
+            Zs = nullspace_in_scaled_units(Z, n, L)
 
-        # lengths in units of the formation's own size, so the null space does not
-        # move under a uniform scaling.
-        L = self.length_scale
-        Zs = nullspace_in_scaled_units(Z, n, L)
         cand = candidate_gain(self.network, Zs, length_scale=L)
 
         if self.rigidity_flex:
@@ -1003,10 +1041,9 @@ class Environment(gym.Env):
             add_stiffness = np.zeros((n, n))
             node_slack = np.zeros((n, 2))
             if is_IBR and v is not None and v.shape[1] == 1:
-                vs = nullspace_in_scaled_units(v, n, L)
-                add_stiffness = candidate_gain(self.network, vs, length_scale=L)[0]
-                vp = vs[:3 * n].reshape(n, 3, -1)
-                va = vs[3 * n:].reshape(n, 3, -1)
+                add_stiffness = candidate_gain(self.network, v, length_scale=L)[0]
+                vp = v[:3 * n].reshape(n, 3, -1)
+                va = v[3 * n:].reshape(n, 3, -1)
                 node_slack = np.stack([np.sqrt((vp ** 2).sum(axis=(1, 2))),
                                        np.sqrt((va ** 2).sum(axis=(1, 2)))], axis=-1)
             # per channel, by its own mean: which pair/node is slack rather than
@@ -1018,12 +1055,31 @@ class Environment(gym.Env):
 
         if self.rigidity_removal:
             rank_lost, stiffness_lost = removal_costs(
-                brm, self.network, int(self.rank_K), lam=float(lam or 0.0),
+                Bs, self.network, int(self.rank_K), lam=lam_s,
                 w=eig_w, V=eig_V, c_max=self.c_max)
             feats["remove_rank"] = rank_lost[:, :, None]
             feats["remove_stiffness"] = stiffness_lost[:, :, None]
 
         self.last_rigidity = feats
+
+    def stiffness_term_active(self):
+        """Whether phi carries its conditioning bonus right now.
+
+        Which reference that needs depends on the score type, and one of them is
+        built only when its own score is configured.
+        """
+        if self.stiffness_kappa <= 0:
+            return False
+        if self.state_score_type == "WeightedNormalizedShapeError":
+            return True                     # its scale is fixed, nothing to build
+        if self.state_score_type == "WeightedNormalizedSpectral":
+            return self.spectral_ref is not None
+        return self.stiffness_ref > 0
+
+    def uses_shape_error(self):
+        """Whether a step has to compute shape_err. One SVD serves both readers."""
+        return (self.state_score_type == "WeightedNormalizedShapeError"
+                and (self.stiffness_kappa > 0 or self.rigidity_quality))
 
     def rigidity_features_enabled(self):
         return (self.rigidity_global or self.rigidity_quality
@@ -1158,8 +1214,16 @@ class Environment(gym.Env):
     # How good this state is on the axis rank and edge count do not cover: where its
     # conditioning sits against a typical greedy graph on the same poses. 0 while
     # flexible, 0.5 for a typical answer, and bounded either side.
-    def state_quality(self, brm=None, is_IBR=False, lam=None):
-        if not is_IBR or self.spectral_ref is None:
+    def state_quality(self, brm=None, is_IBR=False, lam=None, shape_err=None):
+        if not is_IBR:
+            return 0.0
+        if self.state_score_type == "WeightedNormalizedShapeError":
+            # the same fixed scale phi uses, so the channel and the reward agree
+            q = shape_error_quality(
+                self.shape_error_now(brm) if shape_err is None else shape_err,
+                self.network.n)
+            return 0.0 if q is None else q
+        if self.spectral_ref is None:
             return 0.0
         a_opt = d_opt = None
         if self.spectral_functional != "eigenvalue":
@@ -1196,7 +1260,8 @@ class Environment(gym.Env):
     # -----------------------------------
     # How good is the current graph. Callable outside step(): the reward is this
     # value's improvement, so reset() needs a baseline.
-    def compute_state_score(self, brm, is_IBR, is_MBR, rank_brm, lam=None):
+    def compute_state_score(self, brm, is_IBR, is_MBR, rank_brm, lam=None,
+                            shape_err=None):
         state_score = 0
         if self.state_score_type == "Rigid":
             if is_IBR:
@@ -1324,6 +1389,28 @@ class Environment(gym.Env):
                     q = 1.0 / (1.0 + np.exp(-(g - self.spectral_ref) / width))
                     state_score += self.stiffness_kappa * one_edge * q
 
+        elif self.state_score_type == "WeightedNormalizedShapeError":
+            # WeightedNormalized with a conditioning bonus that carries its own scale.
+            # shape_err is dimensionless and its centre moves with n and almost not at
+            # all with domain, so dividing out n^SHAPE_ERR_EXPONENT leaves a fixed
+            # centre and the per-episode greedy reference is not needed at all.
+            w_rank = 100.0
+            w_edge = 25.0
+
+            m = np.sum(self.network.edges)
+            rank_K = max(int(self.rank_K), 1)
+            c_max = max(int(self.c_max), 1)
+
+            state_score += (w_rank * rank_brm - w_edge * m * c_max) / rank_K
+
+            if self.stiffness_kappa > 0 and is_IBR:
+                if shape_err is None:
+                    shape_err = self.shape_error_now(brm)
+                q = shape_error_quality(shape_err, self.network.n)
+                if q is not None:
+                    one_edge = w_edge * c_max / rank_K
+                    state_score += self.stiffness_kappa * one_edge * q
+
         elif self.state_score_type == "None" or None:
             pass
 
@@ -1393,17 +1480,22 @@ class Environment(gym.Env):
         rank_brm, _, lam = rigidity_decomposition(brm, self.rank_K)
         is_MBR, is_IBR, _ = self.network.is_MBR(
             rank_K=self.rank_K, brm=brm, rank_brm=rank_brm)
-        state_score = self.compute_state_score(brm, is_IBR, is_MBR, rank_brm, lam=lam)
+
+        # computed once and shared: the score, the quality channel and the logging all
+        # read it, and it is a second SVD on the length-normalised matrix
+        tracking = self.track_data_enable and self.writer is not None
+        min_eig = lam if (tracking or self.trace_min_eig) else None
+        shape_err = (self.shape_error_now(brm, rank_brm)
+                     if (min_eig is not None or self.uses_shape_error()) else None)
+
+        state_score = self.compute_state_score(brm, is_IBR, is_MBR, rank_brm, lam=lam,
+                                               shape_err=shape_err)
 
         # obs comes after the rigidity computation, not before: the rigidity
         # features have to describe the graph this step produced
-        self.compute_rigidity_features(brm, rank_brm, is_IBR, lam=lam)
+        self.compute_rigidity_features(brm, rank_brm, is_IBR, lam=lam,
+                                       shape_err=shape_err)
         obs = self._get_obs()
-
-        # computed once and shared
-        tracking = self.track_data_enable and self.writer is not None
-        min_eig = lam if (tracking or self.trace_min_eig) else None
-        shape_err = self.shape_error_now(brm, rank_brm) if min_eig is not None else None
         self.update_best_state(state_score, is_IBR, is_MBR, rank_brm, min_eig=min_eig,
                                shape_err=shape_err)
 
@@ -1634,6 +1726,13 @@ class Environment(gym.Env):
             return self.begin_episode()
 
         n = self.n
+
+        if self.random_domains:
+            # each agent's domain drawn independently, so the composition itself is
+            # part of the instance distribution rather than a fixed property of the run
+            # str(), not the np.str_ np.random.choice returns: the domain is a
+            # dict key and a JSON field in half a dozen places downstream
+            self.domains = [str(d) for d in np.random.choice(DOMAINS, size=n)]
         domains = self.domains
 
         edge_count = None
@@ -1641,10 +1740,28 @@ class Environment(gym.Env):
         if self.action_space_type == "AddEdgeDiscreteNoSkipNoSelfLoops":
             edge_count = 0
         # TODO add other addition action types
-        elif self.random_graph_with_mean_min_edges:
+        elif self.random_graph_with_mean_min_edges and not self.random_domains:
+            # with a fixed mix the cached m_req is this episode's; with a random one it
+            # belongs to the previous episode's mix, so it is drawn below instead
             edge_count = self.sample_initial_edge_count(n, domains)
 
-        if self.only_randomize_edges:
+        if self.random_domains:
+            # the mix decides m_req, so the order has to be mix -> poses -> m_req ->
+            # edge count. The poses come first only because required_edge_count needs a
+            # network; it is edge-independent, which is why the empty graph serves.
+            self.network, self.goal_network = random_scenario(
+                n, domains, edge_count=0)
+            # the axes belong to the mix, so they are read back rather than carried:
+            # only R^3xS^1 has one, and set_domain gives it e3
+            self.rotation_axes = [a.rotation_axis for a in self.network.agents]
+            self.m_req = required_edge_count(self.network)
+            if edge_count is None:
+                edge_count = (self.sample_initial_edge_count(n, domains)
+                              if self.random_graph_with_mean_min_edges
+                              else np.random.randint(0, n**2 - n + 1))
+            self.network.set_edges_list(random_edge_list(n, edge_count))
+            self.randomly_rotate()
+        elif self.only_randomize_edges:
             # keep the poses, resample only the edges. With a scenario that means the
             # scenario's own geometry, which is what you want for a case study figure.
             if self.scenario_network is not None:
@@ -1699,8 +1816,10 @@ class Environment(gym.Env):
         rank_brm_0, _, lam0 = rigidity_decomposition(self.brm, self.rank_K)
         is_MBR_0, is_IBR_0, _ = self.network.is_MBR(
             rank_K=self.rank_K, brm=self.brm, rank_brm=rank_brm_0)
+        shape_err_0 = (self.shape_error_now(self.brm, rank_brm_0)
+                       if self.uses_shape_error() else None)
         self.last_state_score = self.compute_state_score(
-            self.brm, is_IBR_0, is_MBR_0, rank_brm_0, lam=lam0
+            self.brm, is_IBR_0, is_MBR_0, rank_brm_0, lam=lam0, shape_err=shape_err_0
         )
 
         # Best graph seen during the episode. Scoring an episode on the final state
@@ -1729,7 +1848,8 @@ class Environment(gym.Env):
         self.was_IBR = None
         self.was_MBR = None
 
-        self.compute_rigidity_features(self.brm, rank_brm_0, is_IBR_0, lam=lam0)
+        self.compute_rigidity_features(self.brm, rank_brm_0, is_IBR_0, lam=lam0,
+                                       shape_err=shape_err_0)
         return self._get_obs(), {}
 
 
@@ -1754,6 +1874,7 @@ if __name__ == "__main__":
     SKIP_ENABLED = False
     SKIP_IS_STOP = False
     RANDOM_GRAPH_WITH_MEAN_MIN_EDGES = True
+    RANDOM_DOMAINS = False
 
     TRACK_DATA_ENABLE = True
     # TRACK_DATA_ENABLE = False
@@ -1777,7 +1898,9 @@ if __name__ == "__main__":
     # STATE_SCORE_TYPE = "RigidityMatrixRankAndEdges"
     # STATE_SCORE_TYPE = "Weighted"
     # STATE_SCORE_TYPE = "WeightedNormalized"
-    STATE_SCORE_TYPE = "WeightedNormalizedSpectral"
+    # STATE_SCORE_TYPE = "WeightedNormalizedSpectral"
+    # conditioning on a fixed scale: no per-episode greedy reference
+    STATE_SCORE_TYPE = "WeightedNormalizedShapeError"
     # STATE_SCORE_TYPE = "None"
 
     TERMINATION_CONDITION_TYPE = "MaxSteps"
@@ -1800,7 +1923,7 @@ if __name__ == "__main__":
 
     STIFFNESS_KAPPA = 2.0
     STIFFNESS_REF_SAMPLES = 3
-    SPECTRAL_FUNCTIONAL = "trace" # eigenvalue | trace | logdet
+    SPECTRAL_FUNCTIONAL = "eigenvalue" # eigenvalue | trace | logdet
 
     INCLUDE_CANDIDATE_BEARINGS = True
 
@@ -1825,15 +1948,7 @@ if __name__ == "__main__":
     scenario_name = None
     if sys.argv[1] != "file":
         n = int(sys.argv[1])
-        domains = sys.argv[2:]
-        if len(domains) != 1:
-            print(f"domain list not implemented yet")
-            quit()
-            # if len(domains_input) != n:
-            #     print(f"Number of domain entries ({len(domains_input)}) must match n ({n})")
-            #     quit()
-            # domains_list = domains_input
-        domains = domains[0]
+        domains = sys.argv[2]
     else:
         filepath = sys.argv[2]
         scenario_name = sys.argv[2]
@@ -1849,7 +1964,11 @@ if __name__ == "__main__":
             n = len(config["positions"])
             domains = config["domains"]
 
-    if isinstance(domains, str):
+    if RANDOM_DOMAINS:
+        # the run is not about the mix that was passed in, and a name saying otherwise
+        # is how a config gets read as the wrong experiment later
+        domains_str = "randdom"
+    elif isinstance(domains, str):
         domains_str = domains.replace("^", "").replace("(", "").replace(")", "")
     else:
         domains_str = scenario_name or "mixed"
@@ -1861,8 +1980,12 @@ if __name__ == "__main__":
     # best@, and the horizon sets how many distinct instances a run and its
     # replay buffer ever see. m_req depends only on (n, domain mix), not on the
     # poses, so one draw settles it.
-    _probe_net, _ = random_scenario(n, domains, edge_count=n)
-    MAX_STEPS = 4 * int(required_edge_count(_probe_net)) + 10
+    # Under RANDOM_DOMAINS the mix moves every episode, so the horizon is the worst
+    # case over the sampler's support -- the homogeneous corners bound every mixture,
+    # since m_req is largest when every agent is the most demanding domain.
+    _probe_mixes = ([[d] * n for d in DOMAINS] if RANDOM_DOMAINS else [domains])
+    MAX_STEPS = 4 * max(int(required_edge_count(random_scenario(n, dm, edge_count=n)[0]))
+                        for dm in _probe_mixes) + 10
 
     n_domains = f"n{n}_{domains_str}"
     # the rigidity arms differ only by these flags, so the name has to carry them
@@ -1870,7 +1993,8 @@ if __name__ == "__main__":
                       (("G", RIGIDITY_GLOBAL), ("F", RIGIDITY_FLEX), ("E", RIGIDITY_EDGE)) if on)
     rig_tag = f"_rig{rig_tag}" if rig_tag else ""
     rig_tag += "" if GRAPH_FEATURES else "_lean"
-    model_name = f"action{ACTION_TYPE}_reward{STATE_SCORE_TYPE}_term{TERMINATION_CONDITION_TYPE}{rig_tag}_{scenario_name if scenario_name is not None else n_domains}"
+    _case = n_domains if (RANDOM_DOMAINS or scenario_name is None) else scenario_name
+    model_name = f"action{ACTION_TYPE}_reward{STATE_SCORE_TYPE}_term{TERMINATION_CONDITION_TYPE}{rig_tag}_{_case}"
 
     if len(sys.argv) > 3 and sys.argv[3] is not None:
         model_name += f"_{sys.argv[3]}"
@@ -1899,6 +2023,7 @@ if __name__ == "__main__":
         "skip_enabled": SKIP_ENABLED,
         "skip_is_stop": SKIP_IS_STOP,
         "random_graph_with_mean_min_edges": RANDOM_GRAPH_WITH_MEAN_MIN_EDGES,
+        "random_domains": RANDOM_DOMAINS,
         "time_penalty_value": TIME_PENALTY_VALUE,
         "track_data_enable": TRACK_DATA_ENABLE,
         "max_steps": MAX_STEPS,

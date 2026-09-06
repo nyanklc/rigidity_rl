@@ -13,6 +13,18 @@ from enum import Enum
 import copy
 
 
+# The five agent domains, and the observation's one-hot encoding of them. One list,
+# so a sampler over domains cannot drift from the encoding the policy reads.
+DOMAIN_ONEHOT = {
+    "R^2":     np.array([0, 0, 0, 0, 1]),
+    "R^2xS^1": np.array([0, 0, 0, 1, 0]),
+    "R^3":     np.array([0, 0, 1, 0, 0]),
+    "R^3xS^1": np.array([0, 1, 0, 0, 0]),
+    "SE(3)":   np.array([1, 0, 0, 0, 0]),
+}
+DOMAINS = tuple(DOMAIN_ONEHOT)
+
+
 class Agent:
     def __init__(self, pose=None):
         self.pose = pose if pose is not None else Pose()
@@ -297,14 +309,7 @@ class Network:
 
     # N, 3
     def get_domain_features(self):
-        agent_domain_feature = {
-            "R^2":     np.array([0, 0, 0, 0, 1]),
-            "R^2xS^1": np.array([0, 0, 0, 1, 0]),
-            "R^3":     np.array([0, 0, 1, 0, 0]),
-            "R^3xS^1": np.array([0, 1, 0, 0, 0]),
-            "SE(3)":   np.array([1, 0, 0, 0, 0]),
-        }
-        feats = np.asarray([agent_domain_feature[agent.domain] for agent in self.agents])
+        feats = np.asarray([DOMAIN_ONEHOT[agent.domain] for agent in self.agents])
         return feats
 
     # N, 3

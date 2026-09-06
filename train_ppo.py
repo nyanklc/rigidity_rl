@@ -73,6 +73,10 @@ with open(filepath, "r") as f:
     if isinstance(domains, list):
         domains = "-".join(sorted(set(domains)))
     domains_str = domains.replace("^", "").replace("(", "").replace(")", "")
+    # the config's domains only seed the first network when the mix is redrawn per
+    # episode, so naming the run after them would name the wrong experiment
+    if config.get("random_domains", False):
+        domains_str = "randdom"
     n_domains = f"n{n}_{domains_str}"
 
 if "prefix=" in sys.argv[2]:

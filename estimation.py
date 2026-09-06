@@ -39,9 +39,14 @@ def true_bearings(network):
 def perturb_bearings(network, sigma, rng, bearings=None):
     """Noisy unit bearings: z = normalize(b + sigma * (I - b b^T) eps).
 
-    Small-angle von Mises-Fisher, so sigma is an angle in radians. Full 2-DOF
-    tangent in every domain: the DOF restriction is on an agent's motion, not on
-    its camera.
+    Small-angle von Mises-Fisher. `sigma` is the standard deviation of ONE tangent
+    component, in radians, which is the convention the Fisher information B^T B /
+    sigma^2 is written in. The tangent plane has two independent components, so the
+    RMS angle between z and b is sigma * sqrt(2) (measured 1.40-1.42 over four
+    decades) -- quote that, not sigma, when relating a noise level to a sensor.
+
+    Full 2-DOF tangent in every domain: the DOF restriction is on an agent's
+    motion, not on its camera.
     """
     b = true_bearings(network) if bearings is None else np.asarray(bearings)
     if b.size == 0:

@@ -24,7 +24,7 @@ TOTAL_TIMESTEPS = int(float(os.environ.get("TOTAL_TIMESTEPS", 2.5e5)))
 NR_ENVS = 1
 MEM_SIZE = 10000
 SEED = int(os.environ.get("SEED", 0))
-EGREEDY_STEPS = TOTAL_TIMESTEPS * 0.5
+EGREEDY_STEPS = int(float(os.environ.get("EGREEDY_STEPS", TOTAL_TIMESTEPS * 0.5)))
 
 BACKBONE = "GINE"
 GNN_HIDDEN_DIM = 128
@@ -79,6 +79,10 @@ with open(filepath, "r") as f:
     if isinstance(domains, list):
         domains = "-".join(sorted(set(domains)))
     domains_str = domains.replace("^", "").replace("(", "").replace(")", "")
+    # the config's domains only seed the first network when the mix is redrawn per
+    # episode, so naming the run after them would name the wrong experiment
+    if config.get("random_domains", False):
+        domains_str = "randdom"
     n_domains = f"n{n}_{domains_str}"
 
 if "prefix=" in sys.argv[2]:

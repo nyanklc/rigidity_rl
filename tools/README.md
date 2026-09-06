@@ -37,6 +37,9 @@ PYTHONPATH=. uv run tools/<name>.py
 | `rigidity_cost.py` | which rigidity primitive costs what, and which one blocks a larger n? |
 | `policy_cost.py` | what do the flags cost on the policy side: observation width, forward time, parameters? |
 | `cost_scaling.py` | how does each baseline's cost grow with n, and does the cheaper one give up anything? |
+| `shape_error_scale.py` | what centre and width does a reference-free conditioning term need, and does an n correction buy anything? |
+| `domain_closed_forms.py` | can rank_K, c_max and m_req be had from the domain mix alone, without building the complete graph's matrix? |
+| `kappa_trade.py` | how many edges does raising stiffness_kappa actually buy? |
 
 `constructive_greedy.py` is the standalone version of the `constructive` baseline
 now wired into `outputs.py`, for difficulty sweeps that need no env config. It
@@ -75,6 +78,30 @@ number to an instance set, and `greedy` / `constructive` need no checkpoint. The
 gitignored; it prints the `outputs.py` commands instead of duplicating the
 rollout, since a second rollout path would drift and the check would become the
 thing that is wrong.
+
+`shape_error_scale.py` is the source of `rigidity.SHAPE_ERR_CENTRE` and
+`SHAPE_ERR_SIGMOID_DECADES`. It also prices `SHAPE_ERR_EXPONENT`, the optional
+`n` correction, and is why that is off: a sigmoid wide enough for the spread
+within one instance already absorbs the drift across `n`, so the correction
+leaves the median and p10 instance with exactly the same gradient.
+
+`domain_closed_forms.py` exists because the complete graph's rigidity matrix
+allocates a dense `(3m, 3m)` block at `m = n^2`, which is 7.2 GB at n=100, so
+any analysis that only needs the episode constants cannot build it. It exports
+`predict(domains)` and validates it against the real computation on 216
+configurations. The rule that is easy to get wrong is the trivial rotation
+count: a global rotation is trivial only when *every* agent carries a frame,
+and only about the shared axis unless all of them are `SE(3)`.
+
+`kappa_trade.py` is the answer to "is kappa denominated in edges". Over rigid
+graphs phi collapses to `100 - one_edge*(m - kappa*q)`, so storing `(m, q)` per
+graph gives the exact kappa curve with no search, and the optimum gains an edge
+only once `kappa > 1/dq`. Measured 24-208 over 46 networks, so at the kappa the
+configs use it buys none: kappa selects among equally sparse graphs rather than
+trading sparsity for conditioning. Exhaustive to n=5; above that it hill climbs,
+which lower bounds `q*` and so upper bounds the threshold. Slow, tens of minutes:
+the n=5 block enumerates every graph at three edge counts. The n=4 block alone
+is a minute and already carries the conclusion.
 
 `env_report.py` cross-checks the observation layout against `build_dict_obs` and
 warns if the two have drifted, which is the same table `ablation.py` mirrors by

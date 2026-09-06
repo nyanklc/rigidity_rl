@@ -47,7 +47,8 @@ ACTION_SPACES = [
 ]
 
 STATE_SCORES = [
-    "Weighted", "WeightedNormalized", "WeightedNormalizedSpectral", "Rigid", "RigidAndMinEigenvalue",
+    "Weighted", "WeightedNormalized", "WeightedNormalizedSpectral",
+    "WeightedNormalizedShapeError", "Rigid", "RigidAndMinEigenvalue",
     "RigidAndMinRigid", "RigidAndLogMinEigenvalueAndEdges", "MinRigid",
     "MinRigidAndMinEigenvalue", "MinEigenvalue", "Eigenvalues", "EdgeCount",
     "LogMinEigenvalue", "RigidityMatrixRank", "RigidityMatrixRankAndEdges", "None",

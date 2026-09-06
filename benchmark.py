@@ -27,6 +27,12 @@ def path(name):
     return os.path.join(DIR, f"{name}.npz")
 
 
+def agent_axes(net):
+    """Rotation axes as a float array; nan marks an agent that carries none."""
+    return np.array([[np.nan] * 3 if a.rotation_axis is None else a.rotation_axis
+                     for a in net.agents], dtype=float)
+
+
 @contextlib.contextmanager
 def without_spectral_references():
     """Stub out the two references reset() builds and this module never reads.
@@ -52,7 +58,7 @@ def save(env, name, instances=20, seed=0):
     np.random.seed(seed)
     env.freeze_network = False
 
-    pos, quats, edges = [], [], []
+    pos, quats, edges, domains, axes = [], [], [], [], []
     with without_spectral_references():
         for _ in range(instances):
             env.reset()
@@ -61,10 +67,11 @@ def save(env, name, instances=20, seed=0):
             quats.append([quaternion.as_float_array(a.pose.orientation)
                           for a in net.agents])
             edges.append(net.edges.copy())
-
-    net = env.network
-    axes = np.array([[np.nan] * 3 if a.rotation_axis is None else a.rotation_axis
-                     for a in net.agents], dtype=float)
+            # per instance, not once for the file: with random_domains the mix is part
+            # of the instance, and one mix stamped on every instance would pair each
+            # set of poses with somebody else's domains
+            domains.append([a.domain for a in net.agents])
+            axes.append(agent_axes(net))
 
     os.makedirs(DIR, exist_ok=True)
     np.savez_compressed(
@@ -72,8 +79,8 @@ def save(env, name, instances=20, seed=0):
         positions=np.asarray(pos, dtype=float),
         orientations=np.asarray(quats, dtype=float),
         edges=np.asarray(edges, dtype=bool),
-        domains=np.asarray([a.domain for a in net.agents]),
-        rotation_axes=axes,
+        domains=np.asarray(domains),
+        rotation_axes=np.asarray(axes, dtype=float),
         meta=np.asarray([json.dumps({
             "source_environment": getattr(env, "filepath", None) or "programmatic",
             "instances": instances, "seed": seed, "n": net.n,
@@ -91,17 +98,24 @@ def load(name):
             f"no benchmark at {path(name)} -- create it with "
             f"`uv run benchmark.py <environment_name> {name}`")
     d = np.load(path(name), allow_pickle=False)
-    domains = [str(x) for x in d["domains"]]
+    instances = d["positions"].shape[0]
+    # sets written before the mix could vary carry one domain list for the whole file
+    domains = np.atleast_2d(d["domains"])
     axes = d["rotation_axes"]
+    if domains.shape[0] == 1 and instances != 1:
+        domains = np.repeat(domains, instances, axis=0)
+    if axes.ndim == 2:
+        axes = np.repeat(axes[None], instances, axis=0)
 
     nets = []
-    for k in range(d["positions"].shape[0]):
+    for k in range(instances):
         net = Network(d["positions"][k], np.zeros_like(d["positions"][k]), d["edges"][k])
         for i, agent in enumerate(net.agents):
             agent.pose.position = np.array(d["positions"][k][i], dtype=float)
             agent.pose.orientation = quaternion.from_float_array(d["orientations"][k][i])
-            agent.domain = domains[i]
-            agent.rotation_axis = None if np.isnan(axes[i]).any() else np.array(axes[i])
+            agent.domain = str(domains[k][i])
+            agent.rotation_axis = (None if np.isnan(axes[k][i]).any()
+                                   else np.array(axes[k][i]))
         nets.append(net)
     return nets, json.loads(str(d["meta"][0]))
 
@@ -132,9 +146,8 @@ def rotate(source, name, seed=0):
         positions=np.asarray(pos, dtype=float),
         orientations=np.asarray(quats, dtype=float),
         edges=np.asarray(edges, dtype=bool),
-        domains=np.asarray([a.domain for a in ref.agents]),
-        rotation_axes=np.array([[np.nan] * 3 if a.rotation_axis is None else a.rotation_axis
-                                for a in ref.agents], dtype=float),
+        domains=np.asarray([[a.domain for a in net.agents] for net in nets]),
+        rotation_axes=np.asarray([agent_axes(net) for net in nets], dtype=float),
         meta=np.asarray([json.dumps({"source_environment": f"{source} rotated",
                                      "instances": len(nets), "seed": seed, "n": ref.n})]),
     )

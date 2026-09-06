@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from conftest import ALL_DOMAINS, C_MAX, RANK_K_FORMULA, STATE_SCORES
-from rigidity import rigidity_decomposition
+from rigidity import (SHAPE_ERR_CENTRE, SHAPE_ERR_EXPONENT, rigidity_decomposition)
 
 W_RANK, W_EDGE = 100.0, 25.0
 
@@ -317,3 +317,139 @@ def test_an_unknown_functional_is_refused(make_env):
     with pytest.raises(ValueError):
         make_env(n=5, domains="R^3", state_score_type="WeightedNormalizedSpectral",
                  spectral_functional="nonsense")
+
+
+# ------------------------------------------- the reference-free conditioning term
+
+def shape_err_centre(e):
+    """The shape_err that scores q = 0.5, whatever the n correction is set to."""
+    return 10 ** (SHAPE_ERR_CENTRE
+                  + SHAPE_ERR_EXPONENT * np.log10(max(e.network.n, 2)))
+
+
+def shape_env(make_env, domain, n=6, kappa=KAPPA, **kw):
+    return rigid_env(make_env, domain, n=n, kappa=kappa,
+                     state_score_type="WeightedNormalizedShapeError", **kw)
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+def test_shape_error_score_at_kappa_zero_is_the_rank_only_score(make_env, domain):
+    e = shape_env(make_env, domain, kappa=0.0)
+    phi, rank = phi_of(e)
+    m = int(e.network.edges.sum())
+    assert abs(phi - (W_RANK * rank - W_EDGE * m * e.c_max) / e.rank_K) < 1e-9
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+def test_shape_error_score_builds_no_reference(make_env, domain):
+    """The whole point: no greedy construction, at reset or at any step."""
+    import cost
+    e = shape_env(make_env, domain)
+    assert e.stiffness_ref == 0.0 and e.spectral_ref is None
+    with cost.Meter() as m:
+        e.reset()
+        for _ in range(5):
+            e.step(e.action_space.sample())
+    assert m.counts.get("greedy_rigid_construction", 0) == 0
+
+
+def test_reference_is_built_only_for_the_score_that_reads_it(make_env):
+    """reference_stiffness and reference_spectral are the same constructions under the
+    same seed, and only one score reads each."""
+    import cost
+
+    def constructions(**kw):
+        e = make_env(n=6, domains=["R^3"] * 6, stiffness_kappa=KAPPA, **kw)
+        with cost.Meter() as m:
+            e.reset()
+        return m.counts.get("greedy_rigid_construction", 0), e
+
+    spectral, e1 = constructions(state_score_type="WeightedNormalizedSpectral")
+    weighted, e2 = constructions(state_score_type="WeightedNormalized")
+    shape, e3 = constructions(state_score_type="WeightedNormalizedShapeError")
+    both, e4 = constructions(state_score_type="WeightedNormalized", rigidity_quality=True)
+
+    assert e1.spectral_ref is not None and e1.stiffness_ref == 0.0
+    assert e2.stiffness_ref > 0 and e2.spectral_ref is None
+    assert e3.stiffness_ref == 0.0 and e3.spectral_ref is None
+    # rigidity_quality reads spectral_ref under a score that reads stiffness_ref, so
+    # that combination genuinely needs both
+    assert e4.stiffness_ref > 0 and e4.spectral_ref is not None
+    assert spectral == weighted > 0 and shape == 0 and both == 2 * spectral
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+def test_shape_error_term_is_bounded_by_kappa_edges(make_env, domain):
+    e = shape_env(make_env, domain)
+    phi, rank = phi_of(e)
+    base = (W_RANK * rank - W_EDGE * int(e.network.edges.sum()) * e.c_max) / e.rank_K
+    assert 0.0 <= phi - base <= KAPPA * one_edge(e) + 1e-12
+
+
+def test_shape_error_term_is_gated_on_rigidity(make_env):
+    e = shape_env(make_env, "R^3")
+    brm = e.network.extended_bearing_rigidity_matrix()
+    base = (W_RANK * 3 - W_EDGE * int(e.network.edges.sum()) * e.c_max) / e.rank_K
+    assert abs(e.compute_state_score(brm, False, False, 3, shape_err=1e-9) - base) < 1e-12
+
+
+def test_better_conditioning_scores_higher_at_the_same_edge_count(make_env):
+    e = shape_env(make_env, "R^3")
+    brm = e.network.extended_bearing_rigidity_matrix()
+    args = dict(is_IBR=True, is_MBR=False, rank_brm=e.rank_K)
+    lo = e.compute_state_score(brm, shape_err=shape_err_centre(e) * 10.0, **args)
+    hi = e.compute_state_score(brm, shape_err=shape_err_centre(e) / 10.0, **args)
+    assert hi > lo
+
+
+def test_q_is_one_half_at_the_fixed_centre(make_env):
+    e = shape_env(make_env, "R^3")
+    brm = e.network.extended_bearing_rigidity_matrix()
+    base = (W_RANK * e.rank_K - W_EDGE * int(e.network.edges.sum()) * e.c_max) / e.rank_K
+    got = e.compute_state_score(brm, True, False, e.rank_K,
+                                shape_err=shape_err_centre(e))
+    assert abs((got - base) / (KAPPA * one_edge(e)) - 0.5) < 1e-9
+
+
+def test_the_n_correction_is_a_switch_and_is_off(make_env):
+    """It was measured not to buy gradient, so q must not depend on n by default."""
+    import rigidity
+    assert rigidity.SHAPE_ERR_EXPONENT == 0.0
+    from rigidity import shape_error_quality
+    assert shape_error_quality(3.0, 8) == shape_error_quality(3.0, 32)
+    try:
+        rigidity.SHAPE_ERR_EXPONENT = 1.9
+        assert shape_error_quality(3.0, 8) != shape_error_quality(3.0, 32)
+    finally:
+        rigidity.SHAPE_ERR_EXPONENT = 0.0
+
+
+def test_shape_error_quality_is_bounded_and_monotone():
+    from rigidity import shape_error_quality
+    qs = [shape_error_quality(v, 10) for v in np.logspace(-4, 6, 40)]
+    assert all(0.0 < q < 1.0 for q in qs)
+    assert all(a > b for a, b in zip(qs, qs[1:]))          # lower error scores higher
+    assert shape_error_quality(np.inf, 10) is None         # flexible: not identifiable
+    assert shape_error_quality(None, 10) is None
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS)
+@pytest.mark.parametrize("kind", ["translate", "rotate", "scale"])
+def test_shape_error_phi_is_similarity_invariant(make_env, domain, kind):
+    """shape_err is read off the length-normalised B, so unlike lambda it needs no
+    shared pose scale to survive a rescale."""
+    e = shape_env(make_env, domain)
+    before = phi_of(e)[0]
+    assert abs(_transformed_phi(e, kind, domain in ("R^2", "R^2xS^1")) - before) < 1e-7
+
+
+def test_stiffness_term_active_says_whether_phi_actually_moves(make_env):
+    for score in ("WeightedNormalized", "WeightedNormalizedSpectral",
+                  "WeightedNormalizedShapeError"):
+        on = rigid_env(make_env, "R^3", state_score_type=score)
+        off = rigid_env(make_env, "R^3", kappa=0.0, state_score_type=score)
+        assert on.stiffness_term_active() is True, score
+        assert off.stiffness_term_active() is False, score
+        base = (W_RANK * phi_of(off)[1]
+                - W_EDGE * int(off.network.edges.sum()) * off.c_max) / off.rank_K
+        assert phi_of(on)[0] > base and abs(phi_of(off)[0] - base) < 1e-9, score

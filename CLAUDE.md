@@ -111,15 +111,6 @@ straight:
 This matters for the observation design specifically: candidate-edge bearings were exactly what
 the observations used to be missing, and are now included (see `#all-pairs-bearings`).
 
-## Results and where they live
-
-**Policy numbers live in exactly one place: `README.md`, "Current state".** Nothing else in the
-repository carries them. When a number is superseded, delete it rather than archiving it.
-
-This file records *what the code is* and the structural facts that do not move (the `rank_K`
-formulas, `c_max` per domain, cost scaling). `THEORY.md` holds the mathematics and the measurements
-that support it; `DESIGN_NOTES.md` holds why the implementation is the way it is. `ROADMAP.md`, if
-present, is only what is planned next and can be deleted without losing anything.
 
 ## What is live vs. obsolete
 
@@ -130,7 +121,7 @@ The repo carries a lot of history. **Currently in focus:**
 | Action spaces | `SelectNodesSequentially` (pointer-network style: pick a node per step; every 2nd pick toggles the edge between the two picks - add if absent, remove if present), `AddRemoveEdgeDiscreteNoSelfLoops` |
 | GNN backbones | `GNNBackboneEquivariant` (EGNN) and `GNNBackboneGINE` (GINE) |
 | Obs type | `Dict`. The six `Dict*` variants were merged into it and survive as flag presets that reproduce their old layouts byte-for-byte, so pre-merge configs and checkpoints still load. The backbone is a `BACKBONE` constant in the training script now, overridden by `OBS_BACKBONE` when a legacy obs type implies one. See `DESIGN_NOTES.md#dict-observation` |
-| State score | `WeightedNormalized` (dimensionless, transfers across n and domain); `WeightedNormalizedSpectral` is the same score with a selectable spectral bonus (`spectral_functional`); `Weighted` kept so old runs replay |
+| State score | `WeightedNormalizedShapeError` (dimensionless, and the conditioning term needs no per-episode reference); `WeightedNormalized` and `WeightedNormalizedSpectral` keep the greedy `lambda_ref` and are kept so old runs replay, as is `Weighted`. All four agree at `stiffness_kappa = 0` |
 | Algorithms | PPO and DQN, both via `skrl` |
 
 **Obsolete / ignore unless asked:** `main.py`, `control.py` (the gradient-based formation controllers - the thesis originally aimed at control), everything `sb3` (`train_ppo_sb3.py`, `policy_sb3.py`, `models/sb3/`), `junk/`, `runs_old*/`, `fix_train.py`, `dummy*`, the GAT backbone, and most of the older action/obs/state-score variants still present in the dispatchers.
@@ -193,6 +184,11 @@ uv run ablation.py <model_name> [environment_name] [--episodes N] [--mode shuffl
 PYTHONPATH=. uv run tools/crlb_validation.py        # measured vs predicted, and where it breaks
 PYTHONPATH=. uv run tools/spectral_criteria.py      # do A / D / E rank graphs differently
 PYTHONPATH=. uv run tools/functional_vs_error.py    # which of them predicts the measured error
+
+# The conditioning term: its constants, and what kappa is really worth
+PYTHONPATH=. uv run tools/shape_error_scale.py           # phi's fixed centre and width
+PYTHONPATH=.:tools uv run tools/kappa_trade.py           # how many edges kappa buys (slow)
+PYTHONPATH=.:tools uv run tools/domain_closed_forms.py   # rank_K/c_max/m_req from the mix alone
 
 # Reproduce every number in the heterogeneous rigidity-matrix note (docs/)
 PYTHONPATH=. uv run docs/verify_dof_restriction.py [--quick]
@@ -329,17 +325,28 @@ To add a variant, add an `elif` branch in the relevant dispatcher, plus a matchi
 
 **Reward structure** (`step()`): `reward = -time_penalty + [action_reward if action_rewards_enable] + (state_score(s') - state_score(s)) + [terminal bonus]`. The state-score term is **potential-based shaping** - the reward is how much *better* the graph got, not the absolute quality. `WeightedNormalized` is `(w_rank·rank - w_edge·m·c_max) / rank_K` at `(100, 25)` - dimensionless, so its optimum is ~75 at any `n` and in any domain. The older `Weighted` is `20·rank(B) - 10·m` and does **not** transfer (see below); it is kept only so old runs replay.
 
-**The stiffness is in `phi`, behind `stiffness_kappa` (default `0.0` = off).** At `κ > 0`,
-`WeightedNormalized` gains `κ · one_edge · 1[IBR] · q(λ)`, where `q` is a sigmoid of
-`log10(λ/λ_ref)` over 0.75 decades and `one_edge = w_edge·c_max/rank_K` - so **κ is denominated in
-edges** and the whole stiffness range is worth κ of them. `λ_ref` is the median λ of
-`stiffness_ref_samples` (default 3) greedy constructions on *this episode's* poses, an episode
-constant, so the shaping stays potential-based. λ itself is free - `step()` already computes it -
-and all the cost is in `reset()`. `κ < 1` makes stiffness a tie-break sparsity always wins; `κ > 1` is
-a real trade-off answered by a front over κ rather than a number, and at `κ > 1` **`is_MBR`/minimality is no
-longer the headline metric**, because the policy is deliberately allowed to spend edges. Measured on
-`greedy` at n=8/R^3: stiffness ×2.0 at κ=0.9 and ×12.4 at κ=2, at a flat edge count. See `THEORY.md`
-§15 and `DESIGN_NOTES.md#stiffness-in-phi`.
+**Conditioning is in `phi`, behind `stiffness_kappa` (default `0.0` = off).** At `κ > 0` the score
+gains `κ · one_edge · 1[IBR] · q`, with `one_edge = w_edge·c_max/rank_K`. What `q` reads depends on
+the score type:
+
+- `WeightedNormalizedShapeError` (**use this one**): `q = sigmoid(-(log10(shape_err) - 1.35)/0.70)`,
+  a **fixed** centre, so no reference is built. `shape_err` is free during training, since `step()`
+  already computes it for logging. Constants live in `rigidity.py` and are re-derived by
+  `tools/shape_error_scale.py`.
+- `WeightedNormalized` / `WeightedNormalizedSpectral`: `q = sigmoid(log10(λ/λ_ref)/0.75)`, with
+  `λ_ref` the median λ of `stiffness_ref_samples` (default 3) greedy constructions on *this
+  episode's* poses. λ is free; the constructions are not. At n=20 that is **2290 rigidity-matrix
+  builds per reset** against 1.6 per step, 65% of episode wall clock, paid at inference too. Only
+  the reference the configured score actually reads is built - they used to both be.
+
+`κ` is an **upper bound** on the edges tradeable, not the trade. Measured exhaustively over 46
+networks, the optimum needs `κ` between 24 and 208 before it spends even one extra edge, and at
+every `κ ≤ 20` it spends none (`THEORY.md` §15.6, `tools/kappa_trade.py`). Over its whole usable
+range `κ` **selects among equally sparse graphs**, which is worth a great deal: rigid graphs at
+exactly `m_req` edges span 3.1x to 7079x in shape error. So `is_MBR`/minimality stays a valid
+headline metric at the κ anyone trains at. Measured on `greedy` at n=8/R^3: stiffness ×2.0 at κ=0.9
+and ×12.4 at κ=2, at a flat edge count - which is the same fact seen from the other side. See
+`THEORY.md` §15.5b and §15.6, and `DESIGN_NOTES.md#shape-error-score`.
 
 **`WeightedNormalizedSpectral` makes the spectral functional a config key.** Same score as
 `WeightedNormalized`, with the bonus read off `spectral_functional` = `eigenvalue` (default,
@@ -375,9 +382,19 @@ configuration (50 at n=4/R^2, 300 at n=8/R^3), shifting the critic's target rang
 
 `Best min eig` has no meaningful absolute scale: rigidity-matrix entries scale as `1/‖p_ij‖`, so it tracks `random_scenario`'s `pos_limits` (`scenario.py`, currently `[-1, 1]`; it was `[-100, 100]`, which put the eigenvalue at ~1e-5). Plot it on a log axis and don't compare across pose ranges. It frequently sits *below* `Min eig`, which is correct: `Weighted` has `w_eig = 0`, so φ trades stiffness away for fewer edges.
 
+**`random_domains`** (env config, default `False`) draws every agent's domain uniformly and
+independently each `reset()`, so the composition is part of the instance distribution rather than a
+property of the run. The observation width is unchanged. It forces the sampling order
+mix → poses → `m_req` → edge count, since `sample_initial_edge_count` otherwise reads the previous
+episode's `m_req`; it is refused together with `only_randomize_edges`; benchmarks store domains and
+axes per instance; and runs are named `randdom`. Measured safe to train on: the reward quantum's
+spread *narrows* with `n` (p90/p10 1.48 at n=8, 1.09 at n=128) and phi's optimum is constant to
+within 1.5%, while the between-episode reward sd moves only 0.434 → 0.507 at n=10 against a
+within-episode sd 3.3x larger. See `DESIGN_NOTES.md#random-domains`.
+
 **Scenarios.** With `"scenario": "<name>"`, `initialize()` loads `scenarios/<name>.json` and caches it. What a scenario contributes on reset depends on `only_randomize_edges`: `false` carries over only the **domain mix** (poses and edges are redrawn each episode - use this for heterogeneous generalization experiments), `true` keeps the scenario's **actual geometry** and resamples only the edges (use this for a fixed case-study figure). Both paths honour `random_graph_with_mean_min_edges`.
 
-**Config format keeps moving - regenerate, never hand-edit.** Current keys: `state_score_type`, `skip_is_stop`, `random_graph_with_mean_min_edges`, `include_candidate_bearings`, `rotation_augmentation`, `stiffness_kappa` / `stiffness_ref_samples`, `spectral_functional`, plus the `graph_features` / `rigidity_*` flags (`rigidity_global`, `rigidity_quality`, `rigidity_flex`, `rigidity_edge`, `rigidity_stiffness`, `rigidity_removal`). `max_steps` is now `4*m_req + 10` (n=8/R^3 → 50, `mixed` → 78, n=16/R^3 → 98), not `4*n*(n-1)`. Three switchable arms, **all off in generated configs**: the stop action (`skip_enabled` + `skip_is_stop` + `time_penalty_value`), `rotation_augmentation`, and the stiffness term (`stiffness_kappa`). **`margin_kappa` / `margin_ref_samples` / `rigidity_margin` were renamed to `stiffness_*` / `rigidity_stiffness`; `load()` raises on the old key rather than silently defaulting, so pre-rename configs must be regenerated.** For a scenario the generator writes the **full per-agent domain list** rather than `domains[0]`, which used to label every mixed config with one domain. See `DESIGN_NOTES.md#horizon` and `#rotation-augmentation`. `environments/` is gitignored and accumulates files from older formats, which will either `KeyError` in `load()` or raise on a merged-away `obs_type`. **Regenerating is the user's call** - see the note under "Gitignored" below. The filename no longer carries the obs type, since there is only one.
+**Config format keeps moving - regenerate, never hand-edit.** Current keys: `state_score_type`, `skip_is_stop`, `random_graph_with_mean_min_edges`, `random_domains`, `include_candidate_bearings`, `rotation_augmentation`, `stiffness_kappa` / `stiffness_ref_samples`, `spectral_functional`, plus the `graph_features` / `rigidity_*` flags (`rigidity_global`, `rigidity_quality`, `rigidity_flex`, `rigidity_edge`, `rigidity_stiffness`, `rigidity_removal`). `max_steps` is now `4*m_req + 10` (n=8/R^3 → 50, `mixed` → 78, n=16/R^3 → 98), not `4*n*(n-1)`. Four switchable arms: the stop action (`skip_enabled` + `skip_is_stop` + `time_penalty_value`), `rotation_augmentation`, the conditioning term (`stiffness_kappa`), and `random_domains`. The stop action and `random_domains` are off in generated configs; **the `__main__` constants currently ship `rotation_augmentation = True` and `stiffness_kappa = 2.0`**, so read the constants rather than assuming. **`margin_kappa` / `margin_ref_samples` / `rigidity_margin` were renamed to `stiffness_*` / `rigidity_stiffness`; `load()` raises on the old key rather than silently defaulting, so pre-rename configs must be regenerated.** For a scenario the generator writes the **full per-agent domain list** rather than `domains[0]`, which used to label every mixed config with one domain. See `DESIGN_NOTES.md#horizon` and `#rotation-augmentation`. `environments/` is gitignored and accumulates files from older formats, which will either `KeyError` in `load()` or raise on a merged-away `obs_type`. **Regenerating is the user's call** - see the note under "Gitignored" below. The filename no longer carries the obs type, since there is only one.
 
 ### Domains and scaling (measured, all five domains, n up to 64)
 
@@ -520,8 +537,10 @@ them are, in a typical mid-episode graph. `remove_rank[i,j]` is the rank lost, e
 leverage `H = b (B^T B)^+ b^T` whose unit eigenvalues count it (118/118 against ground truth), and
 `remove_stiffness[i,j]` is the fraction of λ lost, exact via the rank-3 downdate `B^T B - b^T b`.
 Both zero on non-edges, so `add_*` and `remove_*` have complementary support. `remove_rank` is the
-only rigidity channel informative in **both** regimes. Exactly similarity invariant including
-scaling, unlike `add_stiffness`. Costs ~+66% of a step at n=10 (pinned). See `THEORY.md` §17.
+only rigidity channel informative in **both** regimes. Every rigidity channel is read off the
+**length-normalised** matrix (`scaled_rigidity_matrix`), which is what makes `add_stiffness`,
+`remove_stiffness` and `node_slack` scale invariant; off the raw `B` they moved up to 49% under a
+2.7x rescale in the oriented domains. `remove_rank` is invariant by proof either way. Costs ~+66% of a step at n=10 (pinned). See `THEORY.md` §17.
 
 **The pair channels are exact, not heuristic.** With `Z` an orthonormal basis of `ker(B)`, adding
 edge `i -> j` raises the rank by exactly `rank(b_ij Z)`, so `add_independence = ||b_ij Z||/||b_ij||` is zero
@@ -815,7 +834,11 @@ their sizes compare, and the arrows are scaled per panel so their lengths do not
 carry no tick labels: the poses are centred and unit-normalised, so the numbers said nothing and
 three axes of them crowded every panel.
 
-**`shape err` is the column to read, not `stiffness`.** It is the RMS state error per radian of
+**`shape err` is the column to read, not `stiffness`.** It is a slope, `d(error)/d sigma`, so it is
+quoted per radian but never evaluated at one: the prediction is a linearisation and holds while
+`sigma * shape_err` stays under ~0.2, which for a typical value is `sigma` below 0.4-2 degrees
+(`THEORY.md` §18.1). Note `sigma` is the **per-axis** standard deviation; the RMS angle between the
+true and the noisy bearing is `sigma*sqrt(2)`. It is the RMS state error per radian of
 bearing noise (position in formation radii, attitude in radians), so `8.0` means one degree of
 bearing error displaces the shape by ~14% of its own size. **Lower is better**, and unlike λ it is
 comparable across `n`, domain and pose range, so rows from different configurations can be compared
@@ -970,6 +993,10 @@ compiled `.pdf`) and two verification scripts. `verify_dof_restriction.py` is ke
 section to the note and checks the repository's own implementation; `verify_dof_restriction_2.py`
 re-derives both constructions from the paper's conventions and shares no code with it. Keeping them
 separate is the point: two independent implementations agreeing is the evidence.
+
+It also holds `observation_reward_note.tex` (compiled `.pdf`), the reference for every reward and
+observation component: what each one is, how it is computed, what normalises it, and whether it
+survives a trivial motion. Every number in it comes from a `tools/` script named beside it.
 
 **`benchmarks/` is deliberately NOT ignored.** A frozen instance set is a fixture, not an output -
 its whole purpose is that a number measured today is comparable next month, which an untracked file

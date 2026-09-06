@@ -89,3 +89,22 @@ def test_digest_changes_with_content(make_env, bench_dir):
 def test_missing_benchmark_says_how_to_make_one(bench_dir):
     with pytest.raises(FileNotFoundError, match="uv run benchmark.py"):
         benchmark.load("does_not_exist")
+
+
+def test_random_domain_instances_keep_their_own_mix(make_env, bench_dir):
+    """One mix stamped on every instance would pair poses with somebody else's domains."""
+    env = make_env(n=6, domains="R^3", random_domains=True)
+    benchmark.save(env, "rd", instances=6, seed=0)
+    nets, _ = benchmark.load("rd")
+
+    mixes = [tuple(a.domain for a in net.agents) for net in nets]
+    assert len(set(mixes)) > 1
+    for net in nets:
+        for a in net.agents:
+            if a.domain in ("R^2", "R^2xS^1"):
+                assert abs(a.pose.position[2]) < 1e-12
+            assert (a.rotation_axis is None) == (a.domain != "R^3xS^1")
+
+    benchmark.rotate("rd", "rd_rot", seed=1)
+    rotated, _ = benchmark.load("rd_rot")
+    assert [tuple(a.domain for a in net.agents) for net in rotated] == mixes

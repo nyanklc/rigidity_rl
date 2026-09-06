@@ -85,7 +85,7 @@ def report(name, cost=True):
     print("\n  switches")
     keys = ["action_type", "state_score_type", "termination_condition_type", "max_steps",
             "skip_enabled", "skip_is_stop", "time_penalty_value", "rotation_augmentation",
-            "random_graph_with_mean_min_edges", "only_randomize_edges",
+            "random_graph_with_mean_min_edges", "random_domains", "only_randomize_edges",
             "include_candidate_bearings", "graph_features",
             "rigidity_global", "rigidity_flex", "rigidity_edge", "scenario"]
     for k in keys:
@@ -93,10 +93,14 @@ def report(name, cost=True):
         note = ""
         if k == "max_steps":
             note = f"   4*m_req+10 = {4 * env.m_req + 10}"
+            if env_cfg.get("random_domains"):
+                note += " for this episode's mix; the horizon covers the worst one"
         if k == "skip_enabled" and v:
             note = "   stop-action arm"
         if k == "rotation_augmentation" and v:
             note = "   augmentation arm"
+        if k == "random_domains" and v:
+            note = "   mix redrawn per episode; the config's domains only seed it"
         print(f"    {k:34s} {str(v):10s}{note}")
 
     stats(env, "node_features", NODE_BLOCKS)

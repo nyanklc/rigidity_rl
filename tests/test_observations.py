@@ -181,3 +181,15 @@ def test_quality_is_tiled_identically_across_nodes(make_env):
     obs, _ = e.reset()
     col = obs["node_features"][:, -1]
     assert np.allclose(col, col[0])
+
+
+def test_domain_list_matches_the_one_hot_encoding(make_env):
+    """The sampler draws from DOMAINS; the observation encodes with DOMAIN_ONEHOT."""
+    from network import DOMAINS, DOMAIN_ONEHOT
+    assert tuple(DOMAIN_ONEHOT) == DOMAINS
+    n = len(DOMAINS)
+    e = make_env(n=n, domains=list(DOMAINS))
+    obs, _ = e.reset()
+    onehot = obs["node_features"][:, :n]
+    assert np.array_equal(onehot, np.asarray([DOMAIN_ONEHOT[d] for d in DOMAINS]))
+    assert np.array_equal(onehot.sum(axis=1), np.ones(n))

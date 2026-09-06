@@ -73,6 +73,11 @@ implementation facts:
   `(6n, k)` matrix, so `add_stiffness` is that call with `k = 1`. `nullspace_and_softest` returns the
   kernel and `v` from **one** `eigh(B^T B)`: `v` is the column immediately after the kernel, since
   the eigenvalues come back ascending. Cost at n=10 is 9.45 -> 9.90 ms per step.
+- **The decomposition is of the LENGTH-NORMALISED matrix**, not of `B`. Mapping a null *space* into
+  scaled units afterwards is valid, since a subspace survives re-orthonormalisation, but the same
+  map applied to the single eigenvector `v` does not give the scaled matrix's own softest mode. Off
+  the raw matrix `add_stiffness` moved a median 3.1e-02 and up to 1.5e-01 under a 2.7x rescale in
+  `SE(3)`; from `scaled_rigidity_matrix` it is 9.5e-15. See `THEORY.md` §16.4.
 - **Both are gated on `is_IBR` and written as zeros otherwise.** `v` is meaningless on a flexible
   framework, and zero is the honest encoding: stiffness does not exist there. This makes the two
   feature sets exactly complementary, which is the point -- `add_independence`/`add_rank`/`node_freedom` carry
@@ -91,6 +96,13 @@ rank and the stiffness would lose if an existing edge were deleted. Both exact, 
   that layout, since both channels rest on it and nothing else did.
 - **No extra decomposition.** `nullspace_and_softest` now returns `(w, V)` alongside the kernel and
   the softest mode, so `(B^T B)^+` for the leverage comes from the eigh already performed.
+- **On the length-normalised matrix, and with that matrix's own lambda.** `remove_rank` is invariant
+  to any column scaling by proof, but `remove_stiffness` is a ratio of eigenvalues of the downdated
+  matrix and that argument does not reach it: off the raw `B` it moved a median 1.1e-01 and up to
+  4.9e-01 under a 2.7x rescale in `SE(3)`. The lambda passed in must be **0 unless rigid**, matching
+  `rigidity_decomposition`'s convention -- the smallest nonzero eigenvalue exists on a flexible
+  graph too, and reporting it as a stiffness costs `removal_costs` its skip of the per-edge
+  downdate, which measured 6.92 -> 15.53 ms per step at n=20.
 - **Two skips carry the cost.** The `eigvalsh` of the downdate is not run when the rank drops (the
   answer is 1 by definition) nor when the framework is flexible (there is no stiffness to lose).
   Pinned to one BLAS thread, 3.46 -> 5.76 ms per step at n=10 with ~35 edges, so about +66%, growing
@@ -100,11 +112,47 @@ rank and the stiffness would lose if an existing edge were deleted. Both exact, 
   `add_rank`, but keeping them separable is what lets the ablation price add-side against
   remove-side information, and it keeps every existing config byte-identical.
 
+### shape-error-score
+
+`WeightedNormalizedShapeError` is the score to use. Same rank and edge terms; the conditioning
+bonus is a sigmoid of `log10(shape_err)` against a **fixed** centre, so no reference construction
+is built anywhere. Derivation and every measurement are `THEORY.md` §15.5b. The plumbing:
+
+- **It is a new `state_score_type`, not a change to an existing one**, so every archived run
+  replays and `kappa = 0` stays bit-identical to `WeightedNormalized` (asserted, not approximated).
+- **`c0 = 1.35` and `s = 0.70` live in `rigidity.py`** and are re-derived by
+  `tools/shape_error_scale.py`. They are calibration constants, so they belong next to a script
+  that regenerates them rather than in a comment. `SHAPE_ERR_EXPONENT` is an optional `n`
+  correction, default 0, priced in the same script.
+- **One SVD serves three readers.** `uses_shape_error()` says whether a step needs `shape_err`;
+  `step()` computes it once and passes it to `compute_state_score`, to `compute_rigidity_features`
+  (the `quality` channel uses the same scale, so the channel and the reward agree) and to the
+  logging. With a writer attached it was already being computed for `Best shape err`, so under
+  training it costs nothing.
+- **Cost, n=20, every flag on:** `reset()` 2974 -> 56 ms, episode 4645 -> 2427 ms.
+- **`Environment.stiffness_term_active()` is the one gate** for "is the bonus live", because the
+  answer depends on the score type and `outputs.py:phi_landscape` needs the same answer. A
+  hardcoded `stiffness_ref > 0` there would silently disable the `spectral` baseline's stiffness
+  half under a score that does not build that reference.
+
 ### stiffness-in-phi
 
 `stiffness_kappa` (env config, default `0.0` = off) adds the stiffness to
 `WeightedNormalized` as `kappa * one_edge * q(lam)`, with `q` a sigmoid of `log10(lam/stiffness_ref)`.
 Derivation, the two obstacles to using `lam` raw, and every measurement are in `THEORY.md` §15.
+
+**`kappa` bounds the trade at `kappa` edges; it does not make it.** The bonus is in
+`[0, kappa*one_edge)`, so spending more than `kappa` edges on conditioning can never pay -- but
+measured exhaustively over 46 networks the optimum needs `kappa` between 24 and 208 before it
+spends even one, and at every `kappa <= 20` it spends none (`THEORY.md` §15.6,
+`tools/kappa_trade.py`). Over its whole usable range `kappa` selects among equally sparse graphs,
+which is worth having: at exactly `m_req` edges the rigid graphs span 3.1x to 7079x in shape error.
+
+**Only the reference the configured score reads is built.** `reference_stiffness` and
+`reference_spectral` are the same greedy constructions under the same seed, and each score reads
+one of them, so building both doubled every reset for nothing. `WeightedNormalizedShapeError`
+reads neither.
+
 What matters here is the plumbing:
 
 - **`lam` costs nothing.** `step()` already gets it from the single `rigidity_decomposition` it
@@ -184,6 +232,12 @@ Two choices worth stating:
 The reference is an episode constant, so the channel costs nothing per step beyond the
 decomposition `step()` already performs -- except under `spectral_functional != eigenvalue`,
 which needs one more SVD.
+
+Under `WeightedNormalizedShapeError` there is no reference at all: `state_quality` reads the same
+fixed-centre sigmoid of `shape_err` that phi uses, from the value `step()` already computed. That
+makes the channel free and makes it agree with the reward by construction. It also removes what
+`#observation-cost` measures as the most expensive flag in the table, since `rigidity_quality` was
+expensive only because it dragged `reference_spectral` behind it.
 
 ### formation-figures
 
@@ -278,6 +332,35 @@ episode. `B_K` is built once and shared because it is the expensive part.
 - `c_max` - the most rank one edge could contribute at these poses. **Exact.**
 - `m_req` - fewest edges that could possibly make these poses rigid. **A lower bound.** Reported,
   and used for the MBR metric; never in the reward.
+
+### random-domains
+
+`random_domains` (env config, default `False`) draws each agent's domain uniformly and
+independently every `reset()`, instead of carrying one fixed mix. The observation width does not
+change, since the domain one-hot is already 5 wide and `rank_K` / `c_max` / `m_req` are already
+per-episode, which is what makes this a small change.
+
+- **The sampling order has to change with it.** `sample_initial_edge_count` reads the cached
+  `self.m_req`, which belongs to the *previous* episode once the mix moves. The path is now
+  mix -> poses -> `m_req` -> edge count. Measured, the correlation between the initial edge count
+  and this episode's `m_req` is 0.257 with the fix and -0.03 without.
+- **It is refused together with `only_randomize_edges`**, which keeps the poses, so the two
+  together would silently do nothing.
+- **Benchmarks store domains and rotation axes per instance.** One mix stamped on a whole file
+  would pair each instance's poses with somebody else's domains, including planar agents off their
+  plane. Files written before the change still load.
+- **Runs are named `randdom`**, not after the mix the config happens to carry, since that mix only
+  seeds the first network.
+
+**Does the reward scale move too much to train on?** Measured, no. Over 4000 draws per `n` the
+reward quantum's p90/p10 *narrows* with size -- 1.48 at n=8, 1.29 at 16, 1.13 at 64, 1.09 at 128 --
+because `rank_K` is a sum of `n` per-agent DOFs and its relative spread falls as `1/sqrt(n)`. phi's
+optimum stays constant to within 1.5% at every size, which is the quantity a value-based method
+cares about. And against a *fixed* mix the between-episode reward sd goes from 0.434 to 0.507 at
+n=10 and does not move at n=20, while the within-episode sd dominates by 2-3.8x: the composition
+contributes a minority of variation that already exists. What does move across *sizes* is the step
+size itself, an order of magnitude from n=8 to n=128, which is a transfer question and not a
+fixed-`n` training one.
 
 ### initial-edge-count
 
@@ -1371,6 +1454,15 @@ both modes and the instrumentation's own cost is visible as its own row.
 **The meter wraps the method, never the restore.** `restore()` deep-copies the instance and calls
 `env.reset()`, which recomputes `rank_K`, `c_max`, `m_req` and the spectral references. That is
 shared setup every method gets for free, so it sits outside the `Meter`.
+
+**Those two rows are not charged by the same rule, and the comparison below is wrong because of
+it.** `outputs.py` keeps `restore()`'s `env.reset()` outside the `Meter` deliberately, since every
+method gets that setup for free -- but `run_policy`'s first line is its own `wrapped_env.reset()`,
+which is inside it. Measured at n=10 on the `bench_mixed` setup, one reset is 567 leaf primitives
+against 380 for 50 steps, so **roughly 60% of the `learned` row is a reset no other method pays
+for**. Charged consistently the ordering changes materially, in the policy's favour. Fix it by
+dropping that reset (the restore already did one) or by moving every restore inside the meter, then
+re-run. Until then read the row as an upper bound.
 
 **What it says, and it is not flattering to the policy.** greedy 2252 rigidity computations,
 `learned` **1424**. Same order, not a different one - the policy's observation does the algebra its
