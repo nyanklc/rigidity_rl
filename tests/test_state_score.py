@@ -97,15 +97,16 @@ def test_every_state_score_returns_a_finite_number(make_env, score):
     assert np.isfinite(float(phi))
 
 
-def test_reward_is_the_change_in_phi(make_env):
-    """The step reward is potential-based: r = phi(s') - phi(s)."""
+def test_reward_is_the_shaped_change_in_phi(make_env):
+    """The step reward is potential-based shaping: r = gamma * phi(s') - phi(s), gamma = 0.99."""
+    gamma = 0.99
     e = make_env(n=6, domains="R^3", time_penalty_value=0.0)
     e.reset()
     prev, _ = phi_of(e)
     for _ in range(15):
         _, reward, _, _, _ = e.step(e.action_space.sample())
         now = e.last_stats["score"]
-        assert abs(reward - (now - prev)) < 1e-9
+        assert abs(reward - (gamma * now - prev)) < 1e-9
         prev = now
 
 

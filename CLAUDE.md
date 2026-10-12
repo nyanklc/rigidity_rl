@@ -31,7 +31,7 @@ apply to every task in this repository.
   / `git push` are the user's job - they verify every change manually first. Leave work in the
   working tree, say what changed, and stop there. Creating a branch is fine; committing to it is not.
 - **NEVER edit documentation unless explicitly asked.** `README.md`, `THEORY.md`,
-  `DESIGN_NOTES.md`, `ROADMAP.md` and this file are the user's to write. This is not a preference
+  `DESIGN_NOTES.md` and this file are the user's to write. This is not a preference
   about style, it is about the user being able to see what changed: doc edits buried inside a code
   change are invisible in review, and wrong claims have reached `README.md` more than once that way.
   When a change makes something in them stale or false, **say so and stop** - name the file, quote
@@ -92,1089 +92,397 @@ apply to every task in this repository.
   special case for figures: no em-dashes, no colon-led reveals, no summary flourishes, no
   marketing tone. Add to that no semicolons doing the work a full stop should do, and no lists of
   three for rhythm. State the thing directly. This applies to everything written for the user.
-- **Writing the thesis itself has its own rules** - see `## Thesis writing` below. They are not a
-  style preference, they are what stops the chapters reading as project documentation.
-
-## Thesis writing
-
-The thesis lives in `resources/thesis/tex/`. Chapter 5 sections 5.1 to 5.4.3 are the author's own
-prose and are the reference for register - read them before drafting anything.
-
-**Register.** Impersonal, no first person. Mid-length sentences joined with `and`, `so`, `while`,
-`rather than`. Short does **not** mean short sentences, it means explaining the thing without
-padding around it. The choice first, then the alternative, then the reason, in one or two
-sentences. No punchline fragments and no long/short alternation for rhythm. The prose rules in the
-standing list above (no em-dashes, no colon-led reveals, no summary flourishes, no marketing tone)
-apply here too.
-
-**Section titles are bare noun phrases**, sentence case, one to four words. "Methods",
-"Compared methods", "Resultant graphs", "Actions". Never a question or a clause: "The methods
-compared", "What the graphs look like" and "Which edits the policy chooses" are all wrong.
-
-**Never write**, in any chapter:
-
-- Paragraphs about the document. How a chapter is organized, what a section is about to do, what a
-  figure is "the reason" for, how much space something deserves.
-- The order the experiments were run in. That is history, not a result.
-- What was tried first, what was abandoned, what an earlier draft did, what cost a debugging cycle.
-- Hedging paragraphs. A limitation is one plain sentence where it belongs, not a closing paragraph
-  in every section.
-- Superlatives about the work's own findings ("the largest single effect", "the strongest
-  argument in this work").
-- Implementation and tool names. No script names, no file names, no flags, no software citations.
-  The thesis is independent of the project code: it explains the scientific work and the approach
-  taken, not how the repository is arranged.
-- A number already shown in a table, restated in prose.
-
-**Numbers** go inline in math mode with the unit of comparison attached. **Floats** are announced
-by function in the same sentence as the thing they carry, placed `[htbp]`, and their captions say
-what is shown and how it was computed, never what it means. Secondary experiments belong in the
-`Further results` appendix, not in the results chapter.
-
-**`plan` blocks are no longer used** anywhere in the document. The environment still exists in
-`custom-symbols.tex`, unused. Note that `resources/thesis/WRITING_NOTES.md` says "Do not delete
-plan blocks", which now contradicts this; that file is the author's to change.
 
 ## Project
 
-Master's thesis: **network topology optimization for bearing rigid multi-agent networks via deep RL and GNNs.**
+Master's thesis, completed: **network topology optimization for bearing rigid multi-agent systems
+via deep reinforcement learning and graph neural networks.** The thesis PDF is
+`resources/thesis.pdf`, and its LaTeX source is in `resources/thesis/tex/` (gitignored).
 
-A multi-agent network is a **directed graph**. Each node/agent lives in a specific domain (`R^2`, `R^3`, `R^2xS^1`, `R^3xS^1`, `SE(3)`), which determines its DOFs. A directed edge `i -> j` means **agent `i` measures the bearing to agent `j`**, expressed in `i`'s *local frame* (for orientation-less domains `R^2`/`R^3`, that is just the global frame). Edges are therefore not symmetric and not free - each one is a sensing/communication cost.
+A multi-agent network is a **directed graph**. Each agent lives in a domain (`R^2`, `R^3`,
+`R^2xS^1`, `R^3xS^1`, `SE(3)`) that fixes its DOFs. A directed edge `i -> j` means agent `i`
+measures the bearing to agent `j` in its own frame (the global frame for `R^2`/`R^3`). Edges are
+not symmetric and each one is a sensing cost.
 
-The RL task: given a set of agents at (random) poses, **choose the edge set** so the network is bearing rigid with as few edges as possible. A GNN encodes the graph into node embeddings that (implicitly) capture how rigidity-critical each node/edge is; an action head turns those embeddings into logits / Q-values shaped by the action space.
+The RL task: given agents at random poses, **choose the edge set** so the network is
+infinitesimally bearing rigid with as few edges as possible and, through the conditioning term, as
+little shape error under bearing noise as possible. A GNN encodes the graph into node embeddings and
+an action head turns them into logits (PPO) or Q-values (DQN).
 
-`thesis_skeleton.txt` has the intended chapter structure and terminology.
-
-**Long-term motivation (not currently pursued, may never be):** the original aim was a
-*distributed* method for maintaining rigid formations in swarms. The centralized formulation here
-is a deliberate first step. Relevant when weighing design choices - see
-`DESIGN_NOTES.md#distributed-feasibility`.
-Two kinds of information a local decision maker would **not** have, and it is worth keeping them
-straight:
-
-- **Global algebra** - `rank(B)`, rank deficit, per-edge block rank `c_k`, `is_IBR`, and the graph
-  centralities. Too expensive to compute and to communicate.
-- **Bearings to nodes it is not measuring** - an agent does not know `p_hat_ij` *before* measuring
-  it, so it cannot locally evaluate "would adding `i -> j` help?". Whether this is a real
-  obstruction depends on an unmade modelling choice: if detection is cheap (omnidirectional vision
-  within radius `R`) and only the *maintained* link costs anything, candidate bearings are locally
-  available after all; if every measurement costs what an edge costs, they are not.
-
-This matters for the observation design specifically: candidate-edge bearings were exactly what
-the observations used to be missing, and are now included (see `#all-pairs-bearings`).
-
+**Long-term motivation, not pursued here:** a *distributed* method for maintaining rigid formations.
+The centralized formulation is a first step. A local decision maker would lack two kinds of
+information: global algebra (`rank(B)`, rank deficit, `c_k`, `is_IBR`, centralities) and bearings to
+agents it is not measuring. Whether the second is an obstruction depends on whether detection is
+cheap and only a maintained link costs. See `DESIGN_NOTES.md#distributed-feasibility`.
 
 ## What is live vs. obsolete
 
-The repo carries a lot of history. **Currently in focus:**
-
 | Axis | In use |
 |---|---|
-| Action spaces | `SelectNodesSequentially` (pointer-network style: pick a node per step; every 2nd pick toggles the edge between the two picks - add if absent, remove if present), `AddRemoveEdgeDiscreteNoSelfLoops` |
+| Action spaces | `AddRemoveEdgeDiscreteNoSelfLoops` (toggle one directed edge), `SelectNodesSequentially` (pointer style, every second pick toggles the edge between the two picks) |
 | GNN backbones | `GNNBackboneEquivariant` (EGNN) and `GNNBackboneGINE` (GINE) |
-| Obs type | `Dict`. The six `Dict*` variants were merged into it and survive as flag presets that reproduce their old layouts byte-for-byte, so pre-merge configs and checkpoints still load. The backbone is a `BACKBONE` constant in the training script now, overridden by `OBS_BACKBONE` when a legacy obs type implies one. See `DESIGN_NOTES.md#dict-observation` |
-| State score | `WeightedNormalizedShapeError` (dimensionless, and the conditioning term needs no per-episode reference); `WeightedNormalized` and `WeightedNormalizedSpectral` keep the greedy `lambda_ref` and are kept so old runs replay, as is `Weighted`. All four agree at `stiffness_kappa = 0` |
+| Obs type | `Dict`. The six older `Dict*` names survive as flag presets that reproduce their old layouts, so old configs and checkpoints load. See `DESIGN_NOTES.md#dict-observation` |
+| State score | `WeightedNormalizedShapeError`. `WeightedNormalized`, `WeightedNormalizedSpectral` and `Weighted` are kept so old runs replay. All agree at `stiffness_kappa = 0` |
 | Algorithms | PPO and DQN, both via `skrl` |
 
-**Obsolete / ignore unless asked:** `main.py`, `control.py` (the gradient-based formation controllers - the thesis originally aimed at control), everything `sb3` (`train_ppo_sb3.py`, `policy_sb3.py`, `models/sb3/`), `junk/`, `runs_old*/`, `fix_train.py`, `dummy*`, the GAT backbone, and most of the older action/obs/state-score variants still present in the dispatchers.
+**Obsolete, ignore unless asked:** `main.py`, `control.py` (gradient formation controllers from the
+original control-oriented aim), everything `sb3` (`train_ppo_sb3.py`, `policy_sb3.py`,
+`models/sb3/`), `junk/`, `runs_old*/`, `fix_train.py`, `dummy*`, the GAT (`Default`) backbone, and
+most of the older action/obs/state-score variants still present in the dispatchers.
 
 ## Running things
 
-`uv` manages the environment, but only as a plain `.venv` populated with `uv pip` (no `pyproject.toml`/lockfile). Run scripts with:
+`uv` manages a plain `.venv` populated with `uv pip` (no `pyproject.toml` or lockfile). `setup.sh`
+creates it. Run scripts with `uv run <script>.py <args>`.
 
 ```bash
-uv run <script>.py <args>
-```
+# Create an environment config. The generator reads its constants from the __main__ block,
+# each overridable by an environment variable of the same name
+uv run environment.py <n> <domain>          # e.g. uv run environment.py 8 "R^3"
+uv run environment.py file <scenario_name>  # n and domains from scenarios/<name>.json
 
-```bash
-# Create/overwrite an environment config interactively (edit the constants in the __main__ block first)
-uv run environment.py <n> <domain>          # e.g. uv run environment.py 4 "R^2"
-uv run environment.py file <scenario_name>  # derive n/domains from scenarios/<name>.json
-
-# Train (writes a run manifest to train/<model_name>.json, checkpoints under models/, TB logs under runs/)
-uv run train_ppo.py <environment_name> <model_name>
+# Train (manifest to train/<model_name>.json, checkpoints under models/, TB logs under runs/)
 uv run train_dqn.py <environment_name> <model_name>
-#   <model_name> may be "prefix=foo" to auto-append action/obs type + n_domain
-#   If the run already exists it prompts: [c]ontinue / start [f]resh / [a]bort
+uv run train_ppo.py <environment_name> <model_name>
+#   <model_name> may be "prefix=foo" to auto-append action type and domain
+#   if the run exists it prompts: [c]ontinue / start [f]resh / [a]bort
 
-# Roll out a trained model (BRUTE_FORCE_BEST compares against exhaustive search on small graphs)
+# Roll out a trained model
 uv run inference.py <model_name> <environment_name>
 
-# Every figure and table. One runnable script per experiment, in experiments/, each
-# writing its own run directory under runs_outputs/. They share the methods (baselines.py),
-# the figures (report.py) and the setup (experiments/common.py), and nothing else
-uv run experiments/comparison.py <environment_name> [--episodes N] [--model A,B=label] [--methods a,b] [--restarts K] [--replay-env] [--noise-sweep 0.5,1,5]
-#   methods: initial, random, degree, greedy, spectral, anneal, constructive, learned,
-#     optimal -- or "all". `learned` names every --model whatever they are labelled.
-#     --brute-force is the older spelling of "optimal"
-#   --model NAME[=LABEL], repeatable and comma-splittable. One model is labelled
-#     `learned`; several are labelled by the parts of their names that differ
-#   --spectral-shortlist K  candidates the spectral baseline rescores before it commits
-#   --anneal-budget N       phi evaluations the annealer gets; default is exactly what
-#                           greedy spent on the same instance
-#   --benchmark <name> evaluates on a frozen instance set instead of sampling
-#   --noise-sweep measures what each method's graph actually costs under bearing
-#     noise of that many DEGREES, against the analytic prediction (plots/*/noise.*)
-
-uv run experiments/feature_ablation.py <environment_name> --model NAME [--mode shuffle|zero|noise|all] [--ablation-episodes N]
-uv run experiments/training.py <environment_name> [--model NAME] [--runs a,b]
-uv run experiments/generalisation.py <environment_name> --model NAME [--prior GLOB]
-#   generalisation reads what earlier runs already measured, one per instance set
-#   (default runs_outputs/*), so evaluate each benchmark once with --benchmark first
-
-# Drive a formation to a goal shape over the edge set each method chose
-uv run experiments/control.py <environment_name> --model NAME [--methods greedy,complete,learned]
-#   one edge set is used twice, as main.py does: the goal bearings are read off the goal
-#     formation over it and the controller builds B from the current formation over the
-#     same edges, so a method picks one topology and it has to serve both
-#   each case is one goal shape and one start displaced from it (--sigma), shared by
-#     every method, so the edge set is the only difference
-#   writes trajectories.csv (error over time), paths.csv (every agent's position over
-#     time, plus the goal formation) and three figures, one of them 3-D
-
-# What does each baseline's cost do as the network grows?
-OMP_NUM_THREADS=1 PYTHONPATH=. uv run tools/cost_scaling.py [--ns 6,8,12,16] [--domain R^3]
-
-# Freeze evaluation instances so results stay comparable across config regenerations
+# Freeze evaluation instances
 uv run benchmark.py <environment_name> <benchmark_name> [--instances N] [--seed S]
 uv run benchmark.py list
 
-# Which observation channels does a trained policy actually depend on?
-uv run ablation.py <model_name> [environment_name] [--episodes N] [--mode shuffle|zero|noise] [--channels a,b] [--csv out.csv]
+# Experiments: one script each, each writing its own directory under runs_outputs/
+uv run experiments/comparison.py <environment_name> [--episodes N] [--benchmark NAME]
+    [--model A,B=label] [--methods a,b|all] [--restarts K] [--noise-sweep 0.5,1,5]
+#   methods: initial, random, degree, greedy, spectral, anneal, constructive, learned, optimal
+uv run experiments/feature_ablation.py <environment_name> --model NAME [--mode shuffle|zero|noise|all]
+uv run experiments/training.py <environment_name> [--model NAME] [--runs a,b]
+uv run experiments/generalisation.py <environment_name> --model NAME [--prior GLOB]
+uv run experiments/scale.py <environment_name> --model NAME [--methods ...] [--prior GLOB]
+uv run experiments/kappa.py <environment_name> [--prior GLOB]
+uv run experiments/budget.py <environment_name> --benchmark NAME --model NAME [--steps N]
+uv run experiments/topology.py <environment_name> [--benchmark NAME] [--methods ...]
+uv run experiments/repair.py <environment_name> --benchmark NAME [--events all] [--k 1,2]
+uv run experiments/control.py <environment_name> --model NAME [--methods greedy,complete,learned]
+#   each script's docstring lists its full arguments
 
-# How well does each method put a damaged network right?
-uv run experiments/repair.py <environment_name> --benchmark <name> [--events all] [--k 1,2] [--methods ...] [--model NAME]
-#   nine events over two classes: rank-breaking (edge drops, node leave/join), where the
-#   count and the percentile among equal-size repairs are defined, and non-breaking
-#   (redundant drop, spurious edges, pose drift, none), where quality and locality carry it.
-#   Headline is the percentile, 100 = best. See DESIGN_NOTES.md#repair-harness
+# Which observation channels a trained policy reads
+uv run ablation.py <model_name> [environment_name] [--mode shuffle|zero|noise] [--csv out.csv]
 
-# Estimation error: does the prediction hold, do the criteria differ, which one matters
-PYTHONPATH=. uv run tools/crlb_validation.py        # measured vs predicted, and where it breaks
-PYTHONPATH=. uv run tools/spectral_criteria.py      # do A / D / E rank graphs differently
-PYTHONPATH=. uv run tools/functional_vs_error.py    # which of them predicts the measured error
-
-# The conditioning term: its constants, and what kappa is really worth
-PYTHONPATH=. uv run tools/shape_error_scale.py           # phi's fixed centre and width
-PYTHONPATH=.:tools uv run tools/kappa_trade.py           # how many edges kappa buys (slow)
-PYTHONPATH=.:tools uv run tools/domain_closed_forms.py   # rank_K/c_max/m_req from the mix alone
-
-# Reproduce every number in the heterogeneous rigidity-matrix note (docs/)
-PYTHONPATH=. uv run docs/verify_dof_restriction.py [--quick]
-PYTHONPATH=. uv run docs/verify_dof_restriction_2.py   # independent reimplementation
-
-# Inspect / verify / backfill training manifests (archived sources, provenance)
+# Manifests: list, show, diff against the working tree, verify, backfill
 uv run manifest.py list | show <name> | diff <name> | verify <name> | backfill [--write]
 
 # Interactive viser GUI to hand-edit a graph and watch rigidity metrics
 uv run manual.py <environment_name>
 
+# Reproduce the heterogeneous rigidity-matrix note (docs/)
+PYTHONPATH=. uv run docs/verify_dof_restriction.py [--quick]
+PYTHONPATH=. uv run docs/verify_dof_restriction_2.py
+
 tensorboard --logdir runs
 ```
 
-Names are filenames without extension: `<environment_name>` → `environments/<name>.json`, `<scenario_name>` → `scenarios/<name>.json`.
+`tools/` holds reusable verification and measurement scripts, listed in `tools/README.md`. Run them
+from the root with `PYTHONPATH=.`.
 
-**Tests: `uv run tests/run_all.py`** (fast suite, ~60 s) or
-`uv run tests/run_all.py --slow` (~5 min, adds training runs, brute force and large n).
+Names are filenames without extension: `<environment_name>` is `environments/<name>.json`,
+`<scenario_name>` is `scenarios/<name>.json`.
 
-**`test_feature_scale_*` is unseeded and its verdict is a draw.** It samples fresh graphs
-at each size, so the ratio it thresholds is a random variable: three consecutive slow runs
-on identical code gave 2, 4 and 2 failures. Measured by `tools/feature_scale_noise.py`,
-`degree` and `node_freedom` never reach either gate, while `add_independence` and
-`add_rank` straddle both -- the fast test passes them about 3 seeds in 4 and the slow test
-fails them about half the time. Do not read a change in the failure set as a regression
-without running that tool, and do not seed the test without deciding where the gate
-belongs, since one seed is green and another red on the same code.
-Individual files run standalone: `uv run pytest tests/test_flex.py -v`.
+**Tests: `uv run tests/run_all.py`** (fast suite) or `uv run tests/run_all.py --slow` (adds training
+runs, brute force and large `n`). Individual files run standalone, e.g.
+`uv run pytest tests/test_flex.py -v`. The fast suite passes on a fresh clone, since tests build
+environments programmatically and checkpoint-dependent tests skip.
 
-The suite is written against the invariants this project keeps breaking -- the scale-free
-mask sentinel, n-invariance of every observation channel and of both backbones' activations,
-the flex tensor's frame and shape, the exact addition criterion against rebuilt-matrix
-ground truth in every domain, per-domain `rank_K`/`c_max`/`m_req`,
-similarity invariance per channel across all five domains, `allow_skip` over every model,
-the legacy obs presets being byte-exact, phi's closed form and its stiffness term,
-the shape estimator agreeing with the Cramer-Rao bound it is supposed to measure, and
-every live model having a nonlinearity between stacked `Linear`s. Re-introducing a bug
-the suite covers makes a *named* test fail; that is the point of it, not the pass rate.
+`test_feature_scale_*` is unseeded and its verdict is a draw: it samples fresh graphs at each size,
+so the ratio it thresholds is a random variable and `add_independence` / `add_rank` straddle the
+gate. Do not read a change in its failure set as a regression without running
+`tools/feature_scale_noise.py`.
 
-`environments/`, `models/`, `train/` and `scenarios/` are gitignored, so tests build
-environments programmatically and write configs to `tmp_path` -- **the fast suite passes on
-a fresh clone**, with checkpoint-dependent tests skipping rather than failing. Anything that
-writes to `runs/`/`train/`/`models/` uses the `temp_run_name` fixture and cleans up.
-
-There is no linter or CI.
+The suite pins the invariants: the `-inf` mask sentinel, `n`-invariance of observation channels and
+backbone activations, the exact addition criterion against rebuilt-matrix ground truth in every
+domain, per-domain `rank_K`/`c_max`/`m_req`, similarity invariance per channel, the legacy obs
+presets, the state score's closed form, the shape estimator against the Cramér-Rao bound, and a
+nonlinearity between stacked `Linear`s in every live model. There is no linter or CI.
 
 ## Architecture
 
 ### Rigidity core (`rigidity.py`, `network.py`, `util.py`)
 
-- `Agent` - pose (position + quaternion) + `domain`. `Network` - list of agents + `edges`, an `(n, n)` boolean adjacency matrix (row = measuring agent).
-- `rigidity.node_dof_projectors(agent)` returns `(S_i, P_i)`, the **per-node** translational and rotational DOF projectors - `S = diag(1,1,0)` for a planar agent, `P = v vᵀ` for `R^dxS^1`, and so on. This is where heterogeneity is handled. **The restriction belongs to the node, not to the edge**: `bearing_DOFs`'s per-edge `U_ij` (Michieletto Table III) re-enables a planar agent's z DOF whenever it measures a spatial one, which made `rank_K` exceed the system's own DOF count on mixed networks. See `THEORY.md` §12. `bearing_DOFs` is retained, unused by the matrix, as the reference implementation of Table I that the homogeneous-equivalence test compares against - but it is faithful to Table I **only at `v = e₃`** (it uses the row form `e₃vᵀ` for `R^3xS^1` where the paper has the column form `[0_{3x2} v]`), so a Table I comparison off the default axis must not use it. See `THEORY.md` §12.4.
-- `extended_bearing_rigidity_matrix(network)` → `B`, shape `(3m, 6n)`, built as `[D_p E^T S | D_a E_o^T P]` with `S`, `P` block-diagonal over nodes. Rows come in **3-row blocks, one block per directed edge**, in `np.nonzero(edges)` order - this per-edge block structure is what `is_MBR` exploits. Homogeneous output is bit-identical to the previous per-edge construction; a coordinate an agent cannot vary is now an exactly-zero column, which is what Michieletto's nullity accounting requires. Validated against its own definition by central differences (`tests/test_rigidity_matrix.py`).
-- `is_IBR` - Infinitesimally Bearing Rigid iff `rank(B) == rank(B_K)`, where `B_K` is the rigidity matrix of the fully-connected graph on the same poses. `rank_K` is cached on the env per episode; always pass it through rather than recomputing.
-- `rigidity_eigenvalue` - the first nonzero eigenvalue of `B^T B` (index `6n - rank_K` into the ascending spectrum). **Not a degree of rigidity**: rigidity is binary and generic, and a rigid framework recovers its shape from exact bearings at any `λ > 0`. It is the *conditioning* of that recovery - shape error scales as `1/sqrt(λ)` under bearing noise. See `THEORY.md` §15.0.
-- `estimation_error(s, rank_K)` → `(a_opt, e_opt, d_opt)`, the A-, D- and E-optimality criteria: total mean squared shape error `tr((B^T B)^+)`, the worst mode `1/λ`, and the log-volume `-Σ log w`. Read off the singular values `rigidity_decomposition` already returns, so all three are free. `estimation_error_of(network, rank_K)` runs it on the length-normalised `B` (`scaled_rigidity_matrix`), which is what makes the number comparable across `n`, domain and pose range - λ is not. `estimation_error_blocks` splits the trace into its position and attitude parts, needed only when comparing against a measured position error. **Measured: A and E rank graphs identically (corr 0.99), and D is worse than both at predicting real error.** See `THEORY.md` §18.
-- `is_MBR(network, rank_K, brmat)` - the **minimality heuristic**. Per-edge block rank `c_k = rank(B[3k:3k+3, :])`, sorted descending, greedily accumulated until `Σ c ≥ rank_K`, giving `m_req`; minimal iff IBR and `m == m_req`. See "Known issues / open questions" below for its reliability.
-- `MBR_required_Rd(n, d)` - closed-form minimum edge count, **valid only for homogeneous `R^d`**.
-- `max_edge_rank(network, brmat_K)` → `c_max`, the most rank a single edge can contribute. **Exact.** This is what `WeightedNormalized` normalizes by.
-- **`S -> rank(B_S)` is monotone submodular**, so minimum-edge rigidity is minimum submodular cover
-  and the `constructive` baseline is Wolsey's greedy with an `H(c_max)` guarantee: exact at
-  `c_max = 1`, 1.5 at `c_max = 2`. Measured, greedy sits 0-5% above `m_req`, so the headroom for any
-  method on edge count is small. **The stiffness is *not* submodular** (59% of tested triples
-  violate diminishing returns), so greedy carries no guarantee there. That asymmetry is the
-  structural argument for moving the objective from rank to stiffness. See `THEORY.md` §14.
-- `required_edge_count(network, ...)` → `m_req`, fewest edges that could make these poses rigid: closed form for homogeneous `R^d`, greedy block-rank accumulation otherwise. **A lower bound, not a ground truth** - it stays out of the reward and is used for reporting and the MBR metric only. Brute force finds it tight on everything checkable (24/24 at n=4, 6/6 at n=5, all five domains), which is evidence, not proof.
-- `repair.py` is the harness built on the next entry: it damages a converged network and scores
-each method by where its answer sits among every repair of the same size (`THEORY.md` §19.4,
-§19.5). Measured, phi hill-climbing reaches the 78th-95th percentile against marginal-rank
-greedy's 38-64, so the conditioning term is most of the open criterion Karimian and Tron name.
+The maths is in `THEORY.md`; this is where it lives.
 
-`repair_edge_count(network, ...)` → fewest edges that could make a **broken** graph rigid again, which is the question after an agent leaves or a link fails. Same subadditivity argument as `required_edge_count` but starting from the graph in hand: sort the exact per-pair marginals `rank(b_ij Z)` over the absent pairs, accumulate until they cover `rank_K - rank(B)`. Returns 0 on a rigid graph and reproduces `required_edge_count` exactly from the empty one. Karimian and Tron (CDC 2017) settle the homogeneous 2-D case exactly by rigid-component decomposition; **this is their `c_max = 1` formula generalised to 3-D, heterogeneous and directed graphs**, which their conclusions list as open. See `THEORY.md` §19.
+- `Agent` holds a pose (position + quaternion) and a `domain`. `Network` holds the agents and
+  `edges`, an `(n, n)` boolean adjacency matrix (row = measuring agent).
+- `node_dof_projectors(agent)` returns the per-node `(S_i, P_i)`. The DOF restriction belongs to
+  the node, not the edge (`THEORY.md` §2.3). `bearing_DOFs` is the per-edge Table I construction,
+  unused by the matrix and kept as a homogeneous reference, faithful only at `v = e₃`.
+- `extended_bearing_rigidity_matrix(network)` returns `B`, `(3m, 6n)`, one 3-row block per directed
+  edge in `np.nonzero(edges)` order.
+- `is_IBR`: `rank(B) == rank_K`. `rank_K` is cached on the env per episode, so pass it through.
+- `rigidity_decomposition(B, rank_K)` returns rank, singular values and `λ` from one thin SVD. `λ`
+  is 0 unless rigid. It is the conditioning of shape recovery, not a degree of rigidity.
+- `estimation_error(s, rank_K)` returns the A-, D- and E-criteria from the singular values.
+  `estimation_error_of(network, rank_K)` runs it on `scaled_rigidity_matrix`, which makes it
+  comparable across `n`, domain and pose range. `shape_err = sqrt(a_opt / n)`.
+- `is_MBR` is the minimality heuristic, `max_edge_rank` gives `c_max` (exact),
+  `required_edge_count` gives `m_req` (a lower bound), `repair_edge_count` the repair bound,
+  `MBR_required_Rd` the closed form for homogeneous `R^d`.
+- `candidate_gain` / `candidate_gain_reference`, `nullspace_and_softest`, `removal_costs` compute the
+  rigidity observation channels (`THEORY.md` §8). The fast forms are held to the readable ones by
+  test.
+- `measurement_sensitivity` splits `tr((BᵀB)⁺)` exactly over measurements and agents.
+- `flex_tensor`, `flex_constraint_power`, `trivial_modes` are an older position-only flex
+  construction, tested but not used by the environment.
 
 ### Cost accounting (`cost.py`)
 
-What each method spends, so the compute comparison is measured rather than argued. A `@counted`
-decorator on the primitives that own the linear algebra - one line per function, **no call site
-anywhere changes** - plus `Meter`, a context manager that reports the deltas and the wall time for
-one method. `experiments/comparison.py` brackets every method with one, and `report.py`
-prints the block.
-
-Three things about it that are easy to get wrong:
-
-- **Counts are per call to a named primitive, not per `np.linalg` call.** `nullspace` is one
-  `eigh(6n)`; `edge_block_ranks` is `m` ranks of a `3 x 6n` block; `candidate_gain` is one batched
-  `eigvalsh` over `n(n-1)` 3x3 Grams. `cost.OPERATION` maps each name to what one call does and the
-  report legend carries it, since a bare count weighs those three the same and the wall time is
-  what separates them. `extended_bearing_rigidity_matrix` is counted too - at n=8 building `B`
-  costs more than the SVD of it, so a count that tracked only decompositions would be wrong about
-  which method is expensive.
-- **`cost.LEAVES` is the subset that calls no other counted primitive**, and the single headline
-  total sums only those. `Network.eigenvalues` and `estimation.solve_shape` are deliberately out of
-  it: both build `B` themselves, so counting them would count that build twice.
-  `tests/test_cost.py` calls each leaf and asserts it tallies only itself, so the list cannot rot.
-- **`cost.reporting()` / `@cost.measurement` divert measurement work to its own bucket.** Per-step
-  tracing costs an eigendecomposition per step, so without the split a run with plots and one
-  without differ by more than the methods differ from each other. `stats_now`, `record`'s inputs,
-  `measure_noise`, `edit_landscape` and `repair_spread` are all on that side.
-
-`--replay-env` against a manifest predating the counters execs an archived `rigidity.py` that
-carries no decorators. The block detects a method that evaluated φ with zero matrix work and says
-**UNMEASURED** rather than printing a 0 that reads as "free".
-
-`tools/cost_scaling.py` is the multi-`n` companion: one evaluation run measures cost at one size
-and cannot show a scaling exponent. Measured on `R^3`, greedy's count grows as `n^2.95` and
-spectral's as `n^0.81`, at identical edge counts.
+A `@counted` decorator on the linear-algebra primitives and a `Meter` context manager that reports
+the deltas and wall time for one method. Counts are per call to a named primitive (`cost.OPERATION`
+says what one call does). `cost.LEAVES` is the subset that calls no other counted primitive, and the
+headline total sums only those. `@cost.measurement` / `cost.reporting()` move tracing and analysis
+work into its own bucket. Under `--replay-env` against a pre-counter manifest, a method that
+evaluated `φ` with zero counted work is reported as UNMEASURED. See `DESIGN_NOTES.md#cost-counters`.
 
 ### Estimation (`estimation.py`)
 
-The empirical half of the error metrics, and **evaluation only** - nothing here is
-called from `step()`. `rigidity.estimation_error` predicts how far the recovered
-formation lands from the true one; this measures it. `perturb_bearings` adds
-tangent-plane noise of `sigma` **radians** to every bearing, `solve_shape` recovers
-the poses by damped Gauss-Newton with `B` as the Jacobian (steps restricted to each
-agent's admissible DOFs via `node_dof_projectors`), `shape_error` reports the error
-with the unobservable directions projected out, and `monte_carlo_error` drives the
-sweep. `predicted_error` is the analytic counterpart, split into position and
-attitude.
-
-Three things that are easy to get wrong and are pinned by `tests/test_estimation.py`:
-the noise is full 2-DOF tangent in **every** domain (a planar agent's motion is
-restricted, its camera is not); `B` must be the Jacobian of *this* module's bearing
-map, checked against central differences in all five domains; and the gauge quotient
-is **linear**, so it is a small-error metric - a formation collapsed to a point would
-otherwise score as a perfect estimate, which `max_scale_ratio` now catches. Do not
-"improve" it by centring and rescaling exactly: 3-D centring shifts `z` for a planar
-agent, whose `z` is not a free coordinate, and that measurably deletes real error
-(agreement with the bound drops 0.93 -> 0.82 on a five-domain mix).
-
-**Measured**: predicted and measured RMS error agree to a few percent in every
-domain, and the error is exactly linear in `sigma` over four decades. That is the
-first empirical support for the `1/sqrt(λ)` claim `THEORY.md` §15.0 has always
-asserted. It stops holding once the predicted *relative* error approaches order 1 -
-`R^3` and `SE(3)` hold to 5.7 degrees, a poorly conditioned `R^2xS^1` instance
-departs by 0.06. See `THEORY.md` §18 and `tools/crlb_validation.py`.
+Evaluation only. `perturb_bearings` adds tangent-plane noise of per-axis `sigma` radians to every
+bearing, `solve_shape` recovers the poses by damped Gauss-Newton with `B` as the Jacobian (steps
+restricted by `node_dof_projectors`), `shape_error` projects the error off `ker(B_K)`,
+`monte_carlo_error` drives the sweep and `predicted_error` is the analytic counterpart. The gauge
+quotient is linear, so this is a small-error metric. Do not replace it with exact centering and
+rescaling, which shifts `z` for planar agents. See `DESIGN_NOTES.md#estimation-monte-carlo`.
 
 ### Environment (`environment.py`)
 
-One `gymnasium.Env` (`Environment`) for all experiments, configured entirely by a JSON file in `environments/` via `env.load(path)`. Nothing is subclassed - each axis is a string dispatched in a module-level function:
+One `gymnasium.Env` configured by a JSON file in `environments/` through `env.load(path)`. Each axis
+is a string dispatched in a module-level function:
 
 - `action_type` → `define_action_space()` + `action_<Type>(...)`
 - `obs_type` → `obs()`
-- `state_score_type` → inline `if/elif` chain inside `step()`
-- `termination_condition_type` → inline `if/elif` chain inside `step()`
+- `state_score_type` → `compute_state_score()`
+- `termination_condition_type` → inline chain in `step()`
 
-To add a variant, add an `elif` branch in the relevant dispatcher, plus a matching model in `policy/` registered in `policy/registry.py`.
+To add a variant, add a branch in the dispatcher and a matching model in `policy/` registered in
+`policy/registry.py`.
 
-**Model selection is a registry, not an if/else chain.** `policy/registry.py` maps `(role, backbone, action_type)` → class, where role is skrl's model-dict key (`policy`/`value`/`q_network`). `build_models(algorithm, backbone, action_type, **kwargs)` returns the dict the agent takes directly; `instantiate()` filters the kwargs superset against each constructor's signature, so classes needing `edge_feat_dim` or `allow_skip` just declare them. `agent_loader` shares the same `instantiate`. A `(role, backbone, None)` entry is the per-backbone fallback, which is how the critics cover every non-selection action space. See `DESIGN_NOTES.md#model-registry`.
+**Reward:** `−time_penalty + [action_reward] + γφ(s') − φ(s) + [terminal bonus]`, potential-based
+shaping on the state score (`THEORY.md` §7.3). `γ = 0.99` is a literal in `step()` and must match
+the trainers' `discount_factor`. Keep `γ < 1`. `Episode/ Return` logs the
+undiscounted return.
 
-**Reward structure** (`step()`): `reward = -time_penalty + [action_reward if action_rewards_enable] + (state_score(s') - state_score(s)) + [terminal bonus]`. The state-score term is **potential-based shaping** - the reward is how much *better* the graph got, not the absolute quality. `WeightedNormalized` is `(w_rank·rank - w_edge·m·c_max) / rank_K` at `(100, 25)` - dimensionless, so its optimum is ~75 at any `n` and in any domain. The older `Weighted` is `20·rank(B) - 10·m` and does **not** transfer (see below); it is kept only so old runs replay.
+**Conditioning term:** `stiffness_kappa · one_edge · 1[IBR] · q`, with `q` a fixed-center sigmoid of
+`log10(shape_err)` under `WeightedNormalizedShapeError`. `κ` bounds the edges traded for
+conditioning and in practice selects among graphs of equal edge count, so minimality stays a valid
+metric. `WeightedNormalized` / `WeightedNormalizedSpectral` instead build a per-episode `λ_ref` from
+greedy constructions, which is expensive at reset.
 
-**Conditioning is in `phi`, behind `stiffness_kappa` (default `0.0` = off).** At `κ > 0` the score
-gains `κ · one_edge · 1[IBR] · q`, with `one_edge = w_edge·c_max/rank_K`. What `q` reads depends on
-the score type:
+**Episode reset** re-randomizes poses and edges. `env.freeze_network = True` makes `reset()` redo
+only `begin_episode()` and keep the graph, which is how experiments run several methods on one
+instance. The initial edge count is drawn around `m_req` when `random_graph_with_mean_min_edges` is
+on.
 
-- `WeightedNormalizedShapeError` (**use this one**): `q = sigmoid(-(log10(shape_err) - 1.35)/0.70)`,
-  a **fixed** centre, so no reference is built. `shape_err` is free during training, since `step()`
-  already computes it for logging. Constants live in `rigidity.py` and are re-derived by
-  `tools/shape_error_scale.py`.
-- `WeightedNormalized` / `WeightedNormalizedSpectral`: `q = sigmoid(log10(λ/λ_ref)/0.75)`, with
-  `λ_ref` the median λ of `stiffness_ref_samples` (default 3) greedy constructions on *this
-  episode's* poses. λ is free; the constructions are not. At n=20 that is **2290 rigidity-matrix
-  builds per reset** against 1.6 per step, 65% of episode wall clock, paid at inference too. Only
-  the reference the configured score actually reads is built - they used to both be.
+**`skip_enabled`.** When `False` the models mask the skip logit (also in DQN `random_act()`), and the
+action space keeps its width. Skip must be either masked or a real stop (`skip_is_stop: True`), since
+a free no-op is an absorbing zero-reward cycle. Without a stop action an episode is scored on the
+best state visited (`best_state_score`, `best_edges`, `best_step`, `best_stats`, logged as
+`Episode/ Best *`). See `DESIGN_NOTES.md#horizon`.
 
-`κ` is an **upper bound** on the edges tradeable, not the trade. Measured exhaustively over 46
-networks, the optimum needs `κ` between 24 and 208 before it spends even one extra edge, and at
-every `κ ≤ 20` it spends none (`THEORY.md` §15.6, `tools/kappa_trade.py`). Over its whole usable
-range `κ` **selects among equally sparse graphs**, which is worth a great deal: rigid graphs at
-exactly `m_req` edges span 3.1x to 7079x in shape error. So `is_MBR`/minimality stays a valid
-headline metric at the κ anyone trains at. Measured on `greedy` at n=8/R^3: stiffness ×2.0 at κ=0.9
-and ×12.4 at κ=2, at a flat edge count - which is the same fact seen from the other side. See
-`THEORY.md` §15.5b and §15.6, and `DESIGN_NOTES.md#shape-error-score`.
+**`random_domains`** draws each agent's domain every `reset()`, so the composition is part of the
+instance distribution. Runs are named `randdom`.
 
-**`WeightedNormalizedSpectral` makes the spectral functional a config key.** Same score as
-`WeightedNormalized`, with the bonus read off `spectral_functional` = `eigenvalue` (default,
-**bit-identical** to `WeightedNormalized`, asserted by test), `trace` (`tr((B^T B)^+)`) or `logdet`.
-Sigmoid widths per functional are in `rigidity.SPECTRAL_SIGMOID_WIDTH`, scaled from the
-eigenvalue's 0.75 decades by each one's measured spread; `logdet` is in nats, not decades.
-**Measured, none of them is a better training signal than λ** - the trace ranks graphs the same
-way (corr 0.99) and logdet predicts real error worse - so this exists to make that null result
-reproducible from a config, not because an arm is expected to win. See `THEORY.md` §18.
+**Scenarios.** With `"scenario": "<name>"`, `only_randomize_edges: false` carries over only the
+domain mix, and `true` keeps the scenario's geometry and resamples edges.
 
-**The discount factor is not a free hyperparameter here.** With a purely potential-based reward,
-γ=1 and no stop action, the episode return telescopes to `φ(s_T) - φ(s_0)`, so the advantage is
-`E[φ(s_T)|s'] - E[φ(s_T)|s]` - which is ≈0 under a near-uniform policy, because the random walk
-over edge sets mixes and forgets `s`. **There is then no gradient to bootstrap from**, which is
-exactly what killed the PPO run (entropy frozen at ~1.9 nats of a ~2.0 ceiling). With γ<1, Abel
-summation turns the same reward into `-φ(s_0) + (1-γ)·Σ γ^(t-1) φ(s_t)`, i.e. *maximize the
-discounted average of φ along the trajectory* - get good fast and stay good. DQN uses γ=0.99 and
-works; PPO used γ=1.0 and does not. Do not set γ=1 to make the logged return match what is being
-optimized; log the undiscounted return separately instead (`Episode/ Return` already does).
+**Config keys** include `state_score_type`, `skip_enabled`, `skip_is_stop`, `time_penalty_value`,
+`random_graph_with_mean_min_edges`, `random_domains`, `include_candidate_bearings`,
+`rotation_augmentation`, `stiffness_kappa`, `stiffness_ref_samples`, `spectral_functional`,
+`graph_features` and the six `rigidity_*` flags. `max_steps = 4 · m_req + 10`. The generator's
+`__main__` constants currently give `WeightedNormalizedShapeError`, `stiffness_kappa = 50`,
+`random_domains = True`, `rotation_augmentation = True`, `graph_features = False`, every `rigidity_*`
+flag on, and skip masked out. Old configs may `KeyError` in `load()`, and the renamed
+`margin_*` keys raise. **Regenerate rather than hand-edit, and `environments/` and `scenarios/` are
+the user's to manage**: generate a new config under a new name if an experiment needs different
+settings.
 
-**Why `Weighted` does not transfer** (it is legacy, but every pre-2026-08 checkpoint uses it): an
-edge's rigidity-matrix block has rank **2 in R^3** and **1 in R^2**, so at `w_rank=20, w_edge=10` a
-rank-adding edge is worth +30 in R^3 but only +10 in R^2, against +10 for pruning in both - R^3 is
-three times more eager to add than to prune, R^2 is neutral. Its optimum also moves with the
-configuration (50 at n=4/R^2, 300 at n=8/R^3), shifting the critic's target range.
-`WeightedNormalized` is the dimensionless replacement.
+### Domains
 
-**Episode reset** re-randomizes poses *and* edges (a fresh `random_scenario`), so the policy must generalize across geometries, not memorize one. Setting `env.freeze_network = True` makes `reset()` redo only the per-episode bookkeeping (`begin_episode()`) and keep the current graph - that is how the experiments run several methods on one instance.
+| domain | DOF/agent | `rank_K` | `c_max` |
+|---|---|---|---|
+| `R^2` | 2 | `2n − 3` | 1 |
+| `R^3` | 3 | `3n − 4` | 2 |
+| `R^2xS^1` | 3 | `3n − 4` | 1 |
+| `R^3xS^1` | 4 | `4n − 5` | 2 |
+| `SE(3)` | 6 | `6n − 7` | 2 |
 
-**`skip_enabled`** (env config). When `False`, `train_ppo.py` / `train_dqn.py` pass `allow_skip=False` to the models, which mask the skip logit to `MASK_VALUE` (`-inf`) in `compute()` *and* in the DQN `random_act()`. The action space keeps its width, so checkpoints and `agent_loader` stay compatible. **Skip must either be masked out or be a real stop** (`skip_is_stop: True`): as a free no-op it is an absorbing zero-reward cycle that on-policy methods collapse onto (observed: entropy → 0, all rewards exactly 0, graph unmodified for two thirds of training). Generated configs default to skip masked out, scored with the best-state-visited metric below; the stop arm is `skip_enabled` + `skip_is_stop` + a small `time_penalty_value`, and is measured but unresolved (`DESIGN_NOTES.md#horizon`).
+Step cost grows steeply with `n`. The dense `(3m, 3m)` `Dp`/`Da` allocation on the complete graph
+at reset is the ceiling, and anything well beyond `n ≈ 32` needs a batched reimplementation.
 
-**Best-state-visited metric.** `Environment` tracks the highest-scoring graph seen during an episode (`best_state_score` / `best_edges` / `best_step` / `best_stats` with `m`/`is_IBR`/`is_MBR`/`rank`/`min_eig`, updated in `update_best_state()`), exposed in `info` and logged as `Episode/ Best *`. This is observational - the reward does not use it. It exists because scoring an episode on its *final* state conflates "found a good topology" with "learned to stop on it", which matters under `MaxSteps` where the agent is expected to converge and then hold with `skip`. `best_step` records how many steps it took to get there, which is the only way to tell a policy that converges fast from one that stumbles onto the same graph late.
+### Invariance
 
-`Best min eig` has no meaningful absolute scale: rigidity-matrix entries scale as `1/‖p_ij‖`, so it tracks `random_scenario`'s `pos_limits` (`scenario.py`, currently `[-1, 1]`; it was `[-100, 100]`, which put the eigenvalue at ~1e-5). Plot it on a log axis and don't compare across pose ranges. It frequently sits *below* `Min eig`, which is correct: `Weighted` has `w_eig = 0`, so φ trades stiffness away for fewer edges.
-
-**`random_domains`** (env config, default `False`) draws every agent's domain uniformly and
-independently each `reset()`, so the composition is part of the instance distribution rather than a
-property of the run. The observation width is unchanged. It forces the sampling order
-mix → poses → `m_req` → edge count, since `sample_initial_edge_count` otherwise reads the previous
-episode's `m_req`; it is refused together with `only_randomize_edges`; benchmarks store domains and
-axes per instance; and runs are named `randdom`. Measured safe to train on: the reward quantum's
-spread *narrows* with `n` (p90/p10 1.48 at n=8, 1.09 at n=128) and phi's optimum is constant to
-within 1.5%, while the between-episode reward sd moves only 0.434 → 0.507 at n=10 against a
-within-episode sd 3.3x larger. See `DESIGN_NOTES.md#random-domains`.
-
-**Scenarios.** With `"scenario": "<name>"`, `initialize()` loads `scenarios/<name>.json` and caches it. What a scenario contributes on reset depends on `only_randomize_edges`: `false` carries over only the **domain mix** (poses and edges are redrawn each episode - use this for heterogeneous generalization experiments), `true` keeps the scenario's **actual geometry** and resamples only the edges (use this for a fixed case-study figure). Both paths honour `random_graph_with_mean_min_edges`.
-
-**Config format keeps moving - regenerate, never hand-edit.** Current keys: `state_score_type`, `skip_is_stop`, `random_graph_with_mean_min_edges`, `random_domains`, `include_candidate_bearings`, `rotation_augmentation`, `stiffness_kappa` / `stiffness_ref_samples`, `spectral_functional`, plus the `graph_features` / `rigidity_*` flags (`rigidity_global`, `rigidity_quality`, `rigidity_flex`, `rigidity_edge`, `rigidity_stiffness`, `rigidity_removal`). `max_steps` is now `4*m_req + 10` (n=8/R^3 → 50, `mixed` → 78, n=16/R^3 → 98), not `4*n*(n-1)`. Four switchable arms: the stop action (`skip_enabled` + `skip_is_stop` + `time_penalty_value`), `rotation_augmentation`, the conditioning term (`stiffness_kappa`), and `random_domains`. The stop action and `random_domains` are off in generated configs; **the `__main__` constants currently ship `rotation_augmentation = True` and `stiffness_kappa = 2.0`**, so read the constants rather than assuming. **`margin_kappa` / `margin_ref_samples` / `rigidity_margin` were renamed to `stiffness_*` / `rigidity_stiffness`; `load()` raises on the old key rather than silently defaulting, so pre-rename configs must be regenerated.** For a scenario the generator writes the **full per-agent domain list** rather than `domains[0]`, which used to label every mixed config with one domain. See `DESIGN_NOTES.md#horizon` and `#rotation-augmentation`. `environments/` is gitignored and accumulates files from older formats, which will either `KeyError` in `load()` or raise on a merged-away `obs_type`. **Regenerating is the user's call** - see the note under "Gitignored" below. The filename no longer carries the obs type, since there is only one.
-
-### Domains and scaling (measured, all five domains, n up to 64)
-
-`rank_K` follows `(DOF per agent)·n − (trivial motions)`, and the trivial count grows with how much
-of the rotation group the frames absorb (`THEORY.md` §3). Verified at n=8/16/32/64:
-
-| domain | DOF/agent | `rank_K` | trivial | `c_max` | `m_req` at n=16 |
-|---|---|---|---|---|---|
-| `R^2` | 2 | `2n − 3` | 2 transl + scale | 1 | 29 |
-| `R^3` | 3 | `3n − 4` | 3 transl + scale | 2 | 22 |
-| `R^2xS^1` | 3 | `3n − 4` | + 1 rotation | 1 | 44 |
-| `R^3xS^1` | 4 | `4n − 5` | + 1 rotation | 2 | 30 |
-| `SE(3)` | 6 | `6n − 7` | + 3 rotations | 2 | 45 |
-
-`c_max = 1` in the planar domains and `2` in the spatial ones, because a bearing is **one** angle in
-the plane and **two** in 3-space. Note the oriented domains need far denser graphs - `R^2xS^1` at
-n=16 needs 44 edges where `R^2` needs 29 - since each agent's heading must also be pinned down.
-
-**Step cost is the blocker for large n.** Roughly, per env step: ~3 ms at n=8, ~10 ms at n=16,
-25-100 ms at n=32, and **0.1-6 s at n=64**. At 600k steps that is hours at n=32 and over a week at
-n=64. Anything beyond n≈32 needs a batched reimplementation of the environment, not tuning. (These timings re-randomize the graph each measurement and cost scales with `m`, so they are
-*not* a clean `graph_features` comparison - for that see the controlled measurement in
-`DESIGN_NOTES.md#graph-features`: 43.4 → 9.2 ms at n=16 on a fixed graph.)
-
-### Invariance (`THEORY.md` §3, §9; audited per channel and end-to-end)
-
-The whole point of a bearing framework is that it is defined up to a similarity transform, so the
-observation should be too. Audited by transforming the network and diffing every channel, across
-**all five domains** and both backbones.
-
-**Translation and uniform scaling: invariant everywhere.** Every channel, every domain, to 1e-14.
-Bearings are unit vectors; `coord_features` are centred and RMS-normalized; rank, flex and the
-graph statistics are all similarity invariants.
-
-**Rotation: invariant exactly in the domains that carry a frame.**
-
-| domain | `edge_features` under rotation | policy logits |
-|---|---|---|
-| `R^2`, `R^3` | **changes** (~0.7-0.9) | **rotation dependent** |
-| `R^2xS^1`, `R^3xS^1`, `SE(3)` | 1e-14 | **invariant** |
-
-The cause is `Agent.get_bearing`: for an oriented agent it returns `R_i^T p̂_ij`, which is genuinely
-invariant because the frame rotates with the world; for `R^2`/`R^3` there is no frame and it returns
-the global-frame vector. Any heterogeneous mix containing an `R^d` agent inherits the problem.
-**This is a property of the R^d testbed, not of the target domains** - see "Known issues" for what
-to do about it.
-
-**`coord_features` rotate by design** and that is fine: EGNN consumes coordinates only through
-`‖x_i − x_j‖²`, verified to give *identical* feats under a rotation of `coors` alone; GINE never
-reads them.
-
-**Two traps in measuring this.** First, a stale `env.network` reference after a second `reset()`
-silently makes everything look invariant. Second, and more insidious: at `egnn_pytorch`'s
-`init_eps = 1e-3` an untrained EGNN is numerically blind to edge features, so it reports
-`0.000e+00` under rotation *even in R^3 where the inputs plainly changed*. Only at trained-scale
-weights does the dependence appear:
-
-| `init_eps` | R^3 Δlogit | SE(3) Δlogit |
-|---|---|---|
-| 1e-3 (`egnn_pytorch` default) | 0.0 - false negative | 0.0 |
-| 1e-2 | 1.8e-07 | 0.0 |
-| 1e-1 (trained scale) | **4.8e-03** | 6e-08 |
-
-Any invariance test on an EGNN must be run at trained-scale weights or it proves nothing.
+Every observation channel is invariant to translation and uniform scaling in every domain. Rotation
+invariance is exact in `R^2xS^1`, `R^3xS^1`, `SE(3)` and fails for raw bearings in `R^2`/`R^3`, where
+`Agent.get_bearing` returns a global-frame vector. `rotation_augmentation` is the mitigation. The
+rigidity channels are rotation invariant everywhere. `coord_features` rotate by design, and EGNN
+reads them only through distances. Two traps when measuring this: a stale `env.network` reference
+after a second `reset()` makes everything look invariant, and an EGNN at small `init_eps` is
+numerically blind to edge features, so invariance tests must use trained-scale weights.
 
 ### Policies (`policy/`)
 
-`policy/gnn_backbone.py` holds the backbones; `policy/{actor,critic,q_func}/<Name>.py` hold one model per (backbone × action-space) combination, all re-exported from `policy/__init__.py`. Naming: `Equivariant_*` = EGNN, `GINE_*` = GINE, bare name = old GAT/MLP.
+`policy/gnn_backbone.py` holds the backbones and `policy/{actor,critic,q_func}/<Name>.py` one model
+per backbone and action space, re-exported from `policy/__init__.py`. Naming: `Equivariant_*` is
+EGNN, `GINE_*` is GINE, a bare name is the old GAT/MLP. `policy/registry.py` maps
+`(role, backbone, action_type)` to a class, and `build_models()` returns the dict skrl takes. See
+`DESIGN_NOTES.md#model-registry`.
 
-Conventions that matter when writing a new model:
-- `unflatten_tensorized_space(self.observation_space, inputs["observations"])` recovers the obs dict - skrl flattens `Dict` spaces.
-- **Action masking is done in the model**, by writing `MASK_VALUE` (`-inf`, scale-free by necessity) into invalid logits/Q-values (e.g. masking the already-selected node in `SelectNodesSequentially`, masking add-existing / remove-nonexistent in `AddRemoveEdge*`). The env does not mask.
-- DQN Q-networks additionally override `random_act()` so epsilon-greedy exploration also respects the mask.
-- **Both backbones output `gnn_hidden_dim`**, so head input sizes are the same either way. `GNNBackboneEquivariant` gets there through an input embedder (`self.embed`) because EGNN preserves the feature width; without it the node representation was `node_feat_dim` wide (11 on `mixed`) against GINE's 128, and the backbone comparison measured the width rather than the message passing. Equalizing width costs parameter parity - the EGNN stack is 10.9x GINE's at `hidden_dim=128`. See `DESIGN_NOTES.md#egnn-input-embedder`.
-- GINE flips `edge_index` before message passing so a node aggregates its *outgoing* bearings ("I measure this bearing to that node"), which is the semantically right direction here.
-- **Both backbones do dense all-pairs message passing.** `GNNBackboneGINE.forward(nodes, edges)` takes the dense `(B, N, N, E)` edge tensor and builds the complete digraph itself; it used to message-pass over `adj.nonzero()` only, which silently discarded the all-pairs bearings. They now differ only in *how* they mix, which is what makes a backbone comparison meaningful. See `DESIGN_NOTES.md#gine-dense-all-pairs`.
-- **The EGNN starts nearly blind to edge features.** `egnn_pytorch` inits every Linear at `std=1e-3`; three layers deep against the node residual, the edge path begins at ~1e-10 of the output. Structural rather than absent (a trained run grows those weights to ~1e-1), but it is a slow start, and an asymmetry against GINE, which inits at the torch default (~1e-1). `init_eps` is a `GNNBackboneEquivariant` argument and **now defaults to 1e-2**, not 1e-3. It is also a measurement trap: at 1e-3 an untrained EGNN reports invariance it does not have and reports sum vs mean pooling as identical, so any sensitivity test must run at trained-scale weights. See `DESIGN_NOTES.md#egnn-init-eps`.
+Conventions:
 
-**Aggregation is `mean` and the EGNN coordinate update is off**, both because dense all-pairs
-passing otherwise makes activations scale with `n` and kills transfer. These are not tuning knobs -
-`m_pool="sum"` or `update_coors=True` reintroduces the drift, and `tests/test_scale_invariance.py`
-asserts both directions (it checks the fixed config is flat *and* that the broken configs still blow
-up, so the guard cannot go vacuous). `update_coors=False` is also semantically right: `coors` are
-ground-truth poses, EGNN reads them only via `rel_dist`, and the backbone discards the output
-`coors`. See `DESIGN_NOTES.md#aggregation-and-scale`.
+- `unflatten_tensorized_space(self.observation_space, inputs["observations"])` recovers the obs
+  dict, since skrl flattens `Dict` spaces.
+- Action masking is done in the model with `MASK_VALUE = -inf`. DQN Q-networks also mask in
+  `random_act()`.
+- Both backbones output `gnn_hidden_dim` (EGNN through an input embedder), do dense all-pairs
+  message passing over the `(B, N, N, E)` edge tensor, use mean aggregation, and the EGNN coordinate
+  update is off. Adjacency reaches the model through the `edge_exists` channel. `m_pool="sum"` or
+  `update_coors=True` reintroduces `n`-dependence, and `tests/test_scale_invariance.py` checks both
+  directions. See `DESIGN_NOTES.md#aggregation-and-scale`.
+- GINE flips `edge_index` so a node aggregates its outgoing bearings.
+- `GNNBackboneEquivariant` defaults to `init_eps = 1e-2`.
+- `AddRemoveEdge` heads take `[h_i, h_j, e_ij]`. The `SelectNodesSequentially` pointer head scores
+  `MLP([h_j, h_i])` with no pairwise term and encodes "nothing selected" as `h_sel = 0`.
 
-**The EGNN runs dense all-pairs message passing, deliberately.** `adj_mat` was passed to
-`GNNBackboneEquivariant` and silently ignored - `egnn_pytorch` reads it *only* in nearest-neighbour
-mode (verified: `max abs diff 0.0` between an all-zeros and an all-ones adjacency). It is no longer
-forwarded; the graph reaches the model through the edge features, where an explicit `edge_exists`
-channel states adjacency. Dense all-pairs is right for this task - you want to reason about edges
-you do not have. `EGNN` also accepts a `mask` the backbone never passes, which is what variable-`n`
-batching will need. See `DESIGN_NOTES.md#egnn-dense-all-pairs`.
+### Observation
 
-**Bearings now cover every ordered pair**, not just existing edges, so the policy can see the
-geometry of an edge it might add - previously it could not, which was the first-order cause of the
-generalization failure. `include_candidate_bearings=False` (env config) reverts to edges-only at
-the same observation shape; that is a modelling switch, not a tuning knob, because a distributed
-agent cannot know a bearing it has not measured. See `DESIGN_NOTES.md#all-pairs-bearings`.
+Bearings cover every ordered pair, with an explicit `edge_exists` channel.
+`include_candidate_bearings=False` reverts to existing-edge bearings at the same shape. Positions in
+the observation are centered and RMS-normalized. `graph_features` toggles the expensive
+centralities. The `rigidity_*` flags add rigidity-matrix channels (`THEORY.md` §8,
+`DESIGN_NOTES.md#rigidity-features`), all read off the length-normalized matrix:
 
-**`graph_features` (default `True`) toggles the expensive centralities** (closeness, eigenvector,
-node/edge betweenness). They measure *worse* than free out-degree against rigidity-relevant targets
-and cost 4.7x the step time at n=16 (43.4 -> 9.2 ms). `_lean` configs turn them off. See
-`DESIGN_NOTES.md#graph-features`.
-
-**Rigidity features are an ablation arm, off by default** (`rigidity_global` / `rigidity_quality` / `rigidity_flex` /
-`rigidity_edge` in the env config). They add rank deficit, `m/m_req` and `is_IBR` as node channels,
-plus per-node flex magnitude and two per-pair channels answering "would this edge raise the rank".
-These are tier-3 quantities no distributed agent could compute, so the *gap* between arms is the
-result, not the informed arm's number. Note `c_k` (per-edge block rank) is constant in every
-homogeneous domain and so carries nothing at n=4/8/16 - it has its own flag for that reason. See
-`DESIGN_NOTES.md#rigidity-features`.
-
-**`rigidity_stiffness` is the channel that survives rigidity.** `add_independence`, `add_rank` and `node_freedom`
-all come from `ker(B)`, which on a rigid framework is only the trivial motions, so they are
-**identically zero the moment the graph becomes rigid** - measured 0/100 pairs, against 9/100 while
-flexible. Stiffness only exists once rigid, so a policy trained on `stiffness_kappa > 0` had no
-spectral information at the moment it needed it. `add_stiffness[i,j] = ||b_ij v||` and `node_slack[i]`,
-with `v` the mode at the rigidity eigenvalue, are nonzero on 100% of pairs there. They are a ranking
-prior rather than an oracle (log-log correlation 0.93 with the true stiffness gain of *adding*, but
-0.35 for *removing*, and the top pick is the true best 0/6 times), and they are exactly
-rotation-invariant where raw bearings in `R^d` are not. The information is irreducibly pairwise: a
-node-only reduction `||v_i||·||v_j||` scores 0.40 against the pair channel's 0.93, because `D_p`
-projects orthogonal to the bearing and two soft nodes moving along their mutual bearing are
-invisible to it. See `THEORY.md` §16.
-
-**`rigidity_quality` is the one channel that says how good the current graph is.** Everything
-else is either local or a *difference*: `rigidity_global` gives rank deficit, `m/m_req` and
-`is_IBR`, and the pair channels say what changing an edge would do. Once the graph is rigid
-nothing told the policy whether its conditioning was good or terrible, so it could not tell
-"already good, stop" from "bad, keep going". `state_quality()` is where the graph sits against a
-typical greedy construction on the same poses, through the same sigmoid the state score uses:
-**0 while flexible, ~0.5 for a typical answer, rising towards 1**. Bounded and dimensionless, so
-unlike raw λ it is comparable across `n`, domain and pose range. One node channel, tiled, so like
-the other global channels it needs `--mode noise` to ablate. Tier 3.
-
-**`rigidity_removal` says what deleting an edge costs.** Every other pair channel asks an
-*addition* question, so nothing told the policy which existing edges are safe to prune - and 70% of
-them are, in a typical mid-episode graph. `remove_rank[i,j]` is the rank lost, exact via the block
-leverage `H = b (B^T B)^+ b^T` whose unit eigenvalues count it (118/118 against ground truth), and
-`remove_stiffness[i,j]` is the fraction of λ lost, exact via the rank-3 downdate `B^T B - b^T b`.
-Both zero on non-edges, so `add_*` and `remove_*` have complementary support. `remove_rank` is the
-only rigidity channel informative in **both** regimes. Every rigidity channel is read off the
-**length-normalised** matrix (`scaled_rigidity_matrix`), which is what makes `add_stiffness`,
-`remove_stiffness` and `node_slack` scale invariant; off the raw `B` they moved up to 49% under a
-2.7x rescale in the oriented domains. `remove_rank` is invariant by proof either way. Costs ~+66% of a step at n=10 (pinned). See `THEORY.md` §17.
-
-**The pair channels are exact, not heuristic.** With `Z` an orthonormal basis of `ker(B)`, adding
-edge `i -> j` raises the rank by exactly `rank(b_ij Z)`, so `add_independence = ||b_ij Z||/||b_ij||` is zero
-precisely on the pairs that would add nothing and `add_rank = rank(b_ij Z)/c_max` is the gain
-itself. Measured AUC 1.000 with a clean split in all five domains and three heterogeneous mixes,
-exact rank on 1,501 pairs. `candidate_gain_reference` is the readable loop form and
-`candidate_gain` the fast expansion of it, held to the reference by test in every domain. They
-replaced `flex_align`, a position-block-only construction that was
-at chance in the oriented domains (AUC 0.634 in SE(3)) because it could not see the attitude
-columns. Two things they depend on that are easy to break: `ker(B)` is **not** scale-invariant
-(position columns carry `1/length`, attitude columns are dimensionless), so the length unit is fixed
-to the formation's RMS radius; and `rotate_network` must rotate `agent.rotation_axis`, since
-`P_i = v v^T` is in world coordinates. See `THEORY.md` §13.
-
-**Positions are pose-normalized** in the observation (centred, unit RMS radius). Bearings are
-already scale-invariant but EGNN's internal `rel_dist` is not, which is why `pos_limits` used to
-matter. The rigidity maths still uses the true poses.
-
-**On feeding raw bearing vectors as EGNN edge features.** The rationale was that a bearing is
-measured in the *measuring agent's local frame*, so for an agent that has a frame (`R^2xS^1`,
-`R^3xS^1`, `SE(3)`) `R_i^T p̂_ij` is genuinely invariant to a global rotation of the network. That
-holds - but **not for `R^2` / `R^3`**, where `Agent.get_bearing` returns the global-frame vector
-(see the `if self.domain not in ["R^3", "R^2"]` branch in `network.py`). Every current experiment
-is homogeneous `R^d`, so in practice global-frame vectors are being consumed as invariant scalar
-features: rotate the whole network and the policy output changes, which defeats the reason for
-choosing an EGNN.
-
-**The `AddRemoveEdge` heads take `e_ij`**, not just `adj_ij`, so pair scalars reach the head directly
-instead of only through three rounds of mean aggregation over `n-1` pairs. Head width follows
-`edge_feat_dim`. `SelectNodesSequentially` is unchanged.
-
-**The pointer head has no pairwise term.** `SelectNodesSequentially` models score target `j` given
-selected `i` as `MLP([h_j, h_i])` - no `e_ij`, no `adj_ij`, no `p̂_ij`, and no flag separating the
-first pick from the second. "Nothing selected" is encoded as `h_sel = 0`, ambiguous with a
-genuinely-zero embedding, and one MLP serves both picks.
+- `rigidity_global`: rank deficit, `m/m_req`, `is_IBR`, tiled across nodes.
+- `rigidity_quality`: the state score's `q` for the current graph, tiled.
+- `rigidity_flex`: `node_freedom`, `add_independence`.
+- `rigidity_edge`: `c_k / c_max`, `add_rank`.
+- `rigidity_stiffness`: `node_slack`, `add_stiffness`, nonzero only once rigid.
+- `rigidity_removal`: `remove_rank`, `remove_stiffness`, nonzero only on existing edges.
 
 ### Feature ablation (`ablation.py`)
 
-Answers "what is this policy actually reading?" by destroying one observation channel at a time.
-Two independent readings, because they answer different questions: **sensitivity** perturbs the
-channel at each state of an unperturbed reference trajectory and reports how often the argmax
-action changes (`flip%`) and how far the scores move (`|dscore|`); **outcome** re-runs the whole
-episode with the channel perturbed and reports what it cost in phi, edges, rigid% and minimal%.
-A channel can be sensitive but not matter (reacts, then recovers), or matter without being
-sensitive (a small nudge compounds). `d phi` is *reference minus ablated*, so positive means the
-policy got worse without it. Every variant is scored on the same instances (`freeze_network` plus
-a deep-copied restore between rollouts - without the restore each variant starts where the
-previous one ended, which silently invalidates the pairing).
-
-`--mode shuffle` (default) permutes the channel across nodes/pairs, so the marginal distribution
-is preserved and only the association with a particular node or pair is destroyed; `zero` and
-`noise` also change the input *scale*, which a net can react to for reasons unrelated to meaning.
-
-**Two traps it guards against explicitly.** Shuffling a channel that is constant along the
-shuffled axis is a no-op - true of the one-hot `domain` channel in a homogeneous network and of
-the global rigidity channels, which are tiled identically across nodes - and would otherwise print
-a confident `0.0%` that reads as "ignored" when nothing was ablated; those rows say so and need
-`--mode noise`. And `adj` feeds the model's *action mask*, so perturbing it changes which actions
-are legal rather than what the policy knows; it is marked `*` and its `flip%` is not comparable.
-
-The channel slice table mirrors `build_dict_obs`'s concatenation order and is checked against the
-real observation width; on a mismatch (an archived observation format, typically) it degrades to
-one block per key rather than risk attributing a number to the wrong feature.
-
-`--csv out.csv` writes the same table the terminal shows -- same ranking, same rounding, the same
-`(reference)` row -- and puts the legend in `out.txt` beside it, the same split `report.py` uses
-for `results.csv` / `summary.txt`. The csv is a plain rectangle with the header on line 1: a legend
-commented into its head parses fine with `pandas.read_csv(comment='#')` but shows ~27 lines of
-noise in every spreadsheet, csv viewer and `column -s,`. Both outputs render from one
-`order_rows()` / `table_rows()` / `legend()` path, so they cannot drift. A channel that was never actually
-perturbed gets **empty** cells rather than zeros -- a 0.0 there would be averaged and plotted as
-evidence of independence, which is the one thing it is not -- and `status` / `feeds_action_mask`
-carry the two caveats above as columns.
-
-**Measured on the two `estimation_*` runs** (both arms, all three modes, 20 episodes on `mixed`):
-`add_rank` dominates -- destroying it costs 4.7-7.4 phi under `shuffle` and 40-75 points of
-minimality, so the policy is close to learned greedy on the exact rank oracle. **`remove_stiffness`
-is the first geometric channel to cost anything in every mode** (0.5-1.6 phi), which is the pruning
-signal §17 predicted was missing. `rigidity_quality` reads as a **null** -- nonzero under `zero`
-only, exactly 0.00 under `noise`, unablatable under `shuffle` -- so the policy ignores it. And
-`bearings` / `coord_features` still cost nothing, so the spectral reward term did **not** make raw
-geometry matter.
-
-What it found, and why it is not the failure it looks like: **destroying any geometric channel costs
-the policy nothing.** That holds in all three modes and is the robust result. It is the *correct*
-behaviour under an objective with no geometry in it (`THEORY.md` §14.0), not shortcut learning, and
-it is the test for the stiffness objective: with `stiffness_kappa > 0` the geometric channels must start
-costing something.
-
-**The ablation stops at the reference's convergence and caps every variant to that budget.** A
-forced-action policy cycles once it has its answer (20/20 episodes, median step 14 of 78); without
-the cap, ablating a channel buys extra exploration and every channel reads as *beneficial*.
-`coord_features` is the null control: GINE never receives coordinates, so its cost must be exactly
-0.00 in every mode, and it is what exposed a phi that was not a function of the state. Use
-`--live-env` when an environment-side measurement fix has to reach the ablation, since `load_run`
-otherwise replays the archived environment. See `DESIGN_NOTES.md#ablation-protocol`.
-
-**Run more than one mode before believing a positive.** Under `zero`, `degree`, `rigidity_glob` and
-`add_rank` look enormously important (+14.09, +12.20, +8.48 phi). Under `shuffle` they collapse to
-noise except `degree`. Zeroing a normalized degree channel asserts every node has degree 0, and
-zeroing `rigidity_glob` asserts a contradictory state (deficit 0 *and* `is_IBR` 0) - inputs the
-network never saw, so the reaction measures out-of-distribution surprise rather than dependence. The
-negative results are the ones that survive mode changes, because `zero` is the *aggressive*
-ablation: a channel that costs nothing even when zeroed is genuinely unused.
+Destroys one observation channel at a time. **Sensitivity** perturbs the channel at each state of
+an unperturbed reference trajectory (`flip%`, `|dscore|`). **Outcome** re-runs the episode with the
+channel perturbed (`d phi` is reference minus ablated, so positive means worse without it). Every
+variant runs on the same instances, restored by deep copy. `--mode shuffle` permutes across
+nodes/pairs, while `zero` and `noise` also change the input scale. A channel constant along the
+shuffled axis (the domain one-hot in a homogeneous network, the tiled global channels) is reported
+as not ablated and needs `--mode noise`. `adj` feeds the action mask and is marked `*`. The reference
+stops at its first repeated state and every variant is capped to that budget. `coord_features` is
+the null control for GINE. `--csv` writes the table with the legend in a `.txt` beside it, and a
+channel never perturbed gets empty cells. Run more than one mode before believing a positive. See
+`DESIGN_NOTES.md#ablation-protocol`.
 
 ### Experiments (`experiments/`, `baselines.py`, `report.py`, `agent_loader.py`)
 
-**One runnable script per experiment**, under `experiments/`, each fully standalone: it parses
-its own arguments, loads its own environment and models, and writes its own run directory under
-`runs_outputs/`. There is no shared runner and no `--sections`.
+One standalone script per experiment under `experiments/`, each writing
+`runs_outputs/<timestamp>__<env>[__<models>][__<tag>]/`. They share the methods (`baselines.py`),
+figures and tables (`report.py`), harnesses (`repair.py`, `ablation.py`, `convergence.py`) and setup
+(`experiments/common.py`). Each driver puts the repository root on `sys.path` in place of
+`experiments/`.
 
 | script | what it measures |
 |---|---|
-| `experiments/comparison.py` | every method on the same instances, scored by the same phi. The table, the cost block, the trajectories and most of the figures |
-| `experiments/feature_ablation.py` | what a trained policy actually reads, one channel destroyed at a time |
-| `experiments/training.py` | learning curves from the tensorboard events under `runs/` |
-| `experiments/generalisation.py` | earlier runs aggregated, one per instance set, so a policy is read across benchmarks |
-| `experiments/repair.py` | how each method puts a damaged network right |
-| `experiments/control.py` | how long a formation takes to reach a goal shape over each method's edge set |
+| `comparison.py` | every method on the same instances, scored by the same `φ` |
+| `feature_ablation.py` | what a trained policy reads |
+| `training.py` | learning curves from the tensorboard events |
+| `generalisation.py` | earlier runs aggregated, one per instance set |
+| `scale.py` | earlier runs aggregated across network size, with cost |
+| `kappa.py` | edge count against shape error across `stiffness_kappa` |
+| `budget.py` | answer quality as the number of allowed moves is cut |
+| `topology.py` | the structure of the graphs each method builds |
+| `repair.py` | how each method restores a damaged network |
+| `control.py` | how fast a formation reaches a goal shape over each method's edge set |
 
-What they share is deliberate and small: **the methods** (`baselines.py`), **the figures and the
-tables** (`report.py`), **the repair harness** (`repair.py`), **the channel ablation**
-(`ablation.py`), **the control harness** (`convergence.py`), and **the setup**
-(`experiments/common.py`: the argument groups,
-`load_environment`, `load_models`, `parse_models`, `observation_mismatch`, `run_info_blocks`).
-A method has one implementation and one cost accounting wherever it is called from, and a palette
-cannot drift between scripts. Everything else is per script.
+**Methods** (`baselines.py`, dispatched by `run_method(name, ctx)` inside a `cost.Meter`):
+`initial`, `random`, `degree` (degree-only, the distributed-plausible reference), `greedy` (hill
+climbing on `φ`), `spectral` (closed-form landscape plus a verified shortlist), `anneal` (budget
+matched to greedy's `φ` evaluations), `constructive` (Wolsey's greedy from the empty graph),
+`learned` (each `--model`), `optimal` (exhaustive, `n ≤ 5`). `greedy`, `spectral`, `anneal`,
+`degree`, `constructive` and `optimal` work in edit space; `random` and `learned` go through
+`env.step()` and are scored on best state visited. `constructive`, `anneal` and `degree` have private
+RNGs so they do not move the instance stream. `phi_landscape` raises on scores outside
+`CLOSED_FORM_SCORES`. See the per-method entries in `DESIGN_NOTES.md`.
 
-Each driver starts by putting the repository root on `sys.path` **in place of** `experiments/`,
-which is what lets `experiments/repair.py` import the root's `repair.py` rather than itself.
+**`--model` takes a list.** `NAME[=LABEL]`, repeatable and comma-splittable. One model is labeled
+`learned`; several are labeled by the name tokens that differ. `--replay-env` takes one model only.
+`observation_mismatch` names the differing config key before a model that does not fit is loaded.
+`--policy-mode sample|greedy` and `--device` are one setting per run.
 
-`baselines.py` is the library the drivers call: `run_initial` / `run_random` / `run_degree` /
-`run_greedy` / `run_spectral` / `run_anneal` / `run_constructive` / `run_policy` /
-`run_brute_force`, plus `score_network`, `phi_landscape`, `edit_landscape`, `measure_noise` and
-`run_method(name, ctx)`, the one dispatcher that guarantees no method is metered by a different
-rule than another. It imports no driver, so a tool can import it without pulling in argparse.
+**Outputs of `comparison.py`:** `summary.txt` (table, cost block, paired block, legends),
+`results.csv`, `trajectories.csv`, `cost.csv`, `decisions.csv` (with `--model`), `meta.json`, and
+`plots/{pdf,png}/`. Every figure is written twice, the second as `<name>-plain` with the header and
+notes card removed (`report.plain()`). The table reports means with spreads; `rigid`/`minimal`/`=best`
+have none since they are 0/1 means; stiffness and shape error are geometric. `shape err` is the
+column to read, as RMS shape error per radian of bearing noise, lower is better. `at bound` (rigid
+on exactly `m_req` edges, exact) and `minimal` (`is_MBR`, heuristic) are both reported. The paired
+block (`report.paired_stats`) bootstraps per-network differences against `--paired-reference`.
+`run_info` records each model's training setup and objective. Colors go to models once there is
+more than one (`report.configure_methods`, `method_style`).
 
-**`--model` takes a list, and it is a model-against-model comparison.** Models may differ in
-algorithm, backbone, `stiffness_kappa` and training length at once, so series are labelled by
-model and never by algorithm. `parse_models` accepts `NAME[=LABEL]`, repeatable and
-comma-splittable; one model keeps the label `learned`, and several are labelled by the `_` tokens
-that differ between the names (`stiff_dqn_gine` / `stiff_ppo_gine` -> `dqn` / `ppo`), erroring on
-a collision rather than appending a digit. `--replay-env` is refused past one model: it execs one
-archive's `rigidity.py` and `environment.py` into `sys.modules` and two cannot both be live.
-`--policy-mode` and `--device` are one setting per run, the first because comparing argmax against
-sampled compares protocols rather than policies.
-
-**A model whose observation does not fit is named before anything loads.** `observation_mismatch`
-compares the config keys that decide the observation's width (`OBS_KEYS`) against the evaluation
-environment's, and prints which key differs. The environment *name* is only a note, because the
-same environment is regenerated under different names; the flags are what predict the failure,
-which otherwise surfaces as "parameter shapes do not match the checkpoint" from inside
-`agent_loader`.
-
-**`run_info` is where the run is written down.** The per-figure title block is gone, which gives
-every figure back four lines of height. In its place one figure carries the environment, the
-instances, the methods, and per model the algorithm, backbone, widths, training length, learning
-rate, seed and git commit, plus **the objective each model was trained on against the one it is
-scored by**. All rows are scored by the current environment's φ, which is what makes the table
-comparable; a model trained at `stiffness_kappa = 2` sitting beside one trained at `10` is a fact
-the reader needs.
-
-Every method is scored through `Environment.compute_state_score`, so all rows of the
-table are measured by the exact φ the agent trains on. `greedy`, `spectral`, `anneal`, `degree` and
-`optimal` work in edit space (action-space agnostic); `random` and `learned` go through `env.step()`
-and are therefore specific to the configured action space, and are scored on best-state-visited.
-`optimal` scans edge count ascending and stops at the first level admitting an IBR graph - unlike
-`MBR_required_Rd` this makes no homogeneity assumption, but it is gated at `n ≤ 5`.
-
-**Dispatch is `method_sequence(labels)` plus `run_method(name, ctx)`**, one loop in `comparison.main()` that restores the
-instance, runs the method inside a `cost.Meter` and attaches the counters to the row. That is what
-makes `--methods all` possible and what guarantees no method is metered by a different rule than
-another. `optimal` is a `--methods` name; `--brute-force` is kept as an alias. A method that
-returns `None` (no model loaded, `n` too large for brute force) is skipped rather than reported.
-
-**`spectral` computes the same landscape greedy searches for, in closed form.** φ is affine in
-rank, so a toggle moves it by exactly the rank it adds or costs, which `candidate_gain` and
-`removal_costs` return for all pairs at once - `phi_landscape(env)`. It then rescores only the
-`--spectral-shortlist` best candidates (default 5) with the real φ and applies the best that
-actually improves. The verification is not decoration: at `stiffness_kappa > 0` the addition term
-is `add_stiffness`, a normalised *ranking prior* rather than the true λ, so an unverified hill
-climb never reaches a local optimum and runs to its step cap. **At `stiffness_kappa = 0` the closed
-form is exact and `spectral` reproduces `greedy` edge for edge** - measured 60/60 instances across
-all five domains, at 3.7-6.9x fewer rigidity computations - which
-`tests/test_baselines_reference.py` asserts. The tie break has to be row-major-stable to get
-that, since adding a rank-1 edge and dropping a redundant one are an exact tie in the `c_max = 2`
-domains. `phi_landscape` **raises** on any state score outside `WeightedNormalized` /
-`WeightedNormalizedSpectral`, whose `w_rank = 100`, `w_edge = 25` it hardcodes; returning those
-deltas for another score would be silently wrong. `tools/greedy_landscape.py` imports it rather
-than keeping a second copy, so that script validates the baseline instead of duplicating it.
-
-**`anneal` is the opponent that assumes nothing about the objective.** Simulated annealing over
-single-edge toggles on the configured φ, temperature denominated in φ's own units
-(`one_edge = w_edge·c_max/rank_K`, so the schedule transfers across `n` and domain), geometric
-cooling, scored on best-state-visited. Its budget is **exactly the φ-evaluation count greedy spent
-on the same instance**, read from the counters, falling back to `4n(n-1)` when greedy is not being
-run; `--anneal-budget` overrides. This is the honest opponent above `stiffness_kappa = 0`, where
-the stiffness is not submodular and greedy carries no guarantee (`THEORY.md` §14.4). Own RNG.
-
-**`degree` is the tier-1 distributed-plausible reference.** Add the absent pair minimising
-`(outdeg_i + indeg_j)` until rigid, then drop the highest-degree edge whose removal keeps the
-network rigid. It reads nothing beyond degrees and the rigidity test itself - no marginal ranks,
-no spectrum - which `tests/test_baselines_reference.py` pins by asserting it never calls
-`candidate_gain`, `removal_costs`, `nullspace_and_softest` or `score_network`. Own RNG.
-
-**`constructive` is the classical opponent.** From the empty graph, keep any edge that raises
-`rank(B)`, stop at `rank_K`, best of `--restarts` random orders. It is the only method that does
-*not* start from the initial graph, since it is a construction rather than an edit, and it carries
-its own RNG so enabling it does not change the instances the other methods are scored on. Measured
-at n=8/`R^3` (`m_req` = 10): 11.50 edges at 1 restart, 11.00 at 5, 10.75 at 20. Note that in the
-`c_max = 1` domains the independent sets form a matroid and greedy is optimal by construction, so
-beating it is only meaningful in `R^3` / `R^3xS^1` / `SE(3)`. See
-`DESIGN_NOTES.md#constructive-baseline`.
-
-**`greedy` is the expensive baseline**, not brute force: it evaluates all `n(n-1)` candidate
-toggles per single edit, so cost is `O(n^2)` φ-evaluations per improvement. `score_network()`
-takes rank *and* `lam` from one `rigidity_decomposition` (so `greedy` is stiffness-aware at `stiffness_kappa > 0`
-for free) and
-therefore skips `is_MBR` (which costs one rank computation *per edge* on top of the full-matrix
-rank) unless the configured `state_score_type` actually reads the flag - `Weighted` does not. The
-full stats are computed once for the reported row. Use `--methods` to drop `greedy` entirely.
-Brute force is separate and already refuses above `MAX_BRUTE_FORCE_N = 5`.
-
-`--policy-mode` selects how `learned` is rolled out: `sample` (default, the policy used as a
-sampling search, reproducible under `--seed`) or `greedy` (argmax, what a deployed policy does,
-terminates on a repeated state). A DQN q-network is argmax either way.
-
-Pass `--device` if you want the `--model` rollout on GPU; it defaults to cpu and also sets
-`env.device` so the skrl wrapper puts observations on the same device as the agent.
-`--brute-force` prints per-level progress because the cost explodes with the required edge count:
-1.6k subsets at `n=4` (needs 5 edges) but ~432k at `n=5` when 9 edges are needed.
-
-**Output lives in one directory per run** (`report.py`), named
-`runs_outputs/<timestamp>__<short-env>[__<models>][__<tag>]/`. Past two models the count
-stands in for the names and `meta.json` says which they were. Each experiment writes its
-own, so two of them never share one and a rerun of one never overwrites another's csvs.
-
-```
-comparison.py
-  summary.txt        the printed table, the cost block, and their legends
-  results.csv        one row per (episode, method) -- the final outcome
-  trajectories.csv   one row per (episode, method, step) -- the time series
-  cost.csv           one row per (episode, method) -- every counter; legend in cost.txt
-  decisions.csv      one row per edit a policy applied, with a `model` column (--model only)
-  plots/            run_info, table, comparison, estimation, topology, trajectories,
-                    outcomes, summary, cost, episode_NNN, uncertainty, softest_mode,
-                    sensitivity (+ noise and prediction with --noise-sweep,
-                    + decisions with --model)
-feature_ablation.py
-  ablation/          one <label>-<mode>.csv + .txt per model; plots/ ablation-<label>
-training.py
-  training.csv       tail mean per (run, metric); plots/ training
-generalisation.py
-  generalisation.csv one row per (model, instance set), with the source dir and its
-                     git commit; plots/ generalisation
-repair.py
-  repair.csv         one row per (instance, event, k, method, stop rule)
-  repair_summary.csv per (event, method), geometric aggregation for the shape error
-  repair_spread.csv  one row per enumerated repair, so a figure redraws without
-                     re-enumerating
-  repair.txt         the table and its legend
-  plots/             repair_percentile, repair_count, repair_locality, repair_events,
-                     repair_choice, repair_kappa (2+ distinct training kappa only)
-control.py
-  control.csv        one row per (goal shape, method): m, lambda, final errors,
-                     steps to tolerance
-  trajectories.csv   one row per (goal shape, method, sampled step): time, bearing
-                     error, position error, attitude error
-  paths.csv          one row per (goal shape, method, sampled step, agent): its
-                     position. The goal formation is in here as method `goal` at
-                     step -1, so a figure redraws from this file alone
-  control.txt        the table and its legend
-  plots/             control_trajectories, control_formations, control_summary
-
-every run
-  meta.json          args, env config, the label -> model map, and provenance
-  plots/pdf/ and plots/png/  the same figures in both formats, filed by format
-                     (`PLOT_FORMATS` / `_save()`) rather than interleaved
-```
-
-**Every figure is written twice, the second under `<name>-plain`**: one carries the title block
-and the notes card, one is the panels alone, for a document that supplies its own caption. Plain
-does not mean raw - panel titles, axis labels, units, reference lines and the direct labels that
-identify a series stay in both, since without them the plot cannot be read. The mechanism is the
-`report.plain()` context manager and a module-level flag that `_figure`, `_finish`, `_save` and
-`plot_table` consult; a plot function needs no argument and no knowledge of it. Callers draw
-their whole figure set, then draw it again inside `plain()`.
-
-The table is written to be read without the source: `work` counts graph modifications actually
-applied and `best_at` is the step the best graph was reached at (the old single `steps` column
-meant different things per method), episode count moved into the header, every column states its
-direction, and a legend explains each method and column in plain language (`--brief` drops it).
-Every column is a mean over the episodes carrying its own `+-` spread; the percentage columns
-(`rigid`/`minimal`/`=best`) deliberately have none, because they are means of a 0/1 indicator
-whose sd is `sqrt(p(1-p))` - fully determined by the value already shown. **Stiffness and shape
-error** are both geometric (`gmean x/gsd`, via `_gmean`/`_gsd`), because both span decades and an
-arithmetic `+-` implies a range crossing zero; `_fmt_geo(v, key=...)` renders either. It marks a row
-`*` when non-rigid networks had to be dropped - their stiffness is exactly 0 and their shape error
-infinite, and a geometric mean can take neither.
-
-**Per-measurement sensitivity decomposes the error exactly.**
-`rigidity.measurement_sensitivity` gives each bearing's share of `tr((B^T B)^+)` and each agent's
-share over the bearings it takes; both sum to the total, so they read as percentages. Noise on one
-measurement propagates through `B^+`, so its share is the squared norm of the matching columns --
-exact, one pinv for all of them, no sampling. Validated against perturbing a single bearing.
-
-**The decision analysis scores an edit two ways on purpose.** At every step `edit_landscape`
-scores every legal single-edge change by both `d phi` and `d shape error`, and `decision_record`
-ranks the one the policy took among them (midrank, so ties do not sink a choice that was
-optimal; `phi_best` says whether it was). **The policy is trained on phi, not on the error**, so a
-high phi percentile beside a chance-level error percentile is a statement about the objective
-rather than about the policy. `MAX_DECISION_ANALYSIS_N` gates it -- it costs `n(n-1)` score
-evaluations per step.
-
-**`at bound` and `minimal` are two different questions and both are reported.** `m_req` is now
-recorded per row (`result(..., m_req=)`, stamped in the episode loop so no `run_*` can forget it)
-and reaches `results.csv`, because it is pose-dependent and a run cannot otherwise say whether a
-graph hit the bound without hardcoding a number for one benchmark. `at_bound` is rigid on exactly
-`m_req` edges, which is exact since the bound is proven; `is_MBR` is the repository's heuristic,
-which can over- and under-report on heterogeneous networks. Measured on `bench_mixed`, they
-disagree on most methods (`greedy` 65% against 80%, `equi` 90% against 100%), so the two columns
-sit side by side rather than one standing in for the other.
-
-**Three figures carry the comparison** on top of the older ones, which are all still written:
-`comparison` (edges, rigid, at bound, minimal, φ, and edges per network as one dot per instance),
-`estimation` (shape error, stiffness, measured against predicted error under noise, and shape
-error per network), and `topology` (per method, the graph it built, then the same graph behind the
-per-agent uncertainty shells and the softest mode). The shells share one scale across panels so
-their sizes compare, and the arrows are scaled per panel so their lengths do not. The 3-D panels
-carry no tick labels: the poses are centred and unit-normalised, so the numbers said nothing and
-three axes of them crowded every panel.
-
-**`shape err` is the column to read, not `stiffness`.** It is a slope, `d(error)/d sigma`, so it is
-quoted per radian but never evaluated at one: the prediction is a linearisation and holds while
-`sigma * shape_err` stays under ~0.2, which for a typical value is `sigma` below 0.4-2 degrees
-(`THEORY.md` §18.1). Note `sigma` is the **per-axis** standard deviation; the RMS angle between the
-true and the noisy bearing is `sigma*sqrt(2)`. It is the RMS state error per radian of
-bearing noise (position in formation radii, attitude in radians), so `8.0` means one degree of
-bearing error displaces the shape by ~14% of its own size. **Lower is better**, and unlike λ it is
-comparable across `n`, domain and pose range, so rows from different configurations can be compared
-directly. It comes from `Environment.shape_error_now()` - one SVD, cheaper than building `B` - and
-is validated against actually perturbing the bearings (`estimation.py`, `THEORY.md` §18).
-
-**The figures are built to survive being pasted into a slide with no caption.** Every one carries
-a title block (what the figure is, then the *full* environment and model names, wrapped rather
-than truncated) and a notes card along the bottom: method key on the left, how the figure is
-computed on the right. Panel titles name the quantity and put the reading direction on a second,
-muted line - `_panel_title()`. Layout mechanics that matter: the card is drawn straight onto the
-figure in a reserved band (`_draw_card`), *not* as a gridspec row, because a row's height is
-scaled down by whatever the panels spend on decorations and the card came out too short for its
-own text; `_figure()`/`_finish()` size the figure as `2*panel_h + header + card` and hand
-`tight_layout` the matching `rect`.
-
-**Every method ran on the same instances, so `summary.txt` also carries the paired block.**
-`report.paired_stats(rows, reference="greedy")` takes the difference per network and
-bootstraps over those differences; `format_paired` renders it and
-`experiments/comparison.py` prints it under the table (`--paired-reference`, empty to skip).
-The table's `+-` is how much the *networks* differ from each other, which is far larger than
-the gap between two methods on one network, so it over-states the noise on a paired
-difference. `shape_err` is differenced in log10 (`dex`) since it spans decades. There is
-deliberately no p-value: with 20 instances and one seed it is a spread, not a test. See
-`DESIGN_NOTES.md#paired-comparison`.
-
-`plot_table()` (`plots/*/table.*`) renders the same table as `summary.txt` as a figure - driven by
-the same `aggregate()`, so the two can't drift. Column direction moves into a subtitle under each
-column name, `initial`/`optimal` are drawn in muted ink with their reference strokes, and the
-column legend becomes the card. The card flows newspaper-style when the notes outrun the method
-list (`_card_rows`): the left column continues under the method key, the right column picks up
-from there, and splits only happen between notes.
-
-`plot_outcomes()` (`plots/*/outcomes.*`) is the **final / best / mean** figure - the same three
-views `Environment.write_episode()` logs per episode, so a baselines bar and a tensorboard curve
-mean the same thing. `outcome_stats()` derives all three from `traces` (final = last step, best =
-highest-scoring step, mean = over recorded steps), so nothing extra is computed. The gap between
-a method's `final` and `best` bar is the "found it but did not stop on it" failure, visible per
-method. Caveat stated on the card: greedy records one point per applied edit, so its `mean` is
-over edits, not over a step budget.
-
-Per-step tracing rides with the plots - `--no-plots` skips both. It costs one extra
-eigendecomposition per step (+31% at `n=4`, +21% at `n=8`) and is served by
-`Environment.last_stats`, which `step()` fills from values it already computes; the
-`trace_min_eig` flag makes it also compute the rigidity eigenvalue without a TensorBoard writer.
-Both are guarded with `getattr`/`hasattr` in `comparison.py` because `--replay-env` can hand back
-an *archived* `Environment` from before those attributes existed.
-
-**Colour belongs to the models, once there is more than one.** `report.configure_methods(models)`
-rebuilds the method tables once per run. With a single policy every method keeps a categorical hue
-(`SINGLE_MODEL_STYLE`, the palette the figures had before `--model` took a list). With two or more
-the hues go to the models in command order, since colour then has to answer "which model", and
-every classical baseline moves to ink and dash instead. `SURFACE` carries three usable line tones
-(`INK`, `INK_2`, `MUTED`), so eight baselines separate by tone and dash together, with `greedy` on
-the darkest ink as the reference opponent and `initial` / `optimal` keeping their dotted and dashed
-strokes. `method_style(name)` is the only lookup: its predecessor's `.get(name, INK_2)` fallback
-handed every unregistered method the same ink, which draws two policies as one line. Configured
-with no models it restores the single-policy tables, `learned` included, which is what every run
-written before `--model` took a list is keyed on.
-
-`agent_loader.load_agent()` rebuilds a trained skrl agent from its `train/<name>.json` manifest.
-Both `inference.py` and `experiments/comparison.py` use it.
-
-**Manifests are self-contained records of a run** (`manifest.py`, `manifest_version: 2`). Besides
-the hyperparameters and env config they archive the full text of every file that determined the
-model - `util.py`, `rigidity.py`, `network.py`, `scenario.py`, `environment.py`,
-`policy/gnn_backbone.py` - gzipped and base64'd into `sources_b64gz` (~25 KB rather than ~99 KB),
-plus `scenario_raw` (`scenarios/` is gitignored, so a run naming one is otherwise unreplayable) and
-a `provenance` block (git commit/dirty, command, package versions, device, seed). Training is now
-seeded from a `SEED` constant in both scripts and records it.
-
-```bash
-uv run manifest.py list                    # every run: what it carries, whether it still verifies
-uv run manifest.py show <name> [file]      # print archived source / provenance
-uv run manifest.py diff <name> [file]      # archived vs working tree
-uv run manifest.py verify <name>           # rebuild the model from the archive, check the weights
-uv run manifest.py backfill [--write]      # add what older manifests are missing
-```
-
-`backfill` only archives today's sources for a run whose weights they demonstrably rebuild
-(shape-checked against the `.pt`); it marks `provenance.captured_at_training: false` because those
-sources were not captured at the time. Where the check fails it writes `reconstructible: false`
-with the reason rather than a plausible lie. It also recovers `environment_config_raw` from
-`environments/<name>.json` for manifests that only recorded the config's name.
-
-**`load_run(model_name, env_name)`** is the entry point `inference.py` uses (and
-`experiments/comparison.py` under `--replay-env`). When the archived sources differ from the working tree it says so and
-rebuilds *the environment the run was trained against*: `archived_modules()` execs each archived
-file into a fresh module registered under its real name in dependency order - so the archived
-`environment.py`'s own `from network import Network` resolves to the archived `network.py` - and
-restores `sys.modules` afterwards. `control`/`visualizer`/skrl/torch deliberately stay as
-installed. This is what lets a checkpoint keep running after the observation format, action
-semantics or rigidity maths change. With a clean tree it uses the live environment, so replay
-costs nothing when nothing moved.
-
-**A checkpoint survives edits to `policy/`.** The manifest archives the model class source *and*
-`backbone_source` (the whole of `policy/gnn_backbone.py`) - the model classes only *reference*
-`GNNBackbone*`, so without the latter a checkpoint would break the moment the backbone changed.
-`resolve_model()` replays the archived source in a fresh namespace (`build_class_from_source()`,
-with `MODEL_SOURCE_PREAMBLE` supplying the module-level imports `inspect.getsource` drops), and
-falls back to the current class of the same name if the archived source fails to execute. Either
-way the result is verified against the checkpoint's parameter shapes before use, and the loader
-prints which one it used. When the archived architecture differs from what is in `policy/` today
-it says so and keeps the archived one, so the weights stay valid - meaning you can refactor the
-backbone freely without invalidating old runs. Manifests written before this carry no
-`backbone_source` and are replayed against the current backbone, which is only correct while it
-is unchanged; if it no longer fits, the loader reports a shape mismatch rather than guessing.
-
-**A manifest is now required.** The shape-sniffing fallback that used to reconstruct a bare `.pt`
-(`load_agent_legacy`, `infer_architecture`, `match_model_class`, interactive algorithm prompts -
-~230 lines) is gone; `load_agent()` raises if `train/<name>.json` is missing. That made 26
-manifest-less checkpoints unloadable, all of them pre-dating the current observation format and
-mostly unrecoverable anyway. What survived the cut is `backbone_depth()` + `rebuild_backbone()`,
-because manifest-bearing runs at **both 2 and 3 layers** exist and `num_layers` is not a constructor
-argument of the model classes - a depth-2 checkpoint still reports
-`(archived source, backbone rebuilt at 2 layers)` on load.
+**Manifests** (`manifest.py`, `train/<name>.json`) archive hyperparameters, the env config, the
+model and backbone source, the full text of `util.py`, `rigidity.py`, `network.py`, `scenario.py`,
+`environment.py` and `policy/gnn_backbone.py` (gzipped, base64), the scenario file and provenance
+(commit, command, versions, device, seed). `agent_loader.load_agent()` requires a manifest.
+`load_run(model, env)` rebuilds the archived environment when the working tree differs
+(`archived_modules()`), and `resolve_model()` replays archived model and backbone source, verified
+against the checkpoint's parameter shapes. `backbone_depth()` / `rebuild_backbone()` handle
+checkpoints at 2 or 3 layers. A checkpoint therefore survives edits to `policy/` and the environment.
 
 ### Training (`train_ppo.py`, `train_dqn.py`)
 
-Both: load env config → build `SyncVectorEnv` → select actor/critic (or Q-net) by `(action_type, obs_type)` → `skrl` agent + `SequentialTrainer`. They write `train/<model_name>.json` containing hyperparameters, the env config, and **the actual source of the model classes** (`inspect.getsource`) - these manifests are the record of what was run, but `train/` is gitignored, so they live only on the machine that produced them. Env-side metrics go to `runs/<experiment_name>` via `Environment.write_episode()`, **once per episode** (see below).
+Load env config, build a `SyncVectorEnv`, build models from the registry, train with skrl's
+`SequentialTrainer`. `BACKBONE`, `SEED` and the main hyperparameters are module constants
+overridable by environment variable. Environment metrics go to `runs/<experiment_name>` once per
+episode through `Environment.write_episode()` (`Final *`, `Best *`, `Mean *`, decision-quality and
+action-kind metrics), and `probe.py` adds periodic deterministic rollouts. See
+`DESIGN_NOTES.md#training-metrics`.
 
-**PPO: `memory_size` must equal `cfg.rollouts`.** skrl's `PPO.update()` runs `compute_gae` over the
-*whole* `memory.get_tensor_by_name("rewards")` ring and then `memory.sample(batch_size=len(memory))`.
-If the memory is larger than one rollout, every update trains on stale off-policy data (7/8 of it at
-`memory_size=8192, rollouts=1024`) with `last_values` bootstrapped at the ring's wrap point instead
-of the trajectory end - the stale samples fall outside the ratio clip band and contribute no
-gradient. This mismatch existed only at commit `809f13a` and is what broke
-`bigPPOSelectEquivariant3e-4lrNormalizedPositions`; `train_ppo.py` now uses one `ROLLOUT_SIZE`
-constant for both. Do not reintroduce a separate `MEM_SIZE` - the "to ensure we don't get garbage
-data from memory" comment was aimed at this and got it backwards.
+- **PPO `memory_size` must equal `cfg.rollouts`**, which is one `ROLLOUT_SIZE` constant. A larger
+  memory trains on stale off-policy data.
+- **DQN target updates are slow**: `polyak = 0.005` with `target_update_interval = 200` updates
+  gives a time constant of roughly 160k timesteps.
 
-**DQN target updates are slower than they look.** `polyak=0.005` combined with
-`target_update_interval=200` (counted in *updates*, which happen every `update_interval=4`
-timesteps) gives a target-network time constant of roughly 160k timesteps, effectively a frozen
-target. It works, but if you are reasoning about DQN stability, that is the actual number.
+### Gitignored (do not assume present)
 
-**Decision-quality metrics and the training probe.** `Best`/`Final` cannot distinguish a policy
-from a search, which is how two runs failed undetected. `Decision/ {useful,wasted,overshoot,converge}`
-share one `Decision/quality` multiline chart; `Actions/ *` give the action-kind mix plus a real
-histogram over action indices; `Steps rigid to minimal` isolates the pruning phase; `Edit efficiency`
-is 1 for monotone editing and 0 for oscillation. `probe.py` rolls the policy out deterministically on
-fixed seeded instances every `PROBE_INTERVAL` steps and logs `Probe/ argmax-sample gap` (~0 = a real
-policy, negative = a sampler), `Probe/ useful (argmax)` against a random floor, and
-`Probe/ max abs logit` (the drift detector). Calibrated: 0.00 gap and 0.725 useful for the good
-checkpoint, -16.00 gap for the known sampler, 0.080 useful and 2.5e23 logits for the collapsed one.
-The environment writer is now `torch.utils.tensorboard.SummaryWriter`, not skrl's shim, because the
-shim has `add_scalar` only. See `DESIGN_NOTES.md#training-metrics`.
+`environments/`, `scenarios/`, `models/`, `runs/`, `runs_old*/`, `runs_outputs/`, `train/`,
+`tboard_logs/`, `junk/`, `dummy/`, `resources/thesis/`, `resources/papers/`. A fresh clone has none
+of them, so code that writes output must create its directory first. A manifest exists only on the
+machine that trained it, so back it up with its checkpoint. `benchmarks/` is tracked on purpose,
+since a frozen instance set is a fixture.
 
-**Episode-level logging.** All environment metrics are written at episode end, not per step - a step-resolution scalar costs one tensorboard event per step and is then downsampled and averaged for display, so the detail was paid for and never seen. `step()` folds each step into `episode_accum` (`new_episode_accum()`: sums and counts only, so episode length is free), and on `terminated or truncated` builds `episode_summary()` → `last_episode_stats` → `write_episode()`, which dumps every entry under `Episode/ <key>`. Three views per episode: `Final *` (where it ended), `Best *` (best graph visited, plus `Best-final score gap` - 0 iff the episode ended on its own best graph), and `Mean *` / `* fraction` (the episode average). Scalars are written against `writer_counter` (global env step), *not* the episode index, so they share an x-axis with skrl's loss/reward curves; `writer_counter` therefore still advances every step. `last_episode_stats` is a plain attribute rather than an `info` key because `SyncVectorEnv` aggregates sub-env `info` dicts into arrays. `Environment.write(value, tag)` remains for custom scalars.
+`docs/` holds the note on the heterogeneous rigidity matrix (`dof_restriction_note`) with two
+independent verification scripts, and `observation_reward_note`, the reference for every reward and
+observation component.
 
-**`environments/` and `scenarios/` are the user's to manage.** Do not regenerate or hand-edit
-existing ones; generate a new config under a new name if an experiment needs different settings.
+## Known issues
 
-### Gitignored (don't assume present)
-`environments/`, `scenarios/`, `models/`, `runs/`, `runs_old*/`, `runs_outputs/`, `train/`, `tboard_logs/`, `junk/`, `dummy/`.
-
-**`tools/` is where reusable scripts accumulate** (see the standing instruction above). `tests/` is
-for anything the suite should run; `tools/` is for everything else worth re-running.
-
-**`docs/` holds the note on the heterogeneous rigidity matrix** (`dof_restriction_note.tex`,
-compiled `.pdf`) and two verification scripts. `verify_dof_restriction.py` is keyed section by
-section to the note and checks the repository's own implementation; `verify_dof_restriction_2.py`
-re-derives both constructions from the paper's conventions and shares no code with it. Keeping them
-separate is the point: two independent implementations agreeing is the evidence.
-
-It also holds `observation_reward_note.tex` (compiled `.pdf`), the reference for every reward and
-observation component: what each one is, how it is computed, what normalises it, and whether it
-survives a trivial motion. Every number in it comes from a `tools/` script named beside it.
-
-**`benchmarks/` is deliberately NOT ignored.** A frozen instance set is a fixture, not an output -
-its whole purpose is that a number measured today is comparable next month, which an untracked file
-cannot deliver. Three 20-instance sets cost 32 KB. See `DESIGN_NOTES.md#benchmarks`.
-
-**Nothing a run produces is tracked any more.** `runs_outputs/` and `train/` were both tracked until they were untracked wholesale - the first churned hundreds of binary files per run, the second is paired with `models/` which was already ignored. Consequence: a manifest now only exists on the machine that trained it, so `train/<name>.json` is no longer a shared record - back it up alongside the checkpoint it describes. Anything that has to survive (the README's figures) is copied into `resources/`.
-
-Because every output directory is ignored, **a fresh clone has none of them**, and any code that writes output has to `os.makedirs(..., exist_ok=True)` *before* opening the file. Two places had the call inside the `with open(...)` block, which fails on exactly that fresh clone (`environment.py` writing `environments/`, `scenario.py` writing `scenarios/`); both are fixed. The library-managed paths take care of themselves: `SummaryWriter` creates its `log_dir`, and skrl creates its checkpoint directory (`skrl/agents/torch/base.py`).
-
-## Known issues / open questions
-
-Live research questions, not things to silently "fix":
-
-1. **Termination condition.** There is no way to know the true optimal topology. The only sound stopping test is minimal bearing rigidity: exact via `MBR_required_Rd` for homogeneous `R^d`, otherwise the greedy `is_MBR` heuristic. The heuristic is a *sound lower bound* (rank subadditivity over edge blocks ⇒ no proper subset of the current edges can be rigid with fewer than `m_req` edges), and it reproduces the closed form exactly for homogeneous `R^2` and `R^3`. It can produce **false negatives** in heterogeneous networks, where the greedy sum over the highest-rank blocks may not be jointly realizable - a truly minimal graph is then never recognized and the episode never terminates. **Note the two `m_req`s**: `required_edge_count` accumulates block ranks of the *complete* graph (the true lower bound, and what `env.m_req` holds), while `is_MBR` recomputes from the *current* graph's blocks - which on a heterogeneous network can also **false-positive**, reporting a non-minimal graph as minimal. They coincide in every homogeneous domain, and the false positive does not fire on the `mixed` scenario (0 in 122 rigid graphs), but `is_MBR` should take `env.m_req` instead.
-2. **Initial-graph difficulty.** With `random_graph_with_mean_min_edges` the initial edge count is drawn around `m_req` with `sd = 0.5·m_req`, so `m0/m_req` is centred on 1 at every `n` and domain. With the flag *off* it falls back to `m ~ Uniform{0, …, n²-n}`, which over-constrains badly (~2.8× the requirement at n=8/R^3) and teaches deletion only - so leave it on unless you specifically want that.
-3. **Constructive vs. editing formulation.** Starting from the empty graph and only adding edges is under consideration; the open worry is whether a purely constructive agent can reach *optimal* topologies rather than merely feasible ones. This is also the natural bridge to a distributed protocol (Henneberg-style vertex addition attaches each new agent with `d` edges, which is exactly what `MBR_required_Rd` counts) - see `DESIGN_NOTES.md#distributed-feasibility`.
-4. **Generalization across agent domains is the blocking problem, and it is partly resolved.**
-   Training on the `mixed` scenario removed the catastrophic cross-domain failure - a policy trained
-   only on `R^3` left the other four domain one-hot columns without gradient, so evaluating it in
-   `SE(3)` fed an untrained column and it was rigid on 5% of instances; the mix-trained one is rigid
-   on 100%. What remains is graded rather than catastrophic: transfer degrades with agent DOF,
-   matching both classical baselines at 3 DOF per agent and failing at 4 and 6, where the policy
-   accumulates edges instead of pruning. Whether that is composition coverage (the training mix is
-   two agents of each domain, so high-DOF agents are never in the majority) or a capacity limit is
-   **open**, and separating them needs one training run on a resampled composition. Numbers in
-   `README.md`.
-5. `reset()` with no scenario file rebuilds the network from `agents[0].domain` only, so heterogeneous domains survive only via the `scenario` path (`randomize_scenario`).
-6. Per-step cost is dominated by pure-Python graph features in `obs()` (Floyd-Warshall closeness, Brandes betweenness) plus repeated rigidity-matrix construction: `step()` builds `B`, then calls `is_MBR` unconditionally (a full-matrix rank *plus* one rank per edge, ~25 SVDs at n=8) and `rigidity_eigenvalue` when tracking (which rebuilds `B` and does a 48×48 `eigvalsh`). **`Weighted` needs neither.** Env stepping is several times the network's own cost at n=8, spent on metrics that never enter the reward. `graph_features=False` removes the centralities (4.7x at n=16); the rigidity-matrix work remains. Fine at `n=4-8`, the bottleneck beyond.
-7. **Bearings are not rotation-invariant in `R^d`** (see Invariance above). The task is invariant;
-   the observation is not, so the policy must learn the invariance from data. It **disappears in
-   `R^2xS^1` / `R^3xS^1` / `SE(3)`**, which are the eventual targets, so this is an artifact of the
-   `R^d` testbed rather than a defect of the formulation. It still confounds any generalization
-   conclusion drawn on `R^d`. Options, cheapest first: random global rotation at `reset()` (the task
-   is unchanged, so it is free data augmentation); per-instance frame canonicalization via the
-   position covariance (exact, but discontinuous when the covariance spectrum is near-degenerate -
-   common in symmetric configurations); replacing raw bearings with invariant pair descriptors
-   (mutual angles `p̂_ij·p̂_ik`, a redesign of the edge features); or an architecture that consumes
-   directions equivariantly (GVP / e3nn / vector neurons), which is the principled fix. Note also
-   that rigidity is invariant under **reflection**, so whether the target group is `SO(d)` or `O(d)`
-   is an open modelling choice.
-8. **Four model classes in the obsolete `Default` (GAT/MLP) backbone are broken**, and were before
-   any recent work: `AllEdges` references a missing `fc_edge_index`, `AddRemoveEdgeMultiDiscrete`
-   is missing a `global_mean_pool` import, `AddEdgeDiscreteNoSkipNoSelfLoops` uses an undefined `n`,
-   and `Default`+`SelectNodesSequentially` has a mis-sized head. They are still registered, so
-   selecting them fails with a Python error rather than a clean "not implemented".
-9. Small correctness items, none load-bearing but all live: `action_SelectNodesSequentially` computes `didnt_exist`/`existed` *after* the branch condition, so both are always `False` (dead code); `Network.fully_connected()` sets `edges = np.ones((n,n))` **including the diagonal** and `rank_K` survives only because of the `if i == j: continue` guard in `extended_bearing_rigidity_matrix`; `rigidity.is_MBR_Rd` has an unreachable-but-broken `if brmat: is_IBR_explicit()` branch (no arguments, and `if` on an ndarray raises); `np.random.seed(SEED)` runs *after* the sub-envs are constructed and the envs use global `np.random` rather than `self.np_random`, so all sub-envs share one stream.
-
-**Previously listed here and since fixed** (do not re-chase): `Environment.load()` not reading `random_graph_with_mean_min_edges` and `reset()` discarding the sampled edge count; `reset()` leaving `last_state_score = 0` instead of the initial graph's score (`begin_episode()` computes it now); `step()` binding `info` only inside the tracking branch (`info = {}` is bound before it).
+1. **Termination.** The only sound stopping test is minimal rigidity, exact via `MBR_required_Rd`
+   for homogeneous `R^d` and otherwise the `is_MBR` heuristic. On heterogeneous networks `is_MBR`
+   can false-negative (a minimal graph never recognized) and, because it uses the current graph's
+   blocks rather than the complete graph's, false-positive. It should take `env.m_req`.
+2. `reset()` with no scenario file rebuilds the network from `agents[0].domain` only, so
+   heterogeneous domains survive only through the scenario path or `random_domains`.
+3. Per-step cost is dominated by rigidity-matrix construction and decompositions, plus the
+   pure-Python centralities when `graph_features` is on.
+4. **Bearings are not rotation invariant in `R^d`** (see Invariance). This is a property of the
+   `R^d` testbed, not of the oriented target domains. Principled fixes are invariant pair
+   descriptors or an architecture that consumes directions equivariantly.
+5. **Four model classes in the obsolete `Default` backbone are broken**: `AllEdges` (missing
+   `fc_edge_index`), `AddRemoveEdgeMultiDiscrete` (missing `global_mean_pool` import),
+   `AddEdgeDiscreteNoSkipNoSelfLoops` (undefined `n`), and `Default`+`SelectNodesSequentially` (head
+   mis-sized). They are still registered.
+6. Small items: `action_SelectNodesSequentially` computes `didnt_exist`/`existed` after the branch,
+   so both are always `False`; `Network.fully_connected()` sets the diagonal, and `rank_K` survives
+   only through the `i == j` guard in the matrix builder; `rigidity.is_MBR_Rd` has an unreachable
+   broken `if brmat:` branch; `np.random.seed(SEED)` runs after the sub-envs are built and the envs
+   use global `np.random`, so all sub-envs share one stream.

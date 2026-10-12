@@ -1,16 +1,23 @@
-# Network Topology Optimization for Bearing Rigid Multi-Agent Systems via Deep Reinforcement Learning and Graph Neural Networks
+<p align="center"><img src="resources/banner.png" alt="Network Topology Optimization for Bearing Rigid Multi-Agent Systems via Deep Reinforcement Learning and Graph Neural Networks, Master's thesis, University of Padova"></p>
 
-Master's thesis, University of Padova. Noyan Erdin Kilic.
-
-[Presentation](resources/rigidity_rl_260831.pdf)\
-[Figures](#outputs)
+<table align="center">
+  <tr>
+    <td align="center">
+      <a href="resources/thesis.pdf"><img src="resources/thesis-thumb.png" height="180" alt="Thesis title page"></a><br>
+      <a href="resources/thesis.pdf"><b>Thesis (PDF)</b></a>
+    </td>
+    <td align="center">
+      <a href="resources/thesis_defense.pdf"><img src="resources/defense-thumb.png" height="180" alt="First slide of the defense presentation"></a><br>
+      <a href="resources/thesis_defense.pdf"><b>Defense slides (PDF)</b></a>
+    </td>
+  </tr>
+</table>
 
 A team of robots that can only measure *directions* to one another (bearings) can recover its own shape only if the graph of who-measures-whom is rich
 enough. Adding every possible measurement makes that trivial and is wasteful, each link costs
-sensing, tracking and communication. This thesis asks which links to keep, and learns the answer
-with a graph neural network trained by reinforcement learning.
+sensing, tracking, and communication. This thesis studies which links to keep both theoretically and experimentally with a reinforcement learning approach.
 
-**Status: work in progress.**
+<sub>**Keywords:** multi-agent systems, bearing rigidity, network topology optimization, graph neural networks, deep reinforcement learning, combinatorial optimization</sub>
 
 ## Problem and Methodology
 
@@ -44,46 +51,6 @@ objective `phi` that rewards rigidity and charges for each edge. A graph neural 
 the network into node embeddings, and an action head turns those into Q-values (DQN) or logits
 (PPO). Invalid actions are masked inside the model.
 
-## Outputs
-
-![DQN training](resources/rl-01-learning.png)
-
-![DQN update diagnostics](resources/rl-04-dqn-diagnostics.png)
-
-![PPO and DQN on the same task](resources/rl-02-ppo-vs-dqn.png)
-
-![PPO return collapse](resources/rl-05-ppo-collapse.png)
-
-![Per-episode quantities during training](resources/rl-06-per-episode.png)
-
-![Evaluation against the classical baselines](resources/rl-03-evaluation.png)
-
-![Evaluation of DQN, PPO and the baselines](resources/rl-07-evaluation-all.png)
-
-![Estimation quality on the benchmark](resources/rl-08-estimation.png)
-
-![The graph each method built](resources/rl-09-topology.png)
-
-![One policy across thirteen networks](resources/rl-10-generalisation.png)
-
-![Estimation quality across thirteen networks](resources/rl-12-estimation-generalisation.png)
-
-![Observation channel ablation](resources/rl-11-ablation.png)
-
-![Comparison table](resources/evaluation-table.png)
-
-![Run trajectories](resources/evaluation-trajectories.png)
-
-![Position uncertainty per agent](resources/evaluation-uncertainty.png)
-
-![Share of the total error per measurement](resources/evaluation-sensitivity.png)
-
-![Softest mode of each method](resources/evaluation-softest-mode.png)
-
-![Shape error under bearing noise](resources/evaluation-noise.png)
-
-![Rank of the edits the policy applied](resources/evaluation-decisions.png)
-
 ## Documentation
 
 | File | Contents |
@@ -103,7 +70,7 @@ Requires Python 3.12, an NVIDIA GPU, and [`uv`](https://docs.astral.sh/uv/).
 ```bash
 uv run environment.py 8 "R^3"
 uv run train_dqn.py <env_name> <run_name>
-uv run outputs.py <env_name> --model <run_name>
+uv run experiments/comparison.py <env_name> --model <run_name>
 tensorboard --logdir runs
 ```
 
@@ -122,8 +89,9 @@ train_dqn.py        training (train_ppo.py for PPO)
 probe.py            periodic deterministic evaluation during training
 manifest.py         run manifests, archived sources and provenance
 agent_loader.py     rebuilds a trained agent from its manifest
-outputs.py          the results script: every metric, table and figure, in one run
-report.py           the tables, CSVs and figures and outputs run writes
+experiments/        one runnable script per experiment, each writing its own run directory
+baselines.py        the classical baselines and the scoring every method shares
+report.py           the tables, CSVs and figures the experiments write
 benchmark.py        frozen evaluation instances
 ablation.py         which observation channels a policy actually uses
 inference.py        roll out a trained model
@@ -132,7 +100,7 @@ benchmarks/         the frozen instance sets, tracked on purpose
 tests/              invariant tests
 tools/              scripts worth keeping, verifications, ablations, measurements
 docs/               notes
-resources/          figures used in this README
+resources/          the thesis, presentations, and the README banner
 ```
 
 Directories produced by runs are not tracked.
