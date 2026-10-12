@@ -1,14 +1,18 @@
 """Reference values every change is measured against, and report.py's maths."""
 import copy
+import os
 
 import numpy as np
 import pytest
 
 import cost
 import report
-from outputs import (_is_best, _percentile_of, decision_record, edit_landscape,
-                        measure_noise, phi_landscape, run_anneal, run_degree, run_greedy,
-                        run_initial, run_spectral, score_network, run_random)
+from baselines import (_is_best, _percentile_of, best_shape_error, decision_record,
+                       edit_landscape,
+                       measure_noise, phi_landscape, run_anneal, run_degree, run_greedy,
+                       run_initial, run_spectral, score_network, run_random)
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def test_greedy_reaches_the_exact_optimum_at_n4_R2(make_env):
@@ -41,7 +45,7 @@ def test_greedy_is_at_least_as_good_as_random_and_far_cheaper(make_env):
     The restore between methods is the point: without it run_random continues from
     the graph run_greedy just optimised and can only improve on it, which makes the
     comparison meaningless (and eventually fails, when random finds the two-edit
-    swap greedy cannot). outputs.py deep-copies for the same reason.
+    swap greedy cannot). The experiments deep-copy for the same reason.
     """
     e = make_env(n=6, domains="R^3", max_steps=80,
                  termination_condition_type="MaxSteps")
@@ -455,3 +459,118 @@ def test_the_decisions_figure_and_csv_round_trip(tmp_path):
     header = (tmp_path / "decisions.csv").read_text().splitlines()[0]
     assert header.split(",") == report.DECISION_FIELDS
     assert report.plot_decisions(str(tmp_path), [], {"environment": "t"}) is None
+
+
+def test_rollout_shape_error_survives_a_flexible_best_graph(make_env):
+    """A rollout row reports a shape error even when the step did not compute one,
+    and None rather than a crash when the best graph it visited is flexible."""
+    e = make_env(n=4, domains="R^3", max_steps=20,
+                 termination_condition_type="MaxSteps")
+    e.reset()
+    e.trace_min_eig = False              # what --no-plots does
+
+    def mark_best():
+        """Record the current graph as the best visited, with no shape error on it,
+        which is what a step leaves behind when tracing is off."""
+        score, is_IBR, is_MBR, rank, _ = score_network(e)
+        e.best_state_score = -np.inf
+        e.update_best_state(score, is_IBR, is_MBR, rank)
+        e.best_stats["shape_err"] = None
+
+    # rigid: a value, and the one the environment reports for that graph
+    run_greedy(e, max_steps=40, verbose=False)
+    mark_best()
+    got = best_shape_error(e)
+    assert got is not None and got > 0
+    assert got == pytest.approx(e.shape_error_now())
+
+    # flexible: None, not an exception and not a huge number
+    e.network.edges[:] = False
+    mark_best()
+    assert best_shape_error(e) is None
+
+
+def _paired_rows(offsets, reference_edges=(10, 12, 14, 11, 13)):
+    """One reference method and one method that is `offsets` edges away per episode."""
+    rows = []
+    for ep, (base, off) in enumerate(zip(reference_edges, offsets)):
+        rows.append({"episode": ep, "method": "greedy", "m": base, "score": 70.0,
+                     "is_IBR": True, "at_bound": True, "shape_err": 10.0})
+        rows.append({"episode": ep, "method": "learned", "m": base + off,
+                     "score": 70.0, "is_IBR": True, "at_bound": True,
+                     "shape_err": 10.0})
+    return rows
+
+
+def test_paired_stats_reads_the_difference_not_the_spread():
+    """The pairing is the point: a method one edge better on EVERY network is a real
+    difference even when the networks themselves span four edges."""
+    st = report.paired_stats(_paired_rows([-1] * 5))["learned"]["m"]
+    assert st["n"] == 5 and st["mean"] == pytest.approx(-1.0)
+    assert st["wins"] == 5 and st["losses"] == 0
+    # every resample of a constant is that constant, so the interval collapses onto it
+    assert st["lo"] == pytest.approx(-1.0) and st["hi"] == pytest.approx(-1.0)
+
+    # and a difference that changes sign per network is not one
+    mixed = report.paired_stats(_paired_rows([-2, +2, -2, +2, 0]))["learned"]["m"]
+    assert mixed["lo"] < 0 < mixed["hi"]
+    assert mixed["wins"] == 2 and mixed["losses"] == 2 and mixed["ties"] == 1
+
+
+def test_paired_stats_derives_at_bound_rather_than_reading_it():
+    """`at_bound` is computed from m and m_req at write time, so a live row has no such
+    key; reading one would drop the column from every run that had not been saved."""
+    rows = _paired_rows([+1] * 5)
+    for r in rows:
+        r.pop("at_bound")
+        r["m_req"] = r["m"] if r["method"] == "greedy" else r["m"] - 1
+    st = report.paired_stats(rows)["learned"]["at_bound"]
+    assert st["n"] == 5 and st["mean"] == pytest.approx(-1.0)   # greedy at it, learned not
+    assert st["losses"] == 5
+
+
+def test_paired_stats_takes_shape_error_in_decades():
+    """It spans decades, so the paired difference is log10 and 10x reads as -1."""
+    rows = _paired_rows([0] * 5)
+    for r in rows:
+        if r["method"] == "learned":
+            r["shape_err"] = 1.0                  # against the reference's 10.0
+    st = report.paired_stats(rows)["learned"]["shape_err"]
+    assert st["log10"] and st["mean"] == pytest.approx(-1.0)
+    assert st["wins"] == 5
+
+
+def test_paired_stats_needs_its_reference():
+    rows = [r for r in _paired_rows([-1] * 5) if r["method"] != "greedy"]
+    assert report.paired_stats(rows) == {}
+    assert report.format_paired(rows) == ""
+    assert report.format_paired(_paired_rows([-1] * 5), reference="") == ""
+
+
+def test_every_experiment_writes_before_it_draws():
+    """--no-plots skips drawing, not measuring. Each driver in experiments/ writes its
+    csvs unconditionally; only the figures sit behind the flag."""
+    import ast
+    import glob
+
+    drivers = sorted(glob.glob(os.path.join(REPO_ROOT, "experiments", "*.py")))
+    drivers = [d for d in drivers if os.path.basename(d) not in ("__init__.py",
+                                                                 "common.py")]
+    assert drivers, "no experiment drivers found"
+    for path in drivers:
+        tree = ast.parse(open(path).read())
+        main = next(n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef) and n.name == "main")
+        guards = [n for n in ast.walk(main)
+                  if isinstance(n, ast.If) and "no_plots" in ast.dump(n.test)]
+        inside = {id(c) for g in guards for c in ast.walk(g)}
+        def name_of(call):
+            f = call.func
+            return f.id if isinstance(f, ast.Name) else getattr(f, "attr", "")
+
+        wrote = [n for n in ast.walk(main) if isinstance(n, ast.Call)
+                 and (name_of(n) == "measure" or name_of(n).startswith("write"))]
+        assert wrote, f"{os.path.basename(path)}: nothing measured or written in main"
+        for call in wrote:
+            assert id(call) not in inside, (
+                f"{os.path.basename(path)}: {name_of(call)} is behind --no-plots")

@@ -906,8 +906,9 @@ Three consequences, worth keeping separate because they are usually conflated:
    is the one that justifies the objective.
 2. **Control.** For a bearing-based formation controller the linearised error dynamics are
    `ẋ = -BᵀB x`, so the slowest non-trivial mode decays at rate λ. This is where the name comes from
-   in the formation-control literature. Nothing here runs a controller, so it is motivation rather
-   than a measured claim.
+   in the formation-control literature. §20 runs a controller and records `λ` beside the
+   trajectory, so this is no longer only motivation; the exponent is not yet measured, because
+   the topologies the methods build are all minimal and so all at the soft end of `λ`.
 3. **Distance to degeneracy.** By Eckart-Young `√λ` is exactly the spectral-norm distance from `B`
    to the nearest rank-deficient matrix, so a low-λ graph sits close to losing rigidity outright.
    The caveat: that nearest matrix need not be the rigidity matrix of any realisable configuration,
@@ -1608,6 +1609,10 @@ by shape error (§18.1), 36-40 broken graphs per configuration, two edges droppe
 (worst/best is a geometric mean over instances; percentile is where the marginal-gain repair
 lands among the valid ones, so 50% is indistinguishable from choosing at random.)
 
+**Convention.** The percentile column above is "fraction of repairs better than this one", so
+0% is optimal. `repair.py` and `tools/repair_choice.py` report the **complement**, 100 = best,
+to match every other percent column in the repository; the greedy row there reads 45-61%.
+
 **Two things follow.**
 
 The choice matters: equally sparse repairs differ by 4x to 17x in the error they leave
@@ -1624,4 +1629,111 @@ That gap is the one place measured so far where the edge-count objective is prov
 saturated *and* something else is provably not. Karimian and Tron list a criterion for
 choosing edges as open; this says what such a criterion is worth.
 
-Reproduce with `tools/repair_choice.py`.
+### 19.5 phi is already most of that criterion
+
+The criterion Karimian and Tron leave open is what to add. phi with the conditioning term of
+§15 turns out to be most of it, and no learning is involved. Hill-climbing phi from the broken
+graph instead of adding by marginal rank, measured on `bench_n8_R3`, 8 instances, k=2, on the
+100 = best scale:
+
+| event | `greedy_rigid_repair` | phi hill climb | best available |
+|---|---|---|---|
+| `edge_drop_random` | 50 (x3.41) | **78** (x1.68) | 99 (x1.00) |
+| `edge_drop_critical` | 40 (x4.35) | **83** (x1.28) | 98 |
+| `edge_drop_adversarial` | 38 (x3.15) | **84** (x1.20) | 99 |
+| `node_leave` | 64 (x1.48) | **94** (x1.03) | 97 |
+| `node_join` | 49 (x2.56) | **95** (x1.01) | 99 |
+
+(x is the shape error over the best repair of the same size.) Marginal rank gain is where §19.4
+left it, mid-distribution at 1.5-4.4x. phi at `κ = 2` reaches the 78th-95th percentile and
+1.01-1.68x while spending the same number of edges. This is §15.6 seen from the other side:
+what κ buys is the choice among equally sparse graphs, and a repair is nothing but that choice.
+
+It also moves the bar. A learned policy is no longer being asked to beat 39-55%; it is being
+asked to beat 78-95%. Eight instances and one seed, so read the ordering.
+
+Reproduce with `tools/repair_choice.py` and `experiments/repair.py`.
+
+### 19.6 the trained policies do not reach it
+
+Three DQN policies against the same harness, `bench_mixed`, 20 instances, k = 2, on the
+100 = best scale. `k2` and `k50` are trained at `stiffness_kappa` 2 and 50 on n=10 mixed;
+`randdom` at `kappa = 2` on n=20 with `random_domains`, so it is also a cross-size row. All
+five rows are scored by the same phi and repaired from the same damaged graphs.
+
+| event | `greedy_rigid_repair` | phi hill climb | `k2` | `randdom` | `k50` | best |
+|---|---|---|---|---|---|---|
+| `edge_drop_random` | 45 (x4.02) | **91** (x1.29) | 61 (x2.97) | 40 (x7.13) | 50 (x4.06) | 100 |
+| `node_leave` | 55 (x5.29) | **90** (x1.37) | 60 (x3.44) | 76 (x2.21) | 66 (x2.71) | 99 |
+| `node_join` | 47 (x1.89) | **93** (x1.02) | 64 (x1.64) | 63 (x1.77) | 46 (x2.23) | 99 |
+
+**The percentile is not measured on the same number of instances for every row, and the phi
+hill climb is the row it flatters.** A percentile is only defined when a method spent exactly
+the minimum, since a repair with an extra edge is not in the enumerated population and more
+edges almost always means lower error. Of 20 instances the hill climb spent the minimum on
+**13, 8 and 7** for the three events; every policy spent it on 19 or 20, and
+`greedy_rigid_repair` on 17 to 20. So the 90-93 above is that method's answer on the third to
+two thirds of instances where it happened to stop at the bound, against the policies' answer on
+essentially all of them. The gap is real but its size is not established by this run, and
+`plots/repair_count` carries the exclusion so the table is not read without it.
+
+Every policy spends exactly the minimum number of edges, so the count is not what separates
+them; the choice is. **No policy reaches the phi hill climb on any breaking event**, and each
+sits between marginal-rank greedy and it. They were trained to a horizon on a construction
+task and evaluated on a repair, which is a transfer claim rather than a like-for-like one,
+but the hill climb is the same phi they were trained on and it is available at inference.
+
+**And there is no ordering in `kappa`.** `k50` is not better than `k2` on any event, and is
+worse on two. §15.6 says `kappa` selects among equally sparse graphs and §19.5 says phi with
+that term makes most of the open criterion, both of which hold; what does not follow, and is
+measured not to, is that *training* at a higher `kappa` transfers that choice into the policy.
+Either the policies do not learn the part of phi that the term contributes, or a 50-step
+horizon on a converged graph is not where it would show. Twenty instances and one seed each.
+
+The locality columns say the same thing from the other side. On the `none` control, where
+nothing happened, the classical hill climb changes 0.8 edges and the policies change 4.3-6.2
+of a 17-edge graph: they cannot leave a converged network alone, because `skip_enabled` is
+false and every step must be an edit.
+
+## 20. Driving a formation to a goal shape
+
+§15.0 gives three readings of the rigidity eigenvalue and says of the control one that
+nothing here runs a controller, so it is motivation rather than a measurement.
+`experiments/control.py` runs one.
+
+**20.1 the setup.** A goal formation, a start formation displaced from it within each
+agent's own DOFs, and one edge set used twice: the goal bearings are read off the goal
+formation over it, and `GradientBasedController` builds `B` from the current formation
+over the same edges. Every method picks one topology on the goal poses and it has to
+serve both. Within a case the goal and the start are shared, so the edge set is the only
+thing that differs.
+
+**20.2 the law.** The controller computes `diag(g) B^T p*`, the rigidity matrix
+transposed against the *goal* bearings rather than against the bearing error. Those are
+the same vector. Each 3-row block of `B` carries `P_{p_ij} / ||p_ij||` with
+`P_v = I - v v^T`, so `B^T p = 0` for the framework's own bearings and therefore
+`B^T p* = B^T (p* - p)`. Measured at 1e-15 in `R^3`, `SE(3)` and `R^2xS^1`
+(`tests/test_convergence.py`). Since `B = d p / d x`, the law is
+`xdot = -grad_x (-p*^T p(x))`, plain gradient descent on the bearing error.
+
+**20.3 what the trajectory is measured on.** Two quantities per sampled step. The RMS
+bearing error **per edge**, which is what the controller minimises; and the position
+error against the goal *shape*, with translation and scale projected out, because bearing
+control cannot observe them and a raw position error would never reach zero.
+
+Per edge rather than summed is not a detail. The experiment varies the edge count, so a
+summed squared error makes a denser graph drive each edge lower to hit the same total,
+which penalises exactly the graphs expected to converge fastest. An earlier version of
+this harness used a summed tolerance and reported the complete graph at `lambda = 2.6` as
+non-convergent; its numbers are withdrawn rather than restated here.
+
+**20.4 the prediction, and what is not yet established.** Linearised about the goal shape
+the error dynamics are `xdot = -B^T B x`, so the slowest observable mode decays at
+`lambda` and a softer topology should take longer. The harness records `lambda` beside
+the trajectory so the prediction can be checked, but the exponent is **not** measured
+here yet: the topologies these methods build are minimal and therefore clustered at the
+soft end, and a fit needs the runs that hit the step budget to be handled as censored
+rather than dropped. What the current output supports is the ordering within a case,
+which is what the figures show.
+
+Reproduce with `experiments/control.py`.

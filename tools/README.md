@@ -40,9 +40,10 @@ PYTHONPATH=. uv run tools/<name>.py
 | `shape_error_scale.py` | what centre and width does a reference-free conditioning term need, and does an n correction buy anything? |
 | `domain_closed_forms.py` | can rank_K, c_max and m_req be had from the domain mix alone, without building the complete graph's matrix? |
 | `kappa_trade.py` | how many edges does raising stiffness_kappa actually buy? |
+| `feature_scale_noise.py` | is `test_feature_scale_*`'s verdict measuring drift, or the unseeded sampler? |
 
 `constructive_greedy.py` is the standalone version of the `constructive` baseline
-now wired into `outputs.py`, for difficulty sweeps that need no env config. It
+now in `baselines.py`, for difficulty sweeps that need no env config. It
 also shows that the `c_max = 1` domains are a matroid where any greedy is already
 optimal, which is why a "beats greedy" claim only means something in the spatial
 domains.
@@ -61,7 +62,7 @@ and `gnn_hidden_dim` an experiment actually uses, and report which control it
 ran. Widths are measured by forwarding rather than assumed, since assuming them
 is what hid the original 11-vs-128 mismatch.
 
-`cost_scaling.py` is the multi-`n` companion to `outputs.py`'s cost block: one
+`cost_scaling.py` is the multi-`n` companion to the comparison's cost block: one
 evaluation run measures cost at one size, which cannot show a scaling exponent.
 Its first table is the check that matters before the rest means anything -- at
 `stiffness_kappa = 0` the closed form `spectral` uses is exact, so it must reach
@@ -75,7 +76,7 @@ anywhere. It builds the environment programmatically rather than reading the
 gitignored `environments/`, so it works on a fresh clone: benchmark digests tie a
 number to an instance set, and `greedy` / `constructive` need no checkpoint. The
 `learned` rows cannot be checked from a clone, because `models/` and `train/` are
-gitignored; it prints the `outputs.py` commands instead of duplicating the
+gitignored; it prints the `experiments/comparison.py` commands instead of duplicating the
 rollout, since a second rollout path would drift and the check would become the
 thing that is wrong.
 
@@ -137,3 +138,11 @@ min eigenvalue and that log-det is the only one decorrelated from it;
 `functional_vs_error.py` says that log-det's decorrelation is not signal, which is
 what stopped a training run being spent on it. `functional_vs_error.py` is the slow
 one -- it solves for the shape once per topology per noise level per trial.
+
+`feature_scale_noise.py` exists because that test samples fresh graphs at each size with
+no seed, so the ratio it thresholds is a random variable and the pass/fail is a draw
+from it: three consecutive runs of the slow test gave 2, 4 and 2 failures on identical
+code. It imports the test's own `rich_env`, because the channel slices are offsets into
+a layout that every observation flag moves, so a re-spelled environment would measure a
+different column under the same name. Read the `over gate` column: a channel that is
+neither 0/n nor n/n is one whose verdict the seed decides.

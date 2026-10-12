@@ -16,10 +16,12 @@ import itertools
 
 import numpy as np
 
-from rigidity import (estimation_error_of, extended_bearing_rigidity_matrix as B_of,
+from rigidity import (shape_error_of, absent_pairs,
+                      extended_bearing_rigidity_matrix as B_of,
                       greedy_rigid_construction, greedy_rigid_repair,
                       repair_edge_count)
 from scenario import random_scenario
+import repair
 
 CONFIGS = {
     "R^2": ["R^2"] * 6,
@@ -30,16 +32,9 @@ CONFIGS = {
 }
 
 
-def shape_err(net, rank_K):
-    a_opt, _, _ = estimation_error_of(net, rank_K)
-    return np.sqrt(a_opt / net.n) if np.isfinite(a_opt) else np.inf
-
-
 def valid_repairs(net, rank_K, size, cap=20000):
     """Every set of `size` absent pairs that restores rigidity."""
-    n = net.n
-    absent = [(i, j) for i in range(n) for j in range(n)
-              if i != j and not net.edges[i, j]]
+    absent = absent_pairs(net)
     out = []
     for count, sub in enumerate(itertools.combinations(absent, size)):
         if count >= cap:
@@ -91,19 +86,21 @@ def main():
             if len(found) < 2:
                 continue
 
-            errs = np.array([shape_err(w, rank_K) for _, w in found])
+            errs = np.array([shape_error_of(w, rank_K) for _, w in found])
             errs = errs[np.isfinite(errs) & (errs > 0)]
             if len(errs) < 2:
                 continue
 
             work = copy.deepcopy(net)
             _, added = greedy_rigid_repair(work, rank_K, rng=np.random.default_rng(t))
-            g = shape_err(work, rank_K)
+            g = shape_error_of(work, rank_K)
 
             counts.append(len(errs))
             ratios.append(errs.max() / errs.min())
             if len(added) == size and np.isfinite(g):
-                pctiles.append(100.0 * (errs < g).mean())
+                # repair.quality_percentile's scale: 100 = best. Midrank there
+                # too, so ties do not sink a choice that was optimal.
+                pctiles.append(repair.quality_percentile(list(errs), g))
                 greedy_ratio.append(g / errs.min())
 
         if ratios:
@@ -113,10 +110,13 @@ def main():
                   f"{np.mean(pctiles) if pctiles else float('nan'):13.0f}% "
                   f"{np.exp(np.mean(np.log(greedy_ratio))) if greedy_ratio else float('nan'):11.2f}x")
 
-    print("\nworst/best is the geometric mean over instances of the spread among")
-    print("equally-sized repairs; lower shape error is better. greedy pctile is where")
-    print("the marginal-gain repair sits in that distribution -- 0% would be optimal,")
-    print("50% is no better than picking at random among valid repairs.")
+    print("""
+worst/best is the geometric mean over instances of the spread among
+equally-sized repairs; lower shape error is better. greedy pctile is where
+the marginal-gain repair sits in that distribution, on repair.py's scale --
+100% is the best repair available and 50% is no better than picking at
+random. THEORY 19.4 quotes the complement of this, so its 39-55% reads as
+45-61% here.""")
 
 
 if __name__ == "__main__":

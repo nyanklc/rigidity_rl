@@ -616,6 +616,27 @@ def estimation_error_of(network, rank_K, brmat=None, length_scale=None):
     return estimation_error(s, rank_K, rank=rank)
 
 
+# Deliberately not @counted: it wraps estimation_error_of, whose own primitives are
+# already leaves, so counting it would tally the same SVD twice. A caller measuring
+# its own work wraps the call in cost.reporting().
+def shape_error_of(network, rank_K, brmat=None, length_scale=None):
+    """RMS per-agent state error per radian of bearing noise; inf when flexible.
+
+    sigma * this is the error, with sigma the PER-AXIS bearing noise (the RMS angle
+    is sigma*sqrt(2)). It is a slope, valid while sigma*shape_err stays well under 1.
+    """
+    a_opt, _, _ = estimation_error_of(network, rank_K, brmat=brmat,
+                                      length_scale=length_scale)
+    return float(np.sqrt(a_opt / network.n)) if np.isfinite(a_opt) else np.inf
+
+
+def absent_pairs(network):
+    """Ordered pairs with no edge, excluding self loops: the candidates for an addition."""
+    n = network.n
+    return [(i, j) for i in range(n) for j in range(n)
+            if i != j and not network.edges[i, j]]
+
+
 @counted
 def greedy_rigid_construction(network, rank_K, rng):
     """From the empty graph, keep any edge that raises rank(B). (edges, added, rank).

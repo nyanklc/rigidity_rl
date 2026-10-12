@@ -18,32 +18,52 @@ import manifest
 from probe import Probe
 
 ######################################
-TOTAL_TIMESTEPS = int(4e5)
-NR_ENVS = 1
-ROLLOUT_SIZE = 256
-SEED = 0
+# Every constant below reads an environment variable of the same name, with the value
+# written here as the default. A sweep over seeds or backbones is then a shell loop
+# rather than an edit to this file, which matters because the edit is invisible in the
+# manifest while the value it sets is recorded there.
+def _int(name, default):
+    return int(float(os.environ.get(name, default)))
 
-BACKBONE = "GINE"
-GNN_HIDDEN_DIM = 128
-ACTOR_HEAD_HIDDEN_DIM = 256
 
-PROBE_INTERVAL = 25_000
-PROBE_EPISODES = 3
-CRITIC_HEAD_HIDDEN_DIM = 256
+def _float(name, default):
+    return float(os.environ.get(name, default))
+
+
+BACKBONES = ("Equivariant", "GINE", "Default")
+
+TOTAL_TIMESTEPS = _int("TOTAL_TIMESTEPS", 4e5)
+NR_ENVS = _int("NR_ENVS", 1)
+ROLLOUT_SIZE = _int("ROLLOUT_SIZE", 256)
+SEED = _int("SEED", 0)
+
+BACKBONE = os.environ.get("BACKBONE", "Equivariant")
+GNN_HIDDEN_DIM = _int("GNN_HIDDEN_DIM", 128)
+ACTOR_HEAD_HIDDEN_DIM = _int("ACTOR_HEAD_HIDDEN_DIM", 256)
+CRITIC_HEAD_HIDDEN_DIM = _int("CRITIC_HEAD_HIDDEN_DIM", 256)
+
+PROBE_INTERVAL = _int("PROBE_INTERVAL", 25_000)
+PROBE_EPISODES = _int("PROBE_EPISODES", 3)
+
+if BACKBONE not in BACKBONES:
+    print(f"BACKBONE={BACKBONE!r} is not one of {list(BACKBONES)}")
+    quit()
 
 cfg = PPO_CFG()
+# memory_size must equal rollouts: a larger ring trains every update on stale
+# off-policy data with last_values bootstrapped at the wrap point
 cfg.rollouts = ROLLOUT_SIZE
 cfg.experiment.directory = "runs"
-cfg.entropy_loss_scale = 0.01
-cfg.learning_rate = 3e-4
-cfg.learning_epochs = 2
+cfg.entropy_loss_scale = _float("ENTROPY_LOSS_SCALE", 0.01)
+cfg.learning_rate = _float("LEARNING_RATE", 3e-4)
+cfg.learning_epochs = _int("LEARNING_EPOCHS", 2)
 cfg.learning_starts = ROLLOUT_SIZE+1
-cfg.mini_batches = 8
-cfg.kl_threshold = 0.015
-cfg.value_preprocessor = RunningStandardScaler
-cfg.value_preprocessor_kwargs = {"size": 1, "device": "cuda"}
+cfg.mini_batches = _int("MINI_BATCHES", 8)
+# cfg.kl_threshold = 0.015
+# cfg.value_preprocessor = RunningStandardScaler
+# cfg.value_preprocessor_kwargs = {"size": 1, "device": "cuda"}
 cfg.time_limit_bootstrap = True # this is crucial since we do not want skrl to treat the final state having value=0
-cfg.discount_factor = 0.99
+cfg.discount_factor = _float("DISCOUNT_FACTOR", 0.99)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 ######################################

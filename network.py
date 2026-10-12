@@ -228,6 +228,28 @@ class Network:
         lists = np.nonzero(self.edges)
         return [(int(lists[0][i]), int(lists[1][i])) for i in range(len(lists[0]))]
 
+    # Membership changes. self.n and self.nr_max_edges are set in __init__ and nothing
+    # else re-derives them, so both are maintained here rather than by the caller.
+    def remove_agent(self, i):
+        """Drop agent i and every edge touching it. Indices above i shift down by one."""
+        if not 0 <= i < len(self.agents):
+            raise IndexError(f"no agent {i} in a network of {len(self.agents)}")
+        del self.agents[i]
+        self.edges = np.delete(np.delete(self.edges, i, axis=0), i, axis=1)
+        self.n = len(self.agents)
+        self.nr_max_edges = self.n ** 2
+
+    def add_agent(self, agent):
+        """Append an agent with no edges. Existing indices are unchanged."""
+        self.agents.append(agent)
+        n = len(self.agents)
+        edges = np.zeros((n, n), dtype=bool)
+        edges[:n - 1, :n - 1] = self.edges
+        self.edges = edges
+        self.n = n
+        self.nr_max_edges = n ** 2
+        return n - 1
+
     def set_agents_domain_homogeneous(self, domain: str, rotation_axis=None):
         # print(f"agents' domain: {domain}")
         # default values are for SE(3)

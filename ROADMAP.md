@@ -55,7 +55,7 @@ see `DESIGN_NOTES.md#spectral-baseline` and `#cost-counters`). What they said, a
   half an edge for 3% of the compute -- and it sharpens the question of what the policy is for.
   Its shape error is 20x greedy's, which is the obvious place to look for where it pays.
 
-**`outputs.py` now compares models against each other**, and the presentation figures are
+**The experiments compare models against each other**, and the presentation figures are
 reproducible from the repository rather than from gitignored scripts. On `bench_mixed`, 20
 instances, four models against eight baselines: every model reaches the proven bound more often
 than any classical method (`gine` and `equi` 90%, `greedy` 65%), and `k10_gine`, trained at
@@ -75,22 +75,74 @@ Immediate follow-ups, in order:
 
 ## Next
 
-**Robustness, recovery and membership change** (`robustness.py`, new). The differentiating
-experiment: greedy and constructive are one-shot, and repair is a sequential editor's native
-operation. Per frozen instance every method faces the same schedule of
-`converge -> event -> recover`, with events `edge_drop_random`, `edge_drop_worst` (chosen
-exactly via `removal_costs`), `bearing_corrupt`, `node_leave`, `node_join`.
+**Repair and rewiring. Landed, as `repair.py`** plus `experiments/repair.py`, not
+`robustness.py` -- `ablation.py --mode noise` is already the robustness measurement. Nine
+events over two classes, scored on where each method's answer sits among *every* repair of the
+same size (100 = best). Design in `DESIGN_NOTES.md#repair-harness`, results in `THEORY.md`
+§19.5. `bearing_corrupt` is dropped with its reason recorded there: it cannot be made well
+posed without a per-edge weight in `B^T W B` and an `edge_reliability` channel, and without
+those no method can beat chance.
 
-Scored against `repair_edge_count`, so "repaired in k edges" reads as a gap above a bound, and
-against best-of-combinatorial repair, which §19.4 shows is 1.7x-3.1x better than greedy on
-shape error. `node_join` / `node_leave` change `n`: the models are already `n`-agnostic, so the
-harness bypasses skrl and calls `model.compute` directly, rebuilding the observation space at
-the new `n`. **Verify that path in a test first.** It also makes size generalisation measurable
-without the deferred variable-`n` training work.
+The variable-`n` path is verified in `tests/test_repair.py` as ROADMAP asked. The load-bearing
+step turned out to be `model.observation_space`, not the action head: left at the training `n`
+the model returns a wrongly-sized Q-vector over misaligned inputs and raises nothing.
+
+**What it already says.** phi hill-climbing reaches the 78th-95th percentile against
+marginal-rank greedy's 38-64, so the conditioning term is most of the criterion Karimian and
+Tron leave open (§19.5). `rebuild` from empty churns 13-20 edges against a repair's 2. And
+`edge_drop_redundant` is a null for every classical method, which is the arm a high-κ policy
+exists to answer.
+
+**The κ question is answered, and negatively** (`THEORY.md` §19.6). Three policies on
+`bench_mixed`, 20 instances: none reaches the phi hill climb on any breaking event, each sits
+between marginal-rank greedy and it, and **κ does not order them** -- `k50` is not better than
+`k2` on any event and worse on two. One caveat that has to travel with the numbers: the hill
+climb spent exactly the minimum on only 13, 8 and 7 of 20 instances against the policies' 19-20,
+and a percentile is undefined off the bound, so its 90-93 is measured on a subset. `repair_count`
+is the figure that shows it. So κ selecting among equally sparse graphs (§15.6) and phi
+being most of the open criterion (§19.5) both hold, while *training* at a higher κ transferring
+that choice into the policy does not. Still one seed per arm.
+
+What is left, in order:
+
+- **Three seeds per arm.** Everything above is one seed. `report.paired_stats` now exists and
+  the drivers print it, so the pairing is free; what is missing is the seeds.
+- **`edge_drop_redundant` against a high-κ policy**, which is the one event where the reward
+  term is the only thing that could motivate an edit. Currently every policy churns 5-7 edges
+  there and the percentile is undefined, because none of them spends the minimum.
+- **`experiments/repair.py --events all` on `bench_n16_R3`**, where only the bound tier is
+  available.
 
 Karimian and Tron's factor-graph algorithm is deliberately **not** implemented: its contribution
 is the minimum-edge guarantee in homogeneous 2-D, and `greedy_rigid_repair` was measured to
 attain that bound wherever `c_max = 1`, which §14.3's matroid argument predicts.
+
+**Formation control as a downstream task. Landed, as `experiments/control.py` on
+`convergence.py`.** A goal shape, a start displaced from it, one edge set per method used
+for both the goal bearings and the controller's `B`, and the trajectory recorded: RMS
+bearing error per edge and position error against the goal shape with the gauge projected
+out. `THEORY.md` §20.
+
+Settled on the way: `B^T . goal` and `B^T . (goal - current)` are the **same vector** to
+1e-15, since every 3-row block of `B` projects orthogonal to its own bearing, so the
+controller's form was never a missing subtraction.
+
+**The earlier numbers here are withdrawn.** The first harness used a tolerance on the
+*summed* squared bearing error, which makes a denser graph drive each edge lower to reach
+the same total and so penalises the graphs it was meant to show converging fastest. It
+reported the complete graph at `lambda = 2.6` as non-convergent. Everything measured under
+it, including the lambda exponent and the per-method converged counts, is not restated.
+The replacement measures per edge.
+
+Two traps that stay: `GradientBasedController`'s gain mask is tiled per agent while `B`'s
+columns are `[3n positions | 3n attitudes]`, so at `lin != ang` the gains land on the
+wrong coordinates (priced behind `--check-gain-mask`; `control.py` is obsolete so it is
+not patched); and the start must be displaced only within each agent's DOFs, or a planar
+agent's `z` makes every mixed-domain run read as non-convergent.
+
+What is left: seeds, and enough spread in `lambda` to fit the exponent rather than only
+the ordering. The topologies these methods build are all minimal and therefore all at the
+soft end.
 
 **Randomised domain composition. Done, as `random_domains`**, uniform per agent rather than the
 Dirichlet-multinomial planned here. The ordering fix, the worst-case horizon and per-instance
@@ -111,11 +163,20 @@ families (the five homogeneous corners, and two-domain mixes never seen as such)
 parity with greedy on edges *and* minimality on every family. The corners are held out for free
 here, since uniform draws never reach them.
 
-**Statistical protocol**, threaded through the above rather than done last. Three seeds per
-arm; `report.paired_stats(rows, reference="greedy")` for per-instance paired differences with a
-bootstrap CI, since methods already run on identical instances and `aggregate()` throws the
-pairing away; 50 frozen instances rather than 20. `DESIGN_NOTES.md#horizon` measured a 35-point
-minimality swing between seeds, so no single-seed row means anything on its own.
+**Statistical protocol. `report.paired_stats` landed** and `experiments/comparison.py` prints
+it under the table: per-instance differences against a reference, with a percentile bootstrap
+over those differences. What is left is the seeds and the instance count -- three seeds per arm
+and 50 frozen instances rather than 20. `DESIGN_NOTES.md#horizon` measured a 35-point minimality
+swing between seeds, so no single-seed row means anything on its own.
+
+It already changes a reading. On `bench_mixed`, 20 instances, **the policies' edge advantage
+over greedy is not supported by the instances**: `k2` is −0.20 edges [−0.45, +0.05], +0.38 phi
+[−0.04, +0.82] and +0.20 at bound [−0.05, +0.45], every interval straddling zero, even though
+the unpaired table reads 17.15 against 17.35 and 85% against 65%. What *is* supported is the κ
+trade: `k50` is −0.334 dex of shape error [−0.472, −0.198], 16 networks better and 4 worse, and
+pays +0.40 edges [+0.10, +0.75] and −0.30 at bound [−0.55, −0.05] for it. Both CIs are clear of
+zero. The table's `+-` is how much the *networks* differ, which is far larger than the gap
+between two methods on one network, and that is what was hiding both facts.
 
 ## Later
 

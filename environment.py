@@ -1206,10 +1206,10 @@ class Environment(gym.Env):
     # RMS state error per radian of bearing noise: position in formation radii,
     # attitude in radians, both dimensionless once B is length-normalised.
     def shape_error_now(self, brm=None, rank_brm=None):
-        a_opt, _, _ = estimation_error_of(self.network, self.rank_K, brmat=brm)
-        if not np.isfinite(a_opt):
-            return None
-        return float(np.sqrt(a_opt / max(self.network.n, 1)))
+        # None rather than inf here: every caller tests for None, and a flexible
+        # graph has no shape error to report rather than an enormous one
+        err = shape_error_of(self.network, self.rank_K, brmat=brm)
+        return None if not np.isfinite(err) else err
 
     # How good this state is on the axis rank and edge count do not cover: where its
     # conditioning sits against a typical greedy graph on the same poses. 0 while
@@ -1513,7 +1513,7 @@ class Environment(gym.Env):
         }
 
         # (incremental) reward from state score
-        reward_from_state_score = state_score - self.last_state_score
+        reward_from_state_score = 0.99*state_score - self.last_state_score
         reward += reward_from_state_score
         self.last_state_score = state_score
 
@@ -1720,7 +1720,7 @@ class Environment(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
 
-        # outputs.py sets this to run several methods from the *same* random
+        # the experiments set this to run several methods from the *same* random
         # instance: the episode bookkeeping is redone, the graph is left alone
         if self.freeze_network:
             return self.begin_episode()
@@ -1794,6 +1794,34 @@ class Environment(gym.Env):
             axis = axis / norm
         self.network.rotate_network(axis, np.random.uniform(0.0, 2.0 * np.pi))
 
+    # After an agent joins or leaves. begin_episode() re-derives everything that
+    # depends on the poses or the edge set; these are the pieces that depend on n and
+    # that nothing else rebuilds, so a membership change without this leaves the
+    # spaces, the domain list and the axes describing the old network.
+    def resync_after_membership_change(self, seed=None):
+        """Rebuild the n-dependent state, then begin the episode. Returns (obs, info)."""
+        self.n = len(self.network.agents)
+        self.network.n = self.n
+        self.network.nr_max_edges = self.n ** 2
+        self.domains = [a.domain for a in self.network.agents]
+        self.rotation_axes = [a.rotation_axis for a in self.network.agents]
+        self.nr_max_edges = self.n ** 2
+        # the observation space has to be rebuilt before begin_episode() produces an
+        # observation against it, and the rigidity channels have to exist first or the
+        # declared space is missing them
+        self.brm = self.network.extended_bearing_rigidity_matrix()
+        self.compute_episode_constants()
+        rank_i, _, lam_i = rigidity_decomposition(self.brm, self.rank_K)
+        _, is_IBR_i, _ = self.network.is_MBR(
+            rank_K=self.rank_K, brm=self.brm, rank_brm=rank_i)
+        self.selection = np.zeros(self.n, dtype=np.int64)
+        self.compute_rigidity_features(self.brm, rank_i, is_IBR_i, lam=lam_i)
+        _, self.observation_space = obs(self.obs_space_type, self, define_type=True)
+        self.action_space = define_action_space(self.action_space_type, self)
+        if seed is not None:
+            self.action_space.seed(seed)
+        return self.begin_episode()
+
     # Per-episode bookkeeping for whatever graph self.network currently holds.
     def begin_episode(self):
         self.n = len(self.network.agents)
@@ -1855,6 +1883,16 @@ class Environment(gym.Env):
 
 if __name__ == "__main__":
     #############################################
+    # Every constant in this block reads an environment variable of the same name, with
+    # the value written here as the default. Generating a sweep of configs is then a
+    # shell loop rather than an edit, which is what keeps the run matrix reproducible.
+    def _flag(name, default):
+        v = os.environ.get(name)
+        return default if v is None else v.strip().lower() in ("1", "true", "yes", "on")
+
+    def _num(name, default, cast=float):
+        return default if os.environ.get(name) is None else cast(os.environ[name])
+
     # ACTION_TYPE = "AllEdges"
     # ACTION_TYPE = "AddRemoveEdgeMultiDiscrete"
     # ACTION_TYPE = "AddRemoveEdgeDiscrete"
@@ -1862,27 +1900,27 @@ if __name__ == "__main__":
     # ACTION_TYPE = "AddEdgeDiscreteNoSkip"
     # ACTION_TYPE = "AddEdgeDiscreteNoSelfLoops"
     # ACTION_TYPE = "AddEdgeDiscreteNoSkipNoSelfLoops"
-    # ACTION_TYPE = "AddRemoveEdgeDiscreteNoSelfLoops"
-    ACTION_TYPE = "SelectNodesSequentially"
+    ACTION_TYPE = os.environ.get("ACTION_TYPE", "AddRemoveEdgeDiscreteNoSelfLoops")
+    # ACTION_TYPE = "SelectNodesSequentially"
     # ACTION_TYPE = "DecideOnEdge"
 
     # ACTION_REWARDS_ENABLE = True
-    ACTION_REWARDS_ENABLE = False
+    ACTION_REWARDS_ENABLE = _flag("ACTION_REWARDS_ENABLE", False)
 
-    TIME_PENALTY_VALUE = 0.0
+    TIME_PENALTY_VALUE = _num("TIME_PENALTY_VALUE", 0.0)
 
-    SKIP_ENABLED = False
-    SKIP_IS_STOP = False
-    RANDOM_GRAPH_WITH_MEAN_MIN_EDGES = True
-    RANDOM_DOMAINS = False
+    SKIP_ENABLED = _flag("SKIP_ENABLED", False)
+    SKIP_IS_STOP = _flag("SKIP_IS_STOP", False)
+    RANDOM_GRAPH_WITH_MEAN_MIN_EDGES = _flag("RANDOM_GRAPH_WITH_MEAN_MIN_EDGES", True)
+    RANDOM_DOMAINS = _flag("RANDOM_DOMAINS", True)
 
-    TRACK_DATA_ENABLE = True
+    TRACK_DATA_ENABLE = _flag("TRACK_DATA_ENABLE", True)
     # TRACK_DATA_ENABLE = False
 
     # OBS_TYPE = "Complete"
     # OBS_TYPE = "CompleteAndEigenvalues"
     # OBS_TYPE = "AdjFlatAndEigenvalues"
-    OBS_TYPE = "Dict"
+    OBS_TYPE = os.environ.get("OBS_TYPE", "Dict")
 
     # STATE_SCORE_TYPE = "Rigid"
     # STATE_SCORE_TYPE = "RigidAndMinEigenvalue"
@@ -1900,10 +1938,10 @@ if __name__ == "__main__":
     # STATE_SCORE_TYPE = "WeightedNormalized"
     # STATE_SCORE_TYPE = "WeightedNormalizedSpectral"
     # conditioning on a fixed scale: no per-episode greedy reference
-    STATE_SCORE_TYPE = "WeightedNormalizedShapeError"
+    STATE_SCORE_TYPE = os.environ.get("STATE_SCORE_TYPE", "WeightedNormalizedShapeError")
     # STATE_SCORE_TYPE = "None"
 
-    TERMINATION_CONDITION_TYPE = "MaxSteps"
+    TERMINATION_CONDITION_TYPE = os.environ.get("TERMINATION_CONDITION_TYPE", "MaxSteps")
     # TERMINATION_CONDITION_TYPE = "MaxStepsRankBonus"
     # TERMINATION_CONDITION_TYPE = "Rigid"
     # TERMINATION_CONDITION_TYPE = "RigidMinEigBonus"
@@ -1913,28 +1951,29 @@ if __name__ == "__main__":
 
     MAX_STEPS = None  # set below, once n is known
 
-    TRUNCATE_ENABLE = False
-    TRUNCATE_MAX_STEPS = 100
-    TRUNCATE_PENALTY_VALUE = 100
+    TRUNCATE_ENABLE = _flag("TRUNCATE_ENABLE", False)
+    TRUNCATE_MAX_STEPS = _num("TRUNCATE_MAX_STEPS", 100, int)
+    TRUNCATE_PENALTY_VALUE = _num("TRUNCATE_PENALTY_VALUE", 100)
 
-    ONLY_RANDOMIZE_EDGES = False
+    ONLY_RANDOMIZE_EDGES = _flag("ONLY_RANDOMIZE_EDGES", False)
 
-    ROTATION_AUGMENTATION = True
+    ROTATION_AUGMENTATION = _flag("ROTATION_AUGMENTATION", True)
 
-    STIFFNESS_KAPPA = 2.0
-    STIFFNESS_REF_SAMPLES = 3
-    SPECTRAL_FUNCTIONAL = "eigenvalue" # eigenvalue | trace | logdet
+    STIFFNESS_KAPPA = _num("STIFFNESS_KAPPA", 50.0)
 
-    INCLUDE_CANDIDATE_BEARINGS = True
+    STIFFNESS_REF_SAMPLES = _num("STIFFNESS_REF_SAMPLES", 3, int)
+    SPECTRAL_FUNCTIONAL = os.environ.get("SPECTRAL_FUNCTIONAL", "eigenvalue")  # eigenvalue | trace | logdet
 
-    GRAPH_FEATURES = False
+    INCLUDE_CANDIDATE_BEARINGS = _flag("INCLUDE_CANDIDATE_BEARINGS", True)
+
+    GRAPH_FEATURES = _flag("GRAPH_FEATURES", False)
     # which observation channels each flag adds (node = per node, pair = per ordered pair)
-    RIGIDITY_GLOBAL = True     # node: rank_deficit, m_ratio, is_IBR (tiled, identical on every node)
-    RIGIDITY_QUALITY = True    # node: quality (tiled, identical on every node)
-    RIGIDITY_FLEX = True       # node: node_freedom | pair: add_independence
-    RIGIDITY_EDGE = True       # pair: pair_max_rank, add_rank
-    RIGIDITY_STIFFNESS = True  # node: node_slack (position, attitude) | pair: add_stiffness
-    RIGIDITY_REMOVAL = True    # pair: remove_rank, remove_stiffness (zero on non-edges)
+    RIGIDITY_GLOBAL = _flag("RIGIDITY_GLOBAL", True)# node: rank_deficit, m_ratio, is_IBR (tiled, identical on every node)
+    RIGIDITY_QUALITY = _flag("RIGIDITY_QUALITY", True)# node: quality (tiled, identical on every node)
+    RIGIDITY_FLEX = _flag("RIGIDITY_FLEX", True)# node: node_freedom | pair: add_independence
+    RIGIDITY_EDGE = _flag("RIGIDITY_EDGE", True)# pair: pair_max_rank, add_rank
+    RIGIDITY_STIFFNESS = _flag("RIGIDITY_STIFFNESS", True)# node: node_slack (position, attitude) | pair: add_stiffness
+    RIGIDITY_REMOVAL = _flag("RIGIDITY_REMOVAL", True)# pair: remove_rank, remove_stiffness (zero on non-edges)
     #############################################
 
     if len(sys.argv) < 3:

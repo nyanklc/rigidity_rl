@@ -17,7 +17,7 @@ import copy
 
 import numpy as np
 
-import outputs as B
+import baselines as B
 from environment import Environment
 from rigidity import rigidity_eigenvalue
 

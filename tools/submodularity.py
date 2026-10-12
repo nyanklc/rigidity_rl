@@ -47,6 +47,39 @@ def f_margin(net, S, rank_K):
     return float(w[idx]) if 0 <= idx < len(w) else 0.0
 
 
+def witness(n=4, domain="R^3", seed=3):
+    """The instance the non-submodularity proposition needs, with its hypotheses checked.
+
+    (i)  S and S+e flexible, so the left marginal is exactly 0
+    (ii) T rigid and lambda(T) simple, with unit eigenvector v
+    (iii) b_e v != 0, which is what makes the right marginal strictly positive
+    """
+    from rigidity import candidate_block, greedy_rigid_construction
+
+    np.random.seed(seed)
+    net, _ = random_scenario(n, domain, edge_count=0)
+    rank_K = int(np.linalg.matrix_rank(B_of(net.fully_connected())))
+    greedy_rigid_construction(net, rank_K, np.random.default_rng(0))
+    T = [tuple(map(int, e)) for e in net.get_edge_list()]
+    S = [T[0]]
+
+    for e in [(i, j) for i in range(n) for j in range(n) if i != j and (i, j) not in T]:
+        set_edges(net, T)
+        w, V = np.linalg.eigh(B_of(net).T @ B_of(net))
+        idx = 6 * n - rank_K
+        simple = bool(w[idx + 1] - w[idx] > 1e-9)          # (ii)
+        v = V[:, idx]
+        if not simple or np.linalg.norm(candidate_block(net, *e) @ v) <= 1e-9:   # (iii)
+            continue
+        left = f_margin(net, S + [e], rank_K) - f_margin(net, S, rank_K)
+        right = f_margin(net, T + [e], rank_K) - f_margin(net, T, rank_K)
+        flexible = f_margin(net, S + [e], rank_K) == 0.0    # (i)
+        if flexible and right > left:
+            return {"n": n, "domain": domain, "rank_K": rank_K, "T": T, "S": S, "e": e,
+                    "left": left, "right": right}
+    return None
+
+
 def sweep(f, dense, trials, tol, seed=0):
     """(#tested, #violations, worst gap) over random S subset T and e outside T."""
     rng = np.random.default_rng(seed)
@@ -96,6 +129,16 @@ if __name__ == "__main__":
     t2, v2, w2 = sweep(f_margin, dense=True, trials=args.trials, tol=1e-9, seed=args.seed)
     print(f"  {'rigidity margin':22s} {t2:8d} {f'{v2} ({100*v2/max(t2,1):.1f}%)':>12s} {w2:12.3e}")
 
-    print("\n  rank(B_S) is submodular (proved in2, confirmed here), so minimum-edge")
+    w = witness()
+    if w is not None:
+        print(f"\n  a witness for the proposition, {w['domain']} at n = {w['n']}, "
+              f"rank_K = {w['rank_K']}:")
+        print(f"    |S| = {len(w['S'])} (flexible), |T| = {len(w['T'])} (rigid), "
+              f"e = {w['e']}")
+        print(f"    marginal on S  {w['left']:.3e}      marginal on T  {w['right']:.3e}")
+        print(f"    diminishing returns needs the first to dominate; violated by "
+              f"{w['right'] - w['left']:.3e}")
+
+    print("\n  rank(B_S) is submodular (proved, confirmed here), so minimum-edge")
     print("  rigidity is minimum submodular cover and greedy is an H(c_max) approximation.")
     print("  The margin is not, so greedy carries no guarantee there.")

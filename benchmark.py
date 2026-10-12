@@ -8,7 +8,7 @@ sees literally the same graphs.
     uv run benchmark.py <environment_name> <benchmark_name> [--instances N] [--seed S]
     uv run benchmark.py rotate <source_benchmark> <benchmark_name> [--seed S]
     uv run benchmark.py list
-    uv run outputs.py <environment_name> --benchmark <benchmark_name>
+    uv run experiments/comparison.py <environment_name> --benchmark <benchmark_name>
 """
 import contextlib
 import copy
@@ -74,30 +74,63 @@ def save(env, name, instances=20, seed=0):
             axes.append(agent_axes(net))
 
     os.makedirs(DIR, exist_ok=True)
+    write_networks(path(name), pos, quats, edges, domains, axes, meta={
+        "source_environment": getattr(env, "filepath", None) or "programmatic",
+        "instances": instances, "seed": seed, "n": net.n,
+    })
+    return path(name)
+
+
+def write_networks(filepath, pos, quats, edges, domains, axes, meta=None):
+    """The on-disk form, shared by a frozen benchmark and a run's own instances."""
+    os.makedirs(os.path.dirname(os.path.abspath(filepath)) or ".", exist_ok=True)
     np.savez_compressed(
-        path(name),
+        filepath,
         positions=np.asarray(pos, dtype=float),
         orientations=np.asarray(quats, dtype=float),
         edges=np.asarray(edges, dtype=bool),
         domains=np.asarray(domains),
         rotation_axes=np.asarray(axes, dtype=float),
-        meta=np.asarray([json.dumps({
-            "source_environment": getattr(env, "filepath", None) or "programmatic",
-            "instances": instances, "seed": seed, "n": net.n,
-        })]),
+        meta=np.asarray([json.dumps(meta or {})]),
     )
-    return path(name)
+    return filepath
+
+
+def save_networks(nets, filepath, meta=None):
+    """Store Networks that already exist, rather than drawing them from an env.
+
+    An evaluation run's figures are drawn from the instance objects, not from the
+    csvs, so without this the formation figures cannot be redrawn without repeating
+    the whole run.
+    """
+    pos = [[a.pose.position for a in net.agents] for net in nets]
+    quats = [[quaternion.as_float_array(a.pose.orientation) for a in net.agents]
+             for net in nets]
+    edges = [net.edges.copy() for net in nets]
+    domains = [[a.domain for a in net.agents] for net in nets]
+    axes = [agent_axes(net) for net in nets]
+    return write_networks(filepath, pos, quats, edges, domains, axes,
+                          meta=dict(meta or {}, instances=len(nets),
+                                    n=(nets[0].n if nets else 0)))
+
+
+def read_networks(filepath):
+    """(list of Networks, meta dict) from a file written by write_networks."""
+    return _networks_from(np.load(filepath, allow_pickle=False))
 
 
 def load(name):
     """(list of Networks, meta dict). Networks are ready to assign to env.network."""
-    from network import Network
-
     if not os.path.exists(path(name)):
         raise FileNotFoundError(
             f"no benchmark at {path(name)} -- create it with "
             f"`uv run benchmark.py <environment_name> {name}`")
-    d = np.load(path(name), allow_pickle=False)
+    return _networks_from(np.load(path(name), allow_pickle=False))
+
+
+def _networks_from(d):
+    from network import Network
+
     instances = d["positions"].shape[0]
     # sets written before the mix could vary carry one domain list for the whole file
     domains = np.atleast_2d(d["domains"])

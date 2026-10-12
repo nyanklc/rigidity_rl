@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 import cost
-import outputs as E
+import baselines as E
 import rigidity as R
 
 

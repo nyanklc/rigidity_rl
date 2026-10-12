@@ -131,7 +131,7 @@ is built anywhere. Derivation and every measurement are `THEORY.md` §15.5b. The
   training it costs nothing.
 - **Cost, n=20, every flag on:** `reset()` 2974 -> 56 ms, episode 4645 -> 2427 ms.
 - **`Environment.stiffness_term_active()` is the one gate** for "is the bonus live", because the
-  answer depends on the score type and `outputs.py:phi_landscape` needs the same answer. A
+  answer depends on the score type and `baselines.phi_landscape` needs the same answer. A
   hardcoded `stiffness_ref > 0` there would silently disable the `spectral` baseline's stiffness
   half under a score that does not build that reference.
 
@@ -307,7 +307,7 @@ Gated by `MAX_DECISION_ANALYSIS_N`: it costs `n(n-1)` score evaluations per step
 
 ### noise-sweep
 
-`outputs.py --noise-sweep` measures what each method's graph actually costs: perturb
+`experiments/comparison.py --noise-sweep` measures what each method's graph actually costs: perturb
 every bearing by that many degrees, recover the formation, compare against the truth
 (`estimation.py`). The table prints measured against predicted, and `plots/*/noise.*`
 draws both.
@@ -565,7 +565,7 @@ use), but the maths is correct for arbitrary axes and the environment could not 
 ### benchmarks
 
 `benchmark.py` freezes evaluation instances (poses, orientations, domains, rotation axes, initial
-edges) into `benchmarks/<name>.npz`; `outputs.py --benchmark <name>` evaluates on them instead of
+edges) into `benchmarks/<name>.npz`; `experiments/comparison.py --benchmark <name>` evaluates on them instead of
 sampling, and records the name and a content digest in `meta.json`.
 
 This exists because regenerating an env config silently resamples the instance distribution, and
@@ -989,7 +989,7 @@ is scale-invariant anyway, but the rigidity eigenvalue is not.
 
 When tracking is on, the rigidity eigenvalue is needed for logging anyway, so `step()` computes it
 once and hands it to the best-state tracker rather than letting that recompute it. `trace_min_eig`
-asks for the same value without a writer attached - `outputs.py` records the rigidity eigenvalue
+asks for the same value without a writer attached - the experiments record the rigidity eigenvalue
 over time.
 
 ---
@@ -1283,7 +1283,7 @@ Not settled, and this is the measurement that decides it: whether greedy's local
 are worse than what the policy reaches. The structural reason to expect a gap is already recorded -
 the stiffness is **not** submodular ([THEORY.md](THEORY.md) 14, 59% of tested triples violating
 diminishing returns), so greedy carries no guarantee there, unlike the rank objective where it sits
-0-5% above `m_req`. Expecting a gap is not measuring one. `outputs.py` at `stiffness_kappa > 0`
+0-5% above `m_req`. Expecting a gap is not measuring one. `experiments/comparison.py` at `stiffness_kappa > 0`
 with `greedy` and `learned` on the same instances is the experiment, read on `shape err` and
 stiffness rather than on edge count, and no such comparison is recorded anywhere in this repository
 yet.
@@ -1295,7 +1295,7 @@ objective.
 
 ### constructive-baseline
 
-`outputs.py --methods constructive`. From the empty graph, keep any edge that raises `rank(B)`,
+`experiments/comparison.py --methods constructive`. From the empty graph, keep any edge that raises `rank(B)`,
 stop at `rank_K`; best of `--restarts` independent random orders. This is the classical algorithm
 for the problem and the one the learned policy has to beat. `tools/constructive_greedy.py` is the
 standalone version, used for difficulty sweeps that do not need an env config.
@@ -1330,7 +1330,7 @@ restart, by replaying its additions from empty.
 
 ### spectral-baseline
 
-`outputs.py --methods spectral`. Greedy rescores all `n(n-1)` toggles per improvement step. This
+`experiments/comparison.py --methods spectral`. Greedy rescores all `n(n-1)` toggles per improvement step. This
 computes the same landscape in closed form from the rigidity algebra, ranks the toggles by it, and
 rescores only the `--spectral-shortlist` best (default 5) before applying one.
 
@@ -1374,7 +1374,7 @@ there would make the check meaningless.
 
 ### anneal-baseline
 
-`outputs.py --methods anneal`. Simulated annealing over single-edge toggles on the configured
+`experiments/comparison.py --methods anneal`. Simulated annealing over single-edge toggles on the configured
 phi: accept an improvement, accept a worsening with probability `exp(dphi/T)`, cool geometrically.
 Scored on best-state-visited, since the last state of an annealer is not its best.
 
@@ -1403,12 +1403,12 @@ the reason in `#constructive-baseline`.
 
 ### degree-baseline
 
-`outputs.py --methods degree`. Add the absent pair minimising `outdeg(i) + indeg(j)` until the
+`experiments/comparison.py --methods degree`. Add the absent pair minimising `outdeg(i) + indeg(j)` until the
 network is rigid, then repeatedly drop the highest-degree edge whose removal keeps it rigid.
 
 It exists to price the tier-1 row of `#distributed-feasibility`: everything it reads is locally
 available except the rigidity test itself, which is global and unavoidable. No marginal ranks, no
-spectrum, no phi. `tests/test_outputs_reference.py` pins that by asserting it never calls
+spectrum, no phi. `tests/test_baselines_reference.py` pins that by asserting it never calls
 `candidate_gain`, `removal_costs`, `nullspace_and_softest` or `score_network` - a test that fails
 the moment someone "improves" it with information a distributed agent could not have.
 
@@ -1456,7 +1456,8 @@ both modes and the instrumentation's own cost is visible as its own row.
 shared setup every method gets for free, so it sits outside the `Meter`.
 
 **Those two rows are not charged by the same rule, and the comparison below is wrong because of
-it.** `outputs.py` keeps `restore()`'s `env.reset()` outside the `Meter` deliberately, since every
+it.** `experiments/comparison.py` keeps `restore()`'s `env.reset()` outside the `Meter`
+deliberately, since every
 method gets that setup for free -- but `run_policy`'s first line is its own `wrapped_env.reset()`,
 which is inside it. Measured at n=10 on the `bench_mixed` setup, one reset is 567 leaf primitives
 against 380 for 50 steps, so **roughly 60% of the `learned` row is a reset no other method pays
@@ -1470,7 +1471,7 @@ reward never asks it to use. `#greedy-vs-policy` predicted exactly this ("cost i
 from the scaling; this is the measurement. `spectral` is 190. From the cost block of
 
 ```bash
-uv run outputs.py <mixed-config> --episodes 6 --methods all \
+uv run experiments/comparison.py <mixed-config> --episodes 6 --methods all \
     --model estimation_k10_dqn_gine --no-plots
 ```
 
@@ -1789,29 +1790,49 @@ node, so the six checks were ported to Python and checked against the reference 
 numbers (9.1 / 19.6) before being trusted. Reproduce that before changing a hue rather than
 reasoning about Delta E.
 
-### sections
+### experiment-scripts
 
-`outputs.py` produces every figure and table the thesis reports, and `--sections` picks which.
-Default `baselines`, and `all` for everything.
+`experiments/` holds one runnable script per experiment. Each parses its own arguments, loads its
+own environment and models, and writes its own run directory. There is no shared runner.
 
-**Why one script rather than four.** The figures share a palette, a method identity, a plain-variant
-mechanism and a run directory. Split across scripts those drift, which is exactly what happened to
-the presentation figures in `dummy/rl_course`: they redefine `GRID` one shade lighter than
-`report.GRID`, alias `C_DQN = METHOD_STYLE["greedy"]["color"]` so blue means DQN there and greedy
-here, and reimplement the plain variant as a module global mutated across modules.
+**What is shared, and why exactly that.** The figures share a palette, a method identity and a
+plain-variant mechanism; the methods share a cost accounting. Split those across scripts and they
+drift, which is exactly what happened to the presentation figures in `dummy/rl_course`: they
+redefine `GRID` one shade lighter than `report.GRID`, alias
+`C_DQN = METHOD_STYLE["greedy"]["color"]` so blue means DQN there and greedy here, and reimplement
+the plain variant as a module global mutated across modules. So `report.py` owns every figure and
+table, `baselines.py` owns every method, `repair.py` and `ablation.py` own their harnesses, and
+`experiments/common.py` owns the argument groups and the environment/model setup. The drivers own
+the wiring and nothing else.
 
-**Ablation is why sections are opt-in.** It re-runs every episode once per channel per mode, so at
-`19 channels x 3 modes x N models` it dwarfs the comparison it sits beside. `ablation.py` keeps its
-own CLI; the section calls `ablation.measure(...)`, lifted out of its `main()` verbatim, against
-the agent and the live environment the baselines section already built. Two sections in one
-directory reporting numbers from two different environments is the failure that would be hardest
-to notice.
+**Why scripts rather than one runner with a `--sections` list.** The reasoning above argues for
+sharing the figures and the methods, not for sharing the entry point, and a single runner charges
+for the difference: one argparse carrying every flag of every experiment, where
+`--ablation-episodes` and `--repair-k` sit beside `--noise-trials` with nothing saying which
+applies to what; a `section_refusal` table restating each section's inputs because the parser
+cannot; and a `main()` in which most of the setup exists for a section the run is not asking for.
+Separate drivers cost none of that and share exactly the same libraries. Each offers only the flags
+it reads, which is why `experiments/training.py` has no `--benchmark`: it does not evaluate
+anything.
 
-**`generalisation` is the one section that mixes vintages.** It aggregates earlier run directories,
-which were produced at different times against possibly different code. `generalisation.csv`
-carries each row's `source_dir` and `git_commit` and the figure card says so. It also writes an
-empty cell rather than a zero where a prior run predates `m_req` in `results.csv`, since a zero
-bar there would read as "never reached the bound" instead of "not recorded".
+**The `sys.path` line at the top of each driver is load bearing.** Running `experiments/x.py` puts
+`experiments/` on the path and not the repository root, so each driver replaces `sys.path[0]` with
+the root. Inserting instead of replacing would leave `experiments/` ahead of it, and
+`experiments/repair.py` would import itself instead of the root's `repair.py`.
+
+**Ablation is the one that has to be asked for.** It re-runs every episode once per channel per
+mode, so at `19 channels x 3 modes x N models` it dwarfs the comparison. That is why it was
+opt-in as a section and why it is its own script now. `ablation.py` keeps its own CLI;
+`experiments/feature_ablation.py` calls `ablation.measure(...)` against an agent and a live
+environment it built itself, so it can never report numbers measured against a different
+environment than the one it names.
+
+**`generalisation` is the one experiment that mixes vintages.** It aggregates earlier run
+directories, which were produced at different times against possibly different code.
+`generalisation.csv` carries each row's `source_dir` and `git_commit` and the figure card says so.
+It also writes an empty cell rather than a zero where a prior run predates `m_req` in
+`results.csv`, since a zero bar there would read as "never reached the bound" instead of "not
+recorded".
 
 **`training` reuses `tools/compare_runs.py:load`**, which groups event files by PID. The naive
 version in `dummy/rl_course` globs the directory and merges, so training twice under one name
@@ -1821,6 +1842,103 @@ silently splices two runs into one curve.
 nothing about generalising and puts a "not run" marker on every other column, so those series are
 listed on the card instead of drawn. Its width is capped rather than scaled per set: at a few
 inches each, a dozen sets produce a figure no display can show.
+
+### control-harness
+
+`convergence.py` is the harness and `experiments/control.py` the driver, the same split
+`repair.py` and `ablation.py` use. Each case is one goal shape and one start formation
+displaced from it; every method sees the same pair, so the edge set is the only thing
+that can explain a difference in the trajectory.
+
+**One edge set, used twice.** The goal bearings are read off the goal formation over it
+and the controller builds `B` from the current formation over the same edges, so the two
+have to be indexed identically. That is what `main.py` does and it is why a method picks
+one topology rather than two. The topology is chosen on the **goal** poses, since that is
+the formation being held.
+
+**Position error is measured modulo the gauge.** Bearing control cannot observe
+translation or scale, so the formation reaches the goal *shape* and not the goal poses; a
+raw position error would never go to zero and the figure would say the controller failed.
+`estimation.shape_error` projects those directions out. It is a linear quotient, so it is
+a small-error metric and the start of a trajectory is approximate. It costs an SVD, which
+is why the trajectory is sampled every `--sample-every` steps rather than every step.
+
+**The tolerance is per edge, not summed.** This is the trap that made the first version
+of this harness wrong: with a summed squared bearing error, a denser graph has to drive
+each edge lower to reach the same total, so the criterion penalises exactly the graphs the
+experiment says converge fastest. At n=20 the complete graph, `lambda = 2.6`, failed to
+"converge" while a minimal graph at `lambda = 2.5e-4` was scored on the same threshold.
+`bearing_rms` divides by the edge count, so the number means the same thing at any `m`.
+
+**Three things that would otherwise give a confident wrong answer.**
+
+`B^T . goal` is not a missing subtraction. Every 3-row block of `B` carries
+`P_v = I - v v^T` against its own bearing, so `B^T . current = 0` and
+`B^T . goal == B^T . (goal - current)` identically, measured at 1e-15. The alternative
+reading was the reason `control.py` was suspected in the first place.
+
+The gain mask is misaligned in `control.py`. It tiles `[lin,lin,lin,ang,ang,ang]` per
+agent, which is the order `Network.set_inputs` reads, but `B`'s columns are
+`[3n positions | 3n attitudes]`. At `lin != ang` the gains land on the wrong coordinates.
+`control.py` is obsolete so this is priced rather than patched, behind
+`--check-gain-mask` since it is two extra simulations and a defect report rather than part
+of the experiment. Which mask is faster is network dependent: aligning the gains puts the
+true ratio on the true coordinates, which is not the same as putting a good ratio there.
+
+The start has to differ from the goal only in directions the agents can move
+(`convergence.admissible`). A planar agent cannot undo a displacement in `z`, so an
+unrestricted one is a shape no controller can reach and every mixed-domain run reads as
+non-convergent for a reason that has nothing to do with the topology.
+`estimation.solve_shape` restricts its Gauss-Newton steps the same way.
+
+**A run that never reaches the tolerance reports `None`, not the step budget**, and the
+figure leaves it out of the time panel while the label says how many runs got there. A
+budget reported as a time is a convergence claim the run did not earn.
+
+**The 3-D figure normalises every formation before drawing it.** The controller's
+velocity lies in the row space of `B`, which is orthogonal to `ker(B)`, so the gauge
+directions are not driven at all and a raw trajectory keeps whatever translation and
+scale offset its start had. Drawn raw, no run would appear to reach its goal.
+`convergence.normalised` centres and scales to unit radius, which is the part of the
+gauge that is unobservable in every domain. A global rotation is unobservable too where
+every agent carries a frame (`rotation_is_gauge`), and that part is **not** removed, so
+a converged `SE(3)` formation can still sit rotated from its goal; the card says so.
+
+### paired-comparison
+
+`report.paired_stats(rows, reference="greedy")` takes the difference on each network and
+bootstraps over those differences; `format_paired` renders it and
+`experiments/comparison.py` prints it under the table.
+
+**Why the table alone is not enough.** `aggregate()` reports a mean and an sd across
+networks, and the network-to-network spread dominates: on `bench_mixed` the edge count
+varies by several edges between instances while two methods differ by a fifth of one. The
+sd is therefore answering "how much do these networks differ", not "how much do these
+methods differ", and reading it as the latter over-states the noise on a difference that
+was measured on identical instances. Since every method is run on the same networks, the
+pairing costs nothing and is simply being thrown away.
+
+Measured on `bench_mixed`, 20 instances: the trained policy's 17.15 edges against greedy's
+17.35 comes out **-0.20 [-0.45, +0.05]**, and its 85% at bound against 65% comes out
+**+0.20 [-0.05, +0.45]**. Neither is clear of zero. The same run's `k50` shape-error
+advantage is **-0.334 dex [-0.472, -0.198]**, 16 networks better and 4 worse, which is.
+
+**Three things it does deliberately.**
+
+`shape_err` is differenced in **log10**, not linearly, because it spans decades and the
+table already treats it geometrically. The column says `dex`, so -1 is ten times lower on
+the same network.
+
+It reports an interval, `wins/losses/ties` and `n`, and **no p-value**. With 20 instances
+and one seed a bootstrap CI is a spread; dressing it as a test would invite exactly the
+over-reading the pairing exists to prevent. `n` is per quantity, not per method, because a
+flexible network has no shape error and drops out of that row alone -- `initial` pairs on
+3 of 20 there and on all 20 for edges.
+
+The reference is a flag rather than a constant. `greedy` is the right default because it
+is the opponent every other row is argued against, but a run comparing two policies wants
+one of them as the reference, and a run without greedy in `--methods` would otherwise get
+an empty block.
 
 ### formation-panels
 
@@ -1838,7 +1956,7 @@ because the figure exists to show it. Using display order as figure priority sil
 policy from all three figures the moment the method count passed the cap, since `learned` sits
 second to last in `METHOD_ORDER`. Selection is by priority and *drawing* is still by `METHOD_ORDER`,
 so the panels read in the same order as the table's rows.
-`tests/test_outputs_reference.py` asserts `learned` survives a cap tight enough to bite.
+`tests/test_baselines_reference.py` asserts `learned` survives a cap tight enough to bite.
 
 **The cap bounds height, not width.** Every panel is a fixed 6.8 inches, so `_grid_for` choosing
 more columns widens the figure rather than shrinking the panels. It picks the column count in
@@ -1975,6 +2093,84 @@ used.
 `coord_features` is the built-in null control: GINE never receives coordinates, so its cost must be
 exactly 0.00 in every mode. It reads 0.00 now and read +0.29 before these fixes, which is how the
 residual bias was found.
+
+## repair.py
+
+### repair-harness
+
+`repair.py` damages a converged network and measures how each method puts it right;
+`experiments/repair.py` is the driver and `repair.py` the harness, the same split
+`experiments/feature_ablation.py` and `ablation.py` use. Named for what THEORY §19 calls it, not
+`robustness.py` as ROADMAP had it -- `ablation.py --mode noise` is already the robustness
+measurement, and every other name in this area is `repair_*`.
+
+**The headline is a percentile, not a success rate.** §19.4 settles that the count is
+saturated and the choice is not, so the number that matters is where a method's answer sits
+among *every* repair of the same size. 100 = best, 50 = chance. THEORY §19.4 quotes the
+complement; `repair.py` and `tools/repair_choice.py` agree on 100 = best because every other
+percent column in the repo reads that way.
+
+**Two things make that percentile honest, and both are easy to get wrong.**
+
+- **The population must be complete.** The old `repair_spread` in the results script truncated
+  at a cap,
+  which is fine for a spread figure and wrong for a percentile: `itertools.combinations` is
+  lexicographic, so a truncated population is a biased sample. The tier is now decided from
+  `C(|absent|, size)` *before* enumerating -- `exhaustive` under the cap, `sampled` by
+  rejection sampling above it, `bound` when there is nothing to repair -- and
+  `enumerate_repairs` returns `None` rather than a partial list.
+- **Only a method that spent exactly the minimum is in the population.** More edges almost
+  always means lower error, so scoring an overspender against it flatters it. `exact_size`
+  gates the column and the row still carries everything else.
+
+**The converged graph is nobody's fixed point.** A benchmark stores the sampled graph, which
+is neither rigid nor sparse, so the harness converges first: a greedy construction, then
+pruned back to minimality **in random order** -- by "does it stay rigid", not by phi and not
+by marginal rank, either of which would hand one method its own optimum as the starting
+point. `edge_drop_redundant` asks for slack on top, since a minimal graph has no redundant
+edge, and that is the honest reading of it: a converged network usually has none either.
+
+**The damage is keyed on the instance, never on a stream.** `event_rng(seed, index, event, k)`,
+so adding a method cannot change what any other method faces. This is the failure
+`baselines.py`'s private per-method generators already exist to prevent, and it is what lets a
+benchmark that stores only poses and one edge set produce reproducible damage.
+
+**Three stopping rules, one rollout.** The live checkpoints have `skip_enabled: false` and
+must edit every step, so "edits used" is meaningless without a rule. `run_policy_repair`
+records `first_rigid`, `best_phi` and `final` from the same trajectory, and
+`headline_rule(event)` picks one per event: `first_rigid` where rigidity broke, because it is
+deployable and the only rule under which `added` is comparable to the bound; `best_phi` where
+rigidity survived, where `first_rigid` is step 0 and says nothing. `_headline` then takes
+exactly one row per (instance, event, method), or a policy's three answers would be averaged
+into a row describing no protocol at all. The measured gap is large: on `node_join` the same
+rollout spends 2 edges under `first_rigid` and 8-10 under `final`.
+
+**Node events need one assignment, and without it they fail silently.** The model weights are
+n-free, but `compute` slices the flat observation with the space the model is *holding* and
+then reads n off the result. Left at the training n it returns a wrongly-sized Q-vector over
+misaligned inputs and raises nothing -- measured, a model trained at n=10 returned a 181-wide
+vector for a 221-action problem and never repaired anything. `sync_observation_space` fixes
+it; `_install` resyncs whenever `net.n` moves rather than only when the event is a membership
+one, because after a node event the env's spaces stay at the new n and the next instance would
+otherwise install a smaller network against them.
+
+**`bearing_corrupt` is deliberately not implemented.** ROADMAP lists it; it cannot be made
+well posed here. `B` is built from true poses and the only code that reads a *measured* bearing
+is `estimation.py`'s Monte Carlo, so corrupting one changes nothing any method can observe or
+any metric can score. Doing it properly needs a per-edge weight in `B^T W B` -- through
+`scaled_rigidity_matrix`, `estimation_error_of` and the state score -- plus an
+`edge_reliability` observation channel, without which no method can beat chance and the
+experiment is vacuous. A link you *know* is corrupt is a dropped link.
+
+**What it measured first.** phi hill-climbing reaches the 78th-95th percentile against
+marginal-rank greedy's 38-64 (`THEORY.md` §19.5), so the conditioning term is already most of
+the criterion Karimian and Tron leave open. `rebuild` churns 13-20 edges against a repair's 2,
+which is the quantitative statement that repair is a different problem from construction. And
+`edge_drop_redundant` is a null for every classical method: rigidity survives, so nothing
+motivates putting the edge back and the graph stays 4-20x worse conditioned. That is the arm a
+high-κ policy exists to answer.
+
+---
 
 ## scope
 

@@ -12,7 +12,8 @@ import itertools
 
 import numpy as np
 
-from rigidity import extended_bearing_rigidity_matrix as B_of, repair_edge_count
+from rigidity import (extended_bearing_rigidity_matrix as B_of, repair_edge_count,
+                      absent_pairs)
 from scenario import random_scenario
 
 CONFIGS = {
@@ -28,9 +29,7 @@ CONFIGS = {
 
 def true_minimum(net, rank_K, cap):
     """Smallest number of added edges that restores rigidity, by exhaustive search."""
-    n = net.n
-    absent = [(i, j) for i in range(n) for j in range(n)
-              if i != j and not net.edges[i, j]]
+    absent = absent_pairs(net)
     for k in range(1, min(cap, len(absent)) + 1):
         for sub in itertools.combinations(absent, k):
             work = copy.deepcopy(net)

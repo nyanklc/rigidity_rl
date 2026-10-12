@@ -20,32 +20,55 @@ import manifest
 from probe import Probe
 
 ######################################
-TOTAL_TIMESTEPS = int(float(os.environ.get("TOTAL_TIMESTEPS", 2.5e5)))
-NR_ENVS = 1
-MEM_SIZE = 10000
-SEED = int(os.environ.get("SEED", 0))
-EGREEDY_STEPS = int(float(os.environ.get("EGREEDY_STEPS", TOTAL_TIMESTEPS * 0.5)))
+# Every constant below reads an environment variable of the same name, with the value
+# written here as the default. A sweep over seeds or backbones is then a shell loop
+# rather than an edit to this file, which matters because the edit is invisible in the
+# manifest while the value it sets is recorded there.
+def _int(name, default):
+    return int(float(os.environ.get(name, default)))
 
-BACKBONE = "GINE"
-GNN_HIDDEN_DIM = 128
-QNETWORK_HEAD_HIDDEN_DIM = 256
 
-PROBE_INTERVAL = 25_000
-PROBE_EPISODES = 3
+def _float(name, default):
+    return float(os.environ.get(name, default))
+
+
+BACKBONES = ("Equivariant", "GINE", "Default")
+
+TOTAL_TIMESTEPS = _int("TOTAL_TIMESTEPS", 2.5e5)
+NR_ENVS = _int("NR_ENVS", 1)
+MEM_SIZE = _int("MEM_SIZE", 10000)
+SEED = _int("SEED", 0)
+EGREEDY_STEPS = _int("EGREEDY_STEPS", TOTAL_TIMESTEPS * 0.5)
+
+BACKBONE = os.environ.get("BACKBONE", "Equivariant")
+GNN_HIDDEN_DIM = _int("GNN_HIDDEN_DIM", 128)
+QNETWORK_HEAD_HIDDEN_DIM = _int("QNETWORK_HEAD_HIDDEN_DIM", 256)
+
+EPSILON_START = _float("EPSILON_START", 0.8)
+EPSILON_END = _float("EPSILON_END", 0.05)
+
+PROBE_INTERVAL = _int("PROBE_INTERVAL", 25_000)
+PROBE_EPISODES = _int("PROBE_EPISODES", 3)
+
+# a typo in BACKBONE would otherwise fall through to a model class that does not exist,
+# and the error arrives inside the registry rather than here
+if BACKBONE not in BACKBONES:
+    print(f"BACKBONE={BACKBONE!r} is not one of {list(BACKBONES)}")
+    quit()
 
 cfg = DQN_CFG()
 cfg.experiment.directory = "runs"
-cfg.batch_size = 256
-cfg.target_update_interval = 200
-cfg.update_interval = 4
-cfg.learning_rate = 3e-4
+cfg.batch_size = _int("BATCH_SIZE", 256)
+cfg.target_update_interval = _int("TARGET_UPDATE_INTERVAL", 200)
+cfg.update_interval = _int("UPDATE_INTERVAL", 4)
+cfg.learning_rate = _float("LEARNING_RATE", 3e-4)
 cfg.learning_starts = MEM_SIZE + 1
-cfg.discount_factor = 0.99
+cfg.discount_factor = _float("DISCOUNT_FACTOR", 0.99)
 cfg.random_timesteps = MEM_SIZE
 
 def epsilon_schedule(timestep, timesteps):
-    start = 0.8
-    end = 0.05
+    start = EPSILON_START
+    end = EPSILON_END
     decay_steps = min(EGREEDY_STEPS, timesteps)
     eps = start - (start - end) * min(1.0, timestep / decay_steps)
     return eps
