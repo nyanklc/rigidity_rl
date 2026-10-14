@@ -13,9 +13,9 @@
   </tr>
 </table>
 
-A team of robots that can only measure *directions* to one another (bearings) can recover its own shape only if the graph of who-measures-whom is rich
-enough. Adding every possible measurement makes that trivial and is wasteful, each link costs
-sensing, tracking, and communication. This thesis studies which links to keep both theoretically and experimentally with a reinforcement learning approach.
+A team of robots relying only on relative direction measurements (*bearings*) can recover its formation shape only if the underlying sensing graph satisfies certain rigidity conditions. Including every possible directed measurement can ensure rigidity, but comes at unnecessary sensing, tracking, and communication costs. Moreover, when the measurements are subject to noise, the choice of sensing links affects the accuracy with which the formation shape can be recovered, creating a trade-off between measurement cost and estimation robustness. The same problem arises beyond robotic formations, such as distributed sensor networks, camera networks, and bearing-only localization systems, where the goal is to recover the relative positions of spatially distributed entities from noisy directional measurements while minimizing sensing and communication costs.
+
+This thesis investigates how to design sparse and robust bearing-rigid sensing networks for heterogeneous multi-agent systems, balancing these competing objectives. It combines theoretical analysis of bearing rigidity and combinatorial optimization with a learning-based approach using graph neural networks and deep reinforcement learning, evaluated against classical optimization methods.
 
 <sub>**Keywords:** multi-agent systems, bearing rigidity, network topology optimization, graph neural networks, deep reinforcement learning, combinatorial optimization</sub>
 
